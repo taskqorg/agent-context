@@ -3,8 +3,29 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { prepareHeadroom } from '../src/headroom.js';
+import { prepareHeadroom, selectPython } from '../src/headroom.js';
 import { startProxy, runAgent } from '../src/run.js';
+
+test('Python selection supports the native Windows launcher and explicit interpreter', async () => {
+  const calls = [];
+  const run = async (command, args) => {
+    calls.push([command, ...args]);
+    if (command !== 'py' || args[0] !== '-3.12') throw new Error('interpreter unavailable');
+  };
+  assert.deepEqual(await selectPython(run, {}, 'win32'), ['py', '-3.12']);
+  assert.equal(calls[0][0], 'py');
+  assert.ok(calls.every(call => call[0] === 'py'));
+  const python311Only = async (command, args) => {
+    if (command !== 'py' || args[0] !== '-3.11') throw new Error('interpreter unavailable');
+  };
+  assert.deepEqual(await selectPython(python311Only, {}, 'win32'), ['py', '-3.11']);
+  const unix311Only = async command => {
+    if (command !== 'python3.11') throw new Error('interpreter unavailable');
+  };
+  assert.deepEqual(await selectPython(unix311Only, {}, 'linux'), ['python3.11']);
+  assert.deepEqual(await selectPython(async () => {}, { AGENT_CONTEXT_PYTHON: 'selected-python' }, 'linux'), ['selected-python']);
+  await assert.rejects(selectPython(async () => { throw new Error('unavailable'); }, { AGENT_CONTEXT_PYTHON: 'missing' }, 'win32'), /Python 3.11/);
+});
 
 test('owned proxy startup rejects a missing executable without hanging; invalid agents do not start it', async () => {
   await assert.rejects(startProxy({ python: path.join(os.tmpdir(), 'agent-context-nonexistent-python') }), /startup failed/);

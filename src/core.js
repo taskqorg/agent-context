@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { compressSupercompress } from './supercompress.js';
 
-export const version = '0.1.12';
+export const version = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 export const home = () => process.env.AGENT_CONTEXT_HOME || os.homedir();
 export const root = () => path.join(home(), '.agent-context');
 export const sha = value => crypto.createHash('sha256').update(value).digest('hex');

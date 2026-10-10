@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
-import { connectionFor, bin } from './install.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import YAML from 'yaml';
+import { connectionFor, bin, automaticConfigured } from './install.js';
+import { selectPython } from './headroom.js';
+import { home } from './core.js';
 
 export const sample = () => Array.from({ length: 35 }, (_, i) => `Diagnostic item ${i}: global agent integration uses one compressor and preserves the original when unavailable.`).join('\n') + '\nERROR ECONNREFUSED db.internal:5432';
 export async function runChild(command, args, input, env = {}) {
@@ -20,7 +25,51 @@ export async function runChild(command, args, input, env = {}) {
     child.stdin.end(input);
   });
 }
+const hermesRegistrationScript = String.raw`
+import importlib.util
+import json
+import sys
+
+plugin_path, settings = sys.argv[1], json.load(sys.stdin)
+class Context:
+    def __init__(self):
+        self.hooks = {}
+        self.tools = {}
+    def get_config(self, key, default=None):
+        return settings.get(key, default)
+    def register_hook(self, name, handler):
+        self.hooks[name] = handler
+    def register_tool(self, **value):
+        self.tools[value['name']] = value
+
+spec = importlib.util.spec_from_file_location('agent_context_configured_plugin', plugin_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+ctx = Context()
+module.register(ctx)
+tool = ctx.tools.get('agent_context_retrieve', {})
+print(json.dumps({
+    'hooks': sorted(ctx.hooks),
+    'retrievalTool': tool.get('name'),
+    'retrievalHandlerCallable': callable(tool.get('handler')),
+}))
+`;
+async function verifyHermes() {
+  const configFile = path.join(home(), '.hermes', 'config.yaml');
+  const plugin = path.join(home(), '.hermes', 'plugins', 'agent-context', '__init__.py');
+  const config = YAML.parse(fs.readFileSync(configFile, 'utf8'));
+  const settings = config?.plugins?.entries?.['agent-context']?.settings;
+  if (!automaticConfigured('hermes', path.dirname(configFile)) || !fs.existsSync(plugin)) {
+    throw new Error('Native Hermes verification requires the configured plugin adapter');
+  }
+  const python = await selectPython();
+  const raw = await runChild(python[0], [...python.slice(1), '-c', hermesRegistrationScript, plugin], JSON.stringify(settings));
+  const report = { agent: 'hermes', ...JSON.parse(raw), proof: 'configured_native_plugin_registration_not_model_session' };
+  report.passed = report.hooks.join(',') === 'post_llm_call,pre_llm_call,transform_tool_result' && report.retrievalTool === 'agent_context_retrieve' && report.retrievalHandlerCallable;
+  return report;
+}
 export async function verify(agent) {
+  if (agent === 'hermes') return verifyHermes();
   const connection = connectionFor(agent);
   if (connection?.command !== process.execPath || connection?.args?.[0] !== bin() || connection?.args?.[1] !== 'mcp' || connection?.args?.[2] !== agent) throw new Error('Native verification requires the installed adapter');
   const args = { context: sample(), query: 'Summarize the observations and preserve the exact ERROR line.', session_id: `verify-${crypto.randomUUID()}` };

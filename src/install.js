@@ -6,6 +6,8 @@ import YAML from 'yaml';
 import { atomicWrite, home, root, sha, keyStatus, version, acquireTransaction } from './core.js';
 import { launcher, seedRuntime, updateStatus } from './update.js';
 import { automaticPlan } from './automatic.js';
+import { servicePort } from './service.js';
+import { compatibleNode, sameFile } from './executable.js';
 
 export const bin = launcher;
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -218,6 +220,26 @@ export function connectionFor(agent) {
   if (agent === 'hermes') return YAML.parse(read(path.join(dir, 'config.yaml')))?.mcp_servers?.supercompress;
   throw new Error(`Unknown agent: ${agent}`);
 }
+function managedCommand(entry, action, agent) {
+  return compatibleNode(entry?.command) && sameFile(entry?.args?.[0], bin())
+    && entry?.args?.[1] === action && entry?.args?.[2] === agent;
+}
+export function automaticConfigured(agent, dir) {
+  if (agent === 'hermes') {
+    const config = YAML.parse(read(path.join(dir, 'config.yaml')));
+    const settings = config?.plugins?.entries?.['agent-context']?.settings;
+    return config?.plugins?.enabled?.includes('agent-context')
+      && compatibleNode(settings?.node) && sameFile(settings?.launcher, bin())
+      && /^http:\/\/127\.0\.0\.1:\d+$/.test(settings?.proxy_url || '');
+  }
+  const config = agent === 'codex' ? parseToml(read(path.join(dir, 'config.toml'))) : objectAt(path.join(home(), '.claude.json'));
+  const entry = agent === 'codex' ? config.mcp_servers?.headroom : config.mcpServers?.headroom;
+  if (!managedCommand(entry, 'retrieval', agent)) return false;
+  if (agent !== 'codex') return true;
+  const provider = config.model_providers?.agent_context;
+  return config.model_provider === 'agent_context' && provider?.base_url === `http://127.0.0.1:${servicePort('codex')}/v1`
+    && provider?.wire_api === 'responses' && provider?.requires_openai_auth === true;
+}
 export function doctor() {
   const credentials = keyStatus();
   const issues = [];
@@ -231,17 +253,8 @@ export function doctor() {
     if (!fs.existsSync(dir)) { agents[agent] = 'absent'; continue; }
     try {
       const connection = connectionFor(agent);
-      agents[agent] = connection?.command === process.execPath && connection?.args?.[0] === bin() && connection?.args?.[1] === 'mcp' && connection?.args?.[2] === agent ? 'configured' : 'not_configured';
-      if (automatic.includes(agent)) {
-        if (agent === 'hermes') {
-          const config = YAML.parse(read(path.join(dir, 'config.yaml')));
-          agents[agent] = config?.plugins?.enabled?.includes('agent-context') && config?.plugins?.entries?.['agent-context']?.settings?.launcher === bin() ? 'configured' : 'not_configured';
-        } else {
-          const config = agent === 'codex' ? parseToml(read(path.join(dir, 'config.toml'))) : objectAt(path.join(home(), '.claude.json'));
-          const entry = agent === 'codex' ? config.mcp_servers?.headroom : config.mcpServers?.headroom;
-          agents[agent] = entry?.command === process.execPath && entry?.args?.[0] === bin() && entry?.args?.[1] === 'retrieval' && entry?.args?.[2] === agent ? 'configured' : 'not_configured';
-        }
-      }
+      agents[agent] = managedCommand(connection, 'mcp', agent) ? 'configured' : 'not_configured';
+      if (automatic.includes(agent)) agents[agent] = automaticConfigured(agent, dir) ? 'configured' : 'not_configured';
       if (agents[agent] !== 'configured') issues.push(`${agent}:not_configured`);
       if (agent !== 'hermes') {
         const hooksFile = path.join(dir, agent === 'claude' ? 'settings.json' : 'hooks.json');
