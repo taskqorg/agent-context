@@ -5,7 +5,7 @@ One local, versioned SuperCompress recipe. No service, provider proxy, daemon, T
 ## Install
 
 ```sh
-npm install -g ./alexkirs-agent-context-0.1.0.tgz
+npm install -g ./alexkirs-agent-context-0.1.1.tgz
 agent-context install codex claude hermes
 agent-context doctor
 agent-context verify codex
@@ -69,6 +69,8 @@ agent-context doctor
 ```
 
 Rollback restores exact previous file bytes and legacy Hermes plugin files for the latest installation. It refuses if a touched config or backup has changed, before applying any restoration. Reconcile such changes privately; do not force overwrite. Repeated no-op install retains the previous rollback point. Rollback also requires MCP reload; old config may intentionally fail our doctor afterwards.
+
+Install and rollback share one transaction lock. A lock left by a crashed installer is reported; inspect its journal before manually clearing it. No automatic forced unlock.
 
 ## Update
 

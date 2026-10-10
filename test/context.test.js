@@ -164,6 +164,17 @@ test('doctor distinguishes global home config from project overrides', () => {
     assert.deepEqual(doctor().projectOverrides, ['.mcp.json']);
   } finally { process.chdir(cwd); }
 });
+test('concurrent installer/rollback are refused without touching configuration', () => {
+  const lock = path.join(root(), 'install.lock');
+  fs.mkdirSync(lock);
+  try {
+    const before = fs.readFileSync(path.join(sandbox, '.codex', 'config.toml'));
+    assert.throws(() => install(['codex']), /transaction busy/);
+    assert.throws(() => rollback(), /transaction busy/);
+    assert.deepEqual(fs.readFileSync(path.join(sandbox, '.codex', 'config.toml')), before);
+    assert.ok(doctor().issues.includes('installation_lock_present'));
+  } finally { fs.rmdirSync(lock); }
+});
 test('native MCP JSONL initializes, lists tools and returns safe missing-key fallback', async () => {
   const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-mcp-'));
   const child = spawn(process.execPath, [bin, 'mcp', 'hermes'], { env: { ...process.env, AGENT_CONTEXT_HOME: isolated, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
@@ -187,5 +198,20 @@ test('native MCP JSONL initializes, lists tools and returns safe missing-key fal
   const result = JSON.parse(responses[2].result.content[0].text);
   assert.equal(result.skipped, 'missing_key');
   assert.equal(result.compressed_text, context);
+});
+test('native MCP handles split Content-Length framing', async () => {
+  const child = spawn(process.execPath, [bin, 'mcp', 'codex'], { env: { ...process.env, AGENT_CONTEXT_HOME: sandbox, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
+  const chunks = [];
+  child.stdout.on('data', value => chunks.push(value));
+  const done = new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', resolve); });
+  const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 9, method: 'initialize', params: { protocolVersion: '2024-11-05' } }));
+  child.stdin.write('Content-Le');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  child.stdin.end(Buffer.concat([Buffer.from(`ngth: ${body.length}\r\n\r\n`), body]));
+  await done;
+  const response = Buffer.concat(chunks), split = response.indexOf('\r\n\r\n');
+  const length = Number(/Content-Length: (\d+)/.exec(response.subarray(0, split).toString())[1]);
+  assert.equal(response.subarray(split + 4).length, length);
+  assert.equal(JSON.parse(response.subarray(split + 4)).id, 9);
 });
 test.after(() => { /* Test state retained in OS scratch for evidence, never added to package. */ });

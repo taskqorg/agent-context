@@ -48,7 +48,7 @@ try {
   else throw new Error('Usage: agent-context install [codex claude hermes] | doctor | rollback | set-key < stdin | probe <agent> | verify <agent> | mcp <agent> | hook claude');
 } catch (error) {
   // Configuration parser errors may contain private values; report only known safe messages.
-  const safe = /^(Unknown agent|Choose |Usage:|Rollback refused|Unsupported |Hermes legacy|Configuration changed)/.test(error.message);
+  const safe = /^(Unknown agent|Choose |Usage:|Rollback refused|Unsupported |Hermes legacy|Configuration (changed|transaction))/.test(error.message);
   process.stderr.write(`${safe ? error.message : 'Agent Context operation failed; inspect local configuration privately'}\n`);
   process.exitCode = 1;
 }

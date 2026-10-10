@@ -114,7 +114,16 @@ export function planInstall(agents) {
   return { changes, moves, installed, absent };
 }
 
-export function install(agents) {
+function transaction(operation) {
+  fs.mkdirSync(root(), { recursive: true, mode: 0o700 });
+  const lock = path.join(root(), 'install.lock');
+  try { fs.mkdirSync(lock, { mode: 0o700 }); }
+  catch (error) { if (error.code === 'EEXIST') throw new Error('Configuration transaction busy; inspect existing installation before retrying'); throw error; }
+  try { return operation(); }
+  finally { fs.rmdirSync(lock); }
+}
+export const install = agents => transaction(() => applyInstall(agents));
+function applyInstall(agents) {
   const plan = planInstall(agents);
   if (!plan.changes.length && !plan.moves.length) return { ...plan, changes: [], transaction: null };
   const id = `${Date.now()}-${process.pid}`;
@@ -160,7 +169,8 @@ export function install(agents) {
   return { installed: plan.installed, absent: plan.absent, changed: plan.changes.map(change => change.file), legacyPluginsPreserved: journal.moves.length, transaction: id, reloadRequired: true };
 }
 
-export function rollback() {
+export const rollback = () => transaction(applyRollback);
+function applyRollback() {
   const pointer = JSON.parse(read(path.join(root(), 'latest-install.json')));
   const journalFile = path.join(pointer.dir, 'journal.json');
   const journal = JSON.parse(read(journalFile));
@@ -214,6 +224,7 @@ export function doctor() {
   const stateDir = path.join(root(), 'state');
   const locks = fs.existsSync(stateDir) ? fs.readdirSync(stateDir).filter(name => name.endsWith('.lock')).length : 0;
   if (locks) issues.push('session_locks_present');
+  if (fs.existsSync(path.join(root(), 'install.lock'))) issues.push('installation_lock_present');
   // Project overrides are reported, never rewritten by global installation.
   const isUserHome = (process.platform === 'win32' ? process.cwd().toLowerCase() === home().toLowerCase() : process.cwd() === home());
   const overrides = (isUserHome ? [] : ['.mcp.json', '.codex/config.toml', '.claude/settings.local.json', '.claude/settings.json']).filter(name => {
