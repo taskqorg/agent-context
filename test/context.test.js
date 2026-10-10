@@ -192,7 +192,7 @@ test('concurrent installer/rollback are refused without touching configuration',
 });
 test('native MCP JSONL initializes, lists tools and returns safe missing-key fallback', async () => {
   const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-mcp-'));
-  const child = spawn(process.execPath, [bin, 'mcp', 'hermes'], { env: { ...process.env, AGENT_CONTEXT_HOME: isolated, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
+  const child = spawn(process.execPath, [path.resolve('bin/agent-context.js'), 'mcp', 'hermes'], { env: { ...process.env, AGENT_CONTEXT_HOME: isolated, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
   let raw = '', errors = '';
   child.stdout.on('data', value => { raw += value; });
   child.stderr.on('data', value => { errors += value; });
@@ -215,7 +215,7 @@ test('native MCP JSONL initializes, lists tools and returns safe missing-key fal
   assert.equal(result.compressed_text, context);
 });
 test('native MCP handles split Content-Length framing', async () => {
-  const child = spawn(process.execPath, [bin, 'mcp', 'codex'], { env: { ...process.env, AGENT_CONTEXT_HOME: sandbox, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
+  const child = spawn(process.execPath, [path.resolve('bin/agent-context.js'), 'mcp', 'codex'], { env: { ...process.env, AGENT_CONTEXT_HOME: sandbox, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
   const chunks = [];
   child.stdout.on('data', value => chunks.push(value));
   const done = new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', resolve); });

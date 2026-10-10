@@ -2,12 +2,12 @@
 
 One local, versioned SuperCompress recipe. No service, provider proxy, daemon, TaskQ dependency or edits to upstream npm files. Node 22+; macOS, native Windows and Linux/WSL.
 
-Public source: https://github.com/taskqorg/agent-context. Release/adoption and future update policy: [DISTRIBUTION.md](DISTRIBUTION.md). Automatic updates are not implemented in this release.
+Public source: https://github.com/taskqorg/agent-context. Release/adoption and future update policy: [DISTRIBUTION.md](DISTRIBUTION.md). Compatible qualified stable patch updates are checked on agent startup, at most daily.
 
 ## Install
 
 ```sh
-npm install -g ./alexkirs-agent-context-0.1.2.tgz
+npm install -g ./alexkirs-agent-context-0.1.3.tgz
 agent-context install codex claude hermes
 agent-context doctor
 agent-context verify codex
@@ -87,3 +87,19 @@ npm pack
 Two pinned config parsers are the only dependencies. `npm test` regenerates local source hashes; `prepack` checks them. The transferred archive SHA256 is the distribution pin; local hashes detect accidental file drift, not malicious tampering.
 
 Sources: [SuperCompress agents](https://docs.supercompress.dev/coding-agents), [Codex hooks](https://learn.chatgpt.com/docs/hooks), [Claude hooks](https://code.claude.com/docs/en/hooks), [Hermes MCP](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp/).
+
+## Automatic updates and rollback
+
+Installation seeds a private version directory and a stable launcher under `~/.agent-context`. Agent startup schedules one bounded background check at most daily. No daemon, task queue or app restart is involved. Existing sessions keep their loaded version; new launches use the selected version. A Node installation with npm is required for staging updates.
+
+Only stable releases from `taskqorg/agent-context` with matching GitHub SHA256 asset digests and a qualified `recipe.json` are eligible. The recipe must match the platform, all three client qualifications and launcher/adapter contract 1. The archive is installed with lifecycle scripts disabled and passes integrity plus isolated tests before atomic activation. A failed check keeps the old version. Minor/major changes require a migration. Downloaded releases are trusted maintainer code; digest checks establish integrity, not independent code review.
+
+```sh
+agent-context update status
+agent-context update
+agent-context update rollback
+agent-context update enable
+agent-context update disable
+```
+
+Package rollback validates and selects the retained previous runtime, then pauses automatic updates. Re-enable only after diagnosing the bad release. `agent-context rollback` is different: it restores the configuration transaction and preserves later edits by refusing drift. Both require client reload for already loaded connections.

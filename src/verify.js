@@ -22,7 +22,7 @@ export async function runChild(command, args, input, env = {}) {
 }
 export async function verify(agent) {
   const connection = connectionFor(agent);
-  if (connection?.command !== process.execPath || connection?.args?.[0] !== bin || connection?.args?.[1] !== 'mcp' || connection?.args?.[2] !== agent) throw new Error('Native verification requires the installed adapter');
+  if (connection?.command !== process.execPath || connection?.args?.[0] !== bin() || connection?.args?.[1] !== 'mcp' || connection?.args?.[2] !== agent) throw new Error('Native verification requires the installed adapter');
   const args = { context: sample(), query: 'Summarize the observations and preserve the exact ERROR line.', session_id: `verify-${crypto.randomUUID()}` };
   const messages = [
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } },
@@ -40,7 +40,7 @@ export async function verify(agent) {
   if (agent === 'claude') {
     const response = { stdout: sample(), stderr: 'stderr must remain unchanged', exitCode: 7 };
     const input = { hook_event_name: 'PostToolUse', tool_name: 'Bash', session_id: `hook-verify-${crypto.randomUUID()}`, tool_response: response };
-    const output = JSON.parse(await runChild(process.execPath, [bin, 'hook', 'claude'], JSON.stringify(input)));
+    const output = JSON.parse(await runChild(process.execPath, [bin(), 'hook', 'claude'], JSON.stringify(input)));
     const changed = output.hookSpecificOutput?.updatedToolOutput;
     report.hook = { replaced: Boolean(changed), stderrPreserved: changed?.stderr === response.stderr, exitCodePreserved: changed?.exitCode === response.exitCode, criticalRetained: changed?.stdout?.includes('ERROR ECONNREFUSED db.internal:5432') || false, inputChars: response.stdout.length, outputChars: changed?.stdout?.length || response.stdout.length, warning: output.systemMessage || null };
   }

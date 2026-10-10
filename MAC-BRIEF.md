@@ -1,6 +1,6 @@
 # Mac qualification and setup
 
-Owner authorizes installing this package for Codex, Claude Code and Hermes. TaskQ/ARM/production remain paused. No provider login changes, paid model turns or automatic app termination.
+Owner authorizes installing this package for Codex, Claude Code and Hermes. TaskQ/ARM/production remain paused. No provider login changes or automatic app termination. The current owner request authorizes one minimal synthetic actual-client turn per installed agent for qualification, separate from production work.
 
 1. Verify the received archive SHA256 before extracting or installing. Preserve the existing private inventory and backups. Do not print any credential values.
 2. Unpack source in a separate local directory. Run `npm ci --ignore-scripts`, `npm test` and `npm pack`. Confirm Node 22+, native config paths and actual Hermes profile. The package operates on the default user profile; report additional profiles rather than assuming coverage.
@@ -14,4 +14,4 @@ Owner authorizes installing this package for Codex, Claude Code and Hermes. Task
 
 Failure criterion: missing/old key, duplicate active compressor, wrong executable path, callback shape mismatch, lost control error, endless retry, stale module or config drift. Preserve originals and report the specific layer; do not compensate by increasing all timeouts or changing provider auth.
 
-No daemon, new telemetry service, LangGraph migration, self-healing updater or latest-version auto-install is part of this release. Runtime metadata is local, bounded and content-free. Later telemetry can consume it without becoming a prerequisite for agent work.
+No daemon, new telemetry service or LangGraph migration is part of this release. Version 0.1.3 adds qualified stable patch updates and package rollback; test the fixed launcher, isolated staging and rollback before enabling production use. Runtime metadata is local, bounded and content-free. Later telemetry can consume it without becoming a prerequisite for agent work.

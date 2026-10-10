@@ -2,16 +2,21 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { compress, version, atomicWrite, home, root } from '../src/core.js';
 import { claudeHook } from '../src/hooks.js';
 import { serve } from '../src/mcp.js';
 import { install, rollback, doctor } from '../src/install.js';
 import { verify } from '../src/verify.js';
+import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '../src/update.js';
 
 const [command, ...args] = process.argv.slice(2);
 const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-try {
+const inManagedRuntime = fileURLToPath(import.meta.url).startsWith(path.join(root(), 'versions') + path.sep);
+if (command !== 'install' && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
+  await import(pathToFileURL(launcher()).href);
+} else try {
   if (command === 'mcp') {
     if (!names[args[0]]) throw new Error('Choose codex, claude or hermes');
     serve(names[args[0]]);
@@ -20,6 +25,13 @@ try {
     try { output(await claudeHook(JSON.parse(input))); }
     catch { output({ systemMessage: 'Agent Context hook failed; original output kept.' }); }
   } else if (command === 'install') output(install(args.length ? args : Object.keys(names)));
+  else if (command === 'update') {
+    if (args[0] === 'rollback') output(await rollbackUpdate());
+    else if (args[0] === 'enable' || args[0] === 'disable') output(enableUpdates(args[0] === 'enable'));
+    else if (args[0] === 'status') output(updateStatus());
+    else if (!args.length || args[0] === '--automatic') { const report = await update({ automatic: args[0] === '--automatic' }); output(report); if (report.status === 'failed') process.exitCode = 1; }
+    else throw new Error('Usage: agent-context update [status|enable|disable|rollback]');
+  }
   else if (command === 'set-key') {
     const key = fs.readFileSync(0, 'utf8').trim();
     if (!/^sc_[A-Za-z0-9_]{20,}$/.test(key)) throw new Error('Invalid key');
@@ -48,7 +60,7 @@ try {
   else throw new Error('Usage: agent-context install [codex claude hermes] | doctor | rollback | set-key < stdin | probe <agent> | verify <agent> | mcp <agent> | hook claude');
 } catch (error) {
   // Configuration parser errors may contain private values; report only known safe messages.
-  const safe = /^(Unknown agent|Choose |Usage:|Rollback refused|Unsupported |Hermes legacy|Configuration (changed|transaction))/.test(error.message);
+  const safe = /^(Unknown agent|Choose |Usage:|Update refused|Rollback refused|Unsupported |Hermes legacy|Configuration (changed|transaction))/.test(error.message);
   process.stderr.write(`${safe ? error.message : 'Agent Context operation failed; inspect local configuration privately'}\n`);
   process.exitCode = 1;
 }

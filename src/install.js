@@ -4,11 +4,13 @@ import { fileURLToPath } from 'node:url';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import YAML from 'yaml';
 import { atomicWrite, home, root, sha, keyStatus, version } from './core.js';
+import { launcher, seedRuntime, updateStatus } from './update.js';
 
-export const bin = fileURLToPath(new URL('../bin/agent-context.js', import.meta.url));
+export const bin = launcher;
+const packageRoot = fileURLToPath(new URL('../', import.meta.url));
 const agentNames = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-const ownedCommand = hook => /(?:supercompress(?:-proxy)?[\\/]|agent-context\.js["']?\s+(?:hook|mcp)\b)/i.test(`${hook.command || ''} ${hook.commandWindows || ''}`);
+const ownedCommand = hook => /(?:supercompress(?:-proxy)?[\\/]|(?:agent-context\.js|launcher\.mjs)["']?\s+(?:hook|mcp)\b)/i.test(`${hook.command || ''} ${hook.commandWindows || ''}`);
 export function stripHooks(value) {
   for (const [event, rules] of Object.entries(value.hooks || {})) {
     if (!Array.isArray(rules)) throw new Error(`Unsupported hook shape: ${event}`);
@@ -41,7 +43,7 @@ export function instructions(raw, agent) {
   return `${withoutOld}\n\n<!-- agent-context:start -->\n# Agent Context\n${rule}\nNever compress the user query. Prefer the returned new context; do not read an unrelated global inbox or replay session history. On skipped/failure retain original context; already_seen means no new digest. Keep normal agent login. Run agent-context doctor for configuration checks.\n<!-- agent-context:end -->\n`;
 }
 function objectAt(file) { const raw = read(file); return raw ? JSON.parse(raw) : {}; }
-function entry(agent) { return { command: process.execPath, args: [bin, 'mcp', agent], env: { SUPERCOMPRESS_AGENT_NAME: agentNames[agent] } }; }
+function entry(agent) { return { command: process.execPath, args: [bin(), 'mcp', agent], env: { SUPERCOMPRESS_AGENT_NAME: agentNames[agent] } }; }
 function semantic(value) {
   if (Array.isArray(value)) return value.map(semantic);
   if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map(key => [key, semantic(value[key])]));
@@ -86,7 +88,7 @@ export function planInstall(agents) {
       const settings = stripHooks(objectAt(hooksFile));
       settings.hooks ||= {};
       settings.hooks.PostToolUse ||= [];
-      const command = `"${process.execPath}" "${bin}" hook claude`;
+      const command = `"${process.execPath}" "${bin()}" hook claude`;
       settings.hooks.PostToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command, timeout: 360 }] });
       add(hooksFile, json(settings));
     } else {
@@ -124,6 +126,7 @@ function transaction(operation) {
 }
 export const install = agents => transaction(() => applyInstall(agents));
 function applyInstall(agents) {
+  seedRuntime();
   const plan = planInstall(agents);
   if (!plan.changes.length && !plan.moves.length) return { ...plan, changes: [], transaction: null };
   const id = `${Date.now()}-${process.pid}`;
@@ -210,14 +213,14 @@ export function doctor() {
     if (!fs.existsSync(dir)) { agents[agent] = 'absent'; continue; }
     try {
       const connection = connectionFor(agent);
-      agents[agent] = connection?.command === process.execPath && connection?.args?.[0] === bin && connection?.args?.[1] === 'mcp' && connection?.args?.[2] === agent ? 'configured' : 'not_configured';
+      agents[agent] = connection?.command === process.execPath && connection?.args?.[0] === bin() && connection?.args?.[1] === 'mcp' && connection?.args?.[2] === agent ? 'configured' : 'not_configured';
       if (agents[agent] !== 'configured') issues.push(`${agent}:not_configured`);
       if (agent !== 'hermes') {
         const hooksFile = path.join(dir, agent === 'claude' ? 'settings.json' : 'hooks.json');
         const hooks = objectAt(hooksFile).hooks || {};
         const list = Object.values(hooks).flatMap(rules => rules.flatMap(rule => rule.hooks));
-        if (list.some(hook => ownedCommand(hook) && !`${hook.command} ${hook.commandWindows}`.includes(bin))) issues.push(`${agent}:legacy_hook`);
-        if (agent === 'claude' && list.filter(hook => `${hook.command}`.includes(bin)).length !== 1) issues.push('claude:hook_count');
+        if (list.some(hook => ownedCommand(hook) && !`${hook.command} ${hook.commandWindows}`.includes(bin()))) issues.push(`${agent}:legacy_hook`);
+        if (agent === 'claude' && list.filter(hook => `${hook.command}`.includes(bin())).length !== 1) issues.push('claude:hook_count');
       } else if (fs.existsSync(path.join(dir, 'plugins', 'supercompress')) || /supercompress/i.test(JSON.stringify(YAML.parse(read(path.join(dir, 'config.yaml')))?.hooks || {}))) issues.push('hermes:legacy_plugin_or_hook');
     } catch { agents[agent] = 'invalid_config'; issues.push(`${agent}:invalid_config`); }
   }
@@ -238,10 +241,9 @@ export function doctor() {
   if (overrides.length) issues.push('project_compression_override');
   let integrity = 'missing';
   try {
-    const packageRoot = path.dirname(path.dirname(bin));
     const manifest = JSON.parse(read(path.join(packageRoot, 'integrity.json')));
     integrity = Object.entries(manifest.files).every(([file, digest]) => sha(fs.readFileSync(path.join(packageRoot, file))) === digest) ? 'verified' : 'modified';
   } catch {}
   if (integrity !== 'verified') issues.push(`recipe_integrity:${integrity}`);
-  return { version, node: process.version, platform: process.platform, integrity, agents, keyPresent: credentials.present, keyConflict: credentials.conflict, locks, projectOverrides: overrides, issues, healthy: !issues.length, runtimeProof: 'not_run' };
+  return { version, node: process.version, platform: process.platform, integrity, agents, updates: updateStatus(), keyPresent: credentials.present, keyConflict: credentials.conflict, locks, projectOverrides: overrides, issues, healthy: !issues.length, runtimeProof: 'not_run' };
 }
