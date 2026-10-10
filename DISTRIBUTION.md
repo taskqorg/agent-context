@@ -2,7 +2,7 @@
 
 Agent Context is developer tooling: a local integration layer for coding agents' context management. It is independent of game/application code, TaskQ queue orchestration and LangGraph services. New integrations belong here only when they share the same local lifecycle and supported agent adapter contract.
 
-Canonical source: https://github.com/alexkirs/agent-context
+Canonical source: https://github.com/taskqorg/agent-context
 
 ## Release
 
@@ -19,7 +19,7 @@ Recommended project declaration, once a manifest-aware updater is implemented:
 ```json
 {
   "schema": 1,
-  "repository": "alexkirs/agent-context",
+  "repository": "taskqorg/agent-context",
   "compatible": "0.1.x",
   "updateChannel": "stable"
 }

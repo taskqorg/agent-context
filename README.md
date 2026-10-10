@@ -2,7 +2,7 @@
 
 One local, versioned SuperCompress recipe. No service, provider proxy, daemon, TaskQ dependency or edits to upstream npm files. Node 22+; macOS, native Windows and Linux/WSL.
 
-Public source: https://github.com/alexkirs/agent-context. Release/adoption and future update policy: [DISTRIBUTION.md](DISTRIBUTION.md). Automatic updates are not implemented in this release.
+Public source: https://github.com/taskqorg/agent-context. Release/adoption and future update policy: [DISTRIBUTION.md](DISTRIBUTION.md). Automatic updates are not implemented in this release.
 
 ## Install
 

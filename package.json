@@ -3,7 +3,7 @@
   "version": "0.1.2",
   "private": true,
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/alexkirs/agent-context.git" },
+  "repository": { "type": "git", "url": "https://github.com/taskqorg/agent-context.git" },
   "description": "Controlled SuperCompress integration for Codex, Claude Code and Hermes",
   "type": "module",
   "bin": { "agent-context": "bin/agent-context.js" },
