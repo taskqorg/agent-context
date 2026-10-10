@@ -1,12 +1,12 @@
 {
-  "version": "0.1.4",
+  "version": "0.1.5",
   "files": {
-    "bin/agent-context.js": "7432dd6f5a0b98e92d52ce46666dc06f6b82376c114fccbeecb8d5d7af727dcc",
-    "src/core.js": "617860ec17e5eeaf6cfac1df243ffaa16fbcaf2d01ca20969b81aefa796c3e0d",
+    "bin/agent-context.js": "9567e2b09de26362776b7b424ecfcc7525813a126144205723ee51abce78df6d",
+    "src/core.js": "ab38394b4b4c4c8980c181b1a3f48c1fea847a899ba26ea943b907aad10e64f2",
     "src/hooks.js": "fe3656d551ccc5bc393f6743e4102353a1446a53c6b90b2f743f3b43db9374f7",
-    "src/install.js": "c9b3708bf1ac26b45472ff9ab3ff5b2f0c6cc6a3685973bf96c76310424185ff",
+    "src/install.js": "df24375f7b19694521e326fdfc92b275ac248937c9f7f81bb83b05b09b49d024",
     "src/mcp.js": "a7c269e5534d9acc95f65af1d34ae3e35a1da04aab5f96a4f5f991714cb042aa",
-    "src/update.js": "a5fdcf8498125e525086187afd4bb95c77e0bb78089fad87dc01ef6358b58bcf",
+    "src/update.js": "bdf761d6fa43571901fad8c8c18bb09816794e44112ed69bc7b02eb6b2a71b2b",
     "src/verify.js": "4bd7be574202a7a42914a78e01c521278384c8cc8555fe1973db19fc7d7d2329"
   }
 }

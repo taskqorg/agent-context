@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const version = '0.1.4';
+export const version = '0.1.5';
 export const home = () => process.env.AGENT_CONTEXT_HOME || os.homedir();
 export const root = () => path.join(home(), '.agent-context');
 export const sha = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -14,6 +14,17 @@ export function atomicWrite(file, data) {
     fs.writeFileSync(temp, data, { mode: 0o600 });
     fs.renameSync(temp, file);
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
+}
+export function acquireTransaction() {
+  fs.mkdirSync(root(), { recursive: true, mode: 0o700 });
+  const lock = path.join(root(), 'install.lock');
+  try { fs.mkdirSync(lock, { mode: 0o700 }); }
+  catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const busy = new Error('Configuration transaction busy; inspect existing installation before retrying');
+    busy.code = 'AGENT_CONTEXT_BUSY'; throw busy;
+  }
+  return () => fs.rmdirSync(lock);
 }
 export function keyStatus() {
   let fileKey = '';

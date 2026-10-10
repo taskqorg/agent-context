@@ -14,4 +14,4 @@ Owner authorizes installing this package for Codex, Claude Code and Hermes. Task
 
 Failure criterion: missing/old key, duplicate active compressor, wrong executable path, callback shape mismatch, lost control error, endless retry, stale module or config drift. Preserve originals and report the specific layer; do not compensate by increasing all timeouts or changing provider auth.
 
-No daemon, new telemetry service or LangGraph migration is part of this release. Version 0.1.4 adds qualified stable patch updates and package rollback; test the fixed launcher, isolated staging and rollback before enabling production use. Runtime metadata is local, bounded and content-free. Later telemetry can consume it without becoming a prerequisite for agent work.
+No daemon, new telemetry service or LangGraph migration is part of this release. Version 0.1.5 adds qualified stable patch updates and package rollback; test the fixed launcher, isolated staging and rollback before enabling production use. Runtime metadata is local, bounded and content-free. Later telemetry can consume it without becoming a prerequisite for agent work.

@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { atomicWrite, root, sha, version } from './core.js';
+import { atomicWrite, root, sha, version, acquireTransaction } from './core.js';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
 const repository = 'taskqorg/agent-context';
@@ -11,6 +11,7 @@ const json = value => `${JSON.stringify(value, null, 2)}\n`;
 export const launcher = () => path.join(root(), 'launcher.mjs');
 const pointerFile = () => path.join(root(), 'active.json');
 const stateFile = () => path.join(root(), 'updates.json');
+const policyFile = () => path.join(root(), 'update-policy.json');
 const read = file => fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 const fail = reason => { throw new Error(`Update refused: ${reason}`); };
 export function checkPackage(dir, expected) {
@@ -22,32 +23,40 @@ export function checkPackage(dir, expected) {
   }
   if (!manifest.files?.['bin/agent-context.js'] || !manifest.files?.['src/update.js']) fail('missing runtime');
 }
-function checkedPointer(value) {
+function checkedPointer(value, integrity = true) {
   if (!value || !/^\d+\.\d+\.\d+$/.test(value.version)) fail('invalid runtime pointer');
   const dir = path.resolve(value.dir);
   const versions = path.resolve(root(), 'versions');
   if (path.dirname(dir) !== versions || fs.lstatSync(dir).isSymbolicLink()) fail('runtime path');
-  checkPackage(dir, value.version);
+  if (integrity) checkPackage(dir, value.version);
   return value;
 }
 export function updateStatus() {
   const active = read(pointerFile());
-  return { managed: Boolean(active), activeVersion: active?.version, previousVersion: active?.previous?.version, ...read(stateFile()) };
+  return { managed: Boolean(active), activeVersion: active?.version, previousVersion: active?.previous?.version, ...read(stateFile()), ...read(policyFile()) };
 }
 // The launcher stays fixed across compatible patch updates; active processes keep their imported modules.
 const launcherCode = `import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 const base = fs.realpathSync(path.dirname(fileURLToPath(import.meta.url)));
 const active = JSON.parse(fs.readFileSync(path.join(base, 'active.json'), 'utf8'));
 if (fs.lstatSync(active.dir).isSymbolicLink()) throw new Error('Invalid Agent Context runtime');
 const dir = fs.realpathSync(active.dir);
 if (path.dirname(dir) !== fs.realpathSync(path.join(base, 'versions'))) throw new Error('Invalid Agent Context runtime');
 const bin = path.join(dir, 'bin', 'agent-context.js');
+const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'integrity.json'), 'utf8'));
+const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+if (pkg.name !== '@alexkirs/agent-context' || pkg.version !== active.version || manifest.version !== active.version || !manifest.files?.['bin/agent-context.js'] || !manifest.files?.['src/update.js']) throw new Error('Agent Context integrity failed');
+for (const [file, digest] of Object.entries(manifest.files)) {
+  if (!/^(bin|src)\\/[A-Za-z0-9._-]+$/.test(file) || crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, file))).digest('hex') !== digest) throw new Error('Agent Context integrity failed');
+}
 if (['mcp', 'hook'].includes(process.argv[2])) {
   const stateFile = path.join(base, 'updates.json');
   let state = {}; try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
+  try { state = { ...state, ...JSON.parse(fs.readFileSync(path.join(base, 'update-policy.json'), 'utf8')) }; } catch {}
   if (state.enabled && Date.now() - (state.lastAttempt || 0) >= 86400000) {
     try {
       const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32' });
@@ -73,14 +82,14 @@ export function seedRuntime() {
   const active = { version, dir, previous: null };
   atomicWrite(pointerFile(), json(active));
   atomicWrite(stateFile(), json({ enabled: true, channel: 'stable', repository, lastAttempt: 0, status: 'ready' }));
+  atomicWrite(policyFile(), json({ enabled: true }));
   return active;
 }
 function lock(operation) {
-  fs.mkdirSync(root(), { recursive: true, mode: 0o700 });
-  const file = path.join(root(), 'update.lock');
-  try { fs.mkdirSync(file, { mode: 0o700 }); }
-  catch (error) { if (error.code === 'EEXIST') return { status: 'busy' }; throw error; }
-  return Promise.resolve().then(operation).finally(() => fs.rmdirSync(file));
+  let release;
+  try { release = acquireTransaction(); }
+  catch (error) { if (error.code === 'AGENT_CONTEXT_BUSY') return { status: 'busy' }; throw error; }
+  return Promise.resolve().then(operation).finally(release);
 }
 async function download(url, limit, fetcher) {
   const response = await fetcher(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agent-context' }, signal: AbortSignal.timeout(20000) });
@@ -129,9 +138,9 @@ export async function prepare(archive, stage, expected) {
 export async function update({ automatic = false, fetcher = fetch, preparer = prepare } = {}) {
   return lock(async () => {
     const active = checkedPointer(read(pointerFile()));
-    const state = read(stateFile()) || {};
+    const state = { ...read(stateFile()), ...read(policyFile()) };
     if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < 86400000)) return { status: 'not_due' };
-    const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...state, lastAttempt: Date.now(), status, ...extra }));
+    const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, ...extra }));
     record('checking');
     try {
       const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
@@ -152,7 +161,7 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       const dir = path.join(root(), 'versions', `${next}-${crypto.randomUUID()}`);
       fs.renameSync(prepared, dir);
       if (JSON.stringify(read(pointerFile())) !== JSON.stringify(active)) fail('runtime changed during update');
-      if (fs.existsSync(path.join(root(), 'install.lock'))) fail('configuration transaction busy');
+      if (read(policyFile())?.enabled === false) { record('disabled_before_activation'); return { status: 'disabled_before_activation', activeVersion: active.version }; }
       atomicWrite(pointerFile(), json({ version: next, dir, previous: { version: active.version, dir: active.dir } }));
       record('updated', { activeVersion: next });
       return { status: 'updated', version: next, previous: active.version, reloadRequired: true };
@@ -166,16 +175,18 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
 }
 export async function rollbackUpdate() {
   return lock(() => {
-    const active = checkedPointer(read(pointerFile()));
+    // Recovery must not execute or require integrity of the faulty selected version.
+    const active = checkedPointer(read(pointerFile()), false);
     if (!active.previous) fail('no previous package');
     const previous = checkedPointer(active.previous);
     atomicWrite(pointerFile(), json({ ...previous, previous: null }));
     atomicWrite(stateFile(), json({ ...read(stateFile()), enabled: false, status: 'rolled_back', activeVersion: previous.version }));
+    atomicWrite(policyFile(), json({ enabled: false }));
     return { status: 'rolled_back', version: previous.version, automaticUpdates: 'paused', reloadRequired: true };
   });
 }
 export function enableUpdates(enabled) {
   checkedPointer(read(pointerFile()));
-  atomicWrite(stateFile(), json({ ...read(stateFile()), enabled }));
+  atomicWrite(policyFile(), json({ enabled }));
   return { enabled };
 }

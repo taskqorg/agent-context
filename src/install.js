@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import YAML from 'yaml';
-import { atomicWrite, home, root, sha, keyStatus, version } from './core.js';
+import { atomicWrite, home, root, sha, keyStatus, version, acquireTransaction } from './core.js';
 import { launcher, seedRuntime, updateStatus } from './update.js';
 
 export const bin = launcher;
@@ -117,12 +117,9 @@ export function planInstall(agents) {
 }
 
 function transaction(operation) {
-  fs.mkdirSync(root(), { recursive: true, mode: 0o700 });
-  const lock = path.join(root(), 'install.lock');
-  try { fs.mkdirSync(lock, { mode: 0o700 }); }
-  catch (error) { if (error.code === 'EEXIST') throw new Error('Configuration transaction busy; inspect existing installation before retrying'); throw error; }
+  const release = acquireTransaction();
   try { return operation(); }
-  finally { fs.rmdirSync(lock); }
+  finally { release(); }
 }
 export const install = agents => transaction(() => applyInstall(agents));
 function applyInstall(agents) {

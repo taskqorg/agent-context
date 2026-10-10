@@ -5,7 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { sha, root, version } from '../src/core.js';
-import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate } from '../src/update.js';
+import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, enableUpdates } from '../src/update.js';
+import { install, rollback } from '../src/install.js';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-update-'));
 process.env.AGENT_CONTEXT_HOME = home;
@@ -15,8 +16,9 @@ const pointer = () => JSON.parse(fs.readFileSync(path.join(root(), 'active.json'
 const restore = () => {
   fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify(initial));
   fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: 0 }));
+  fs.writeFileSync(path.join(root(), 'update-policy.json'), JSON.stringify({ enabled: true }));
 };
-function fixture({ badDigest = false, qualified = true, next = '0.1.5' } = {}) {
+function fixture({ badDigest = false, qualified = true, next = '0.1.6' } = {}) {
   const bytes = Buffer.from('synthetic package archive');
   const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes) }));
   const asset = (name, data) => ({ name, state: 'uploaded', digest: `sha256:${sha(data)}`, size: data.length, browser_download_url: `https://github.com/taskqorg/agent-context/releases/download/v${next}/${name}` });
@@ -43,7 +45,7 @@ test('stable launcher follows atomic upgrade and rollback without changing agent
   assert.equal(JSON.parse(run().stdout).version, version);
   const oldDir = pointer().dir;
   const result = await update(fixture());
-  assert.equal(result.status, 'updated'); assert.equal(JSON.parse(run().stdout).version, '0.1.5');
+  assert.equal(result.status, 'updated'); assert.equal(JSON.parse(run().stdout).version, '0.1.6');
   assert.ok(fs.existsSync(oldDir)); assert.equal(pointer().previous.dir, oldDir);
   assert.equal((await rollbackUpdate()).version, version);
   assert.equal(JSON.parse(run().stdout).version, version);
@@ -74,11 +76,31 @@ test('failed self-test and network failure retain working runtime and throttle a
   }
 });
 test('one updater owns the transition and configuration transactions prevent switching', async () => {
-  restore(); const lock = path.join(root(), 'update.lock'); fs.mkdirSync(lock);
+  restore(); const lock = path.join(root(), 'install.lock'); fs.mkdirSync(lock);
   const f = fixture(); assert.equal((await update(f)).status, 'busy'); assert.equal(f.calls(), 0); fs.rmdirSync(lock);
   const before = pointer(); const installLock = path.join(root(), 'install.lock'); fs.mkdirSync(installLock);
-  try { assert.equal((await update(fixture())).status, 'failed'); assert.deepEqual(pointer(), before); }
+  try { assert.equal((await update(fixture())).status, 'busy'); assert.deepEqual(pointer(), before); }
   finally { fs.rmdirSync(installLock); }
+});
+test('explicit disable during staging survives status writes and cancels activation', async () => {
+  restore(); const before = pointer(), f = fixture();
+  const result = await update({ ...f, preparer: async (...args) => { enableUpdates(false); return f.preparer(...args); } });
+  assert.equal(result.status, 'disabled_before_activation'); assert.deepEqual(pointer(), before); assert.equal(updateStatus().enabled, false);
+});
+test('update owns the same transaction lock as configuration install and rollback', async () => {
+  restore(); const f = fixture();
+  const result = await update({ ...f, preparer: async (...args) => {
+    assert.throws(() => install(['codex']), /Configuration transaction busy/);
+    assert.throws(() => rollback(), /Configuration transaction busy/);
+    return f.preparer(...args);
+  } });
+  assert.equal(result.status, 'updated');
+});
+test('launcher refuses corrupted runtime instead of executing modified code', async () => {
+  restore(); await update(fixture());
+  fs.writeFileSync(path.join(pointer().dir, 'bin/agent-context.js'), 'console.log("INTEGRITY_BYPASS_SYNTHETIC_FIXTURE");');
+  const child = spawnSync(process.execPath, [launcher(), '--version'], { env: process.env, windowsHide: true, encoding: 'utf8' });
+  assert.notEqual(child.status, 0); assert.ok(child.stderr.includes('Agent Context integrity failed')); assert.equal(child.stdout, '');
 });
 test('runtime drift detected before final switch; incompatible minor requires migration', async () => {
   restore(); const f = fixture();
@@ -93,10 +115,18 @@ test('rollback refuses modified previous code; symlink pointers cannot escape ma
   const previous = pointer().previous;
   const file = path.join(previous.dir, 'src/core.js'), before = fs.readFileSync(file);
   fs.appendFileSync(file, '\n// external edit');
-  try { await assert.rejects(rollbackUpdate(), /package integrity/); assert.equal(pointer().version, '0.1.5'); }
+  try { await assert.rejects(rollbackUpdate(), /package integrity/); assert.equal(pointer().version, '0.1.6'); }
   finally { fs.writeFileSync(file, before); }
   restore(); const alias = path.join(root(), 'versions', 'outside'); fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
   fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ version, dir: alias }));
   await assert.rejects(update(fixture()), /runtime path/);
   restore();
+});
+test('recovery CLI restores a valid previous runtime without loading corrupted active code', async () => {
+  restore(); await update(fixture());
+  fs.writeFileSync(path.join(pointer().dir, 'bin/agent-context.js'), 'throw new Error("broken active runtime");');
+  const child = spawnSync(process.execPath, [path.resolve('bin/agent-context.js'), 'update', 'rollback'], { env: process.env, windowsHide: true, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr);
+  assert.equal(JSON.parse(child.stdout).status, 'rolled_back'); assert.equal(pointer().version, version);
+  assert.equal(updateStatus().enabled, false);
 });

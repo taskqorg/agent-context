@@ -15,7 +15,8 @@ const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 const versionsDir = path.join(root(), 'versions');
 const inManagedRuntime = fs.existsSync(versionsDir) && fs.realpathSync(fileURLToPath(import.meta.url)).startsWith(fs.realpathSync(versionsDir) + path.sep);
-if (command !== 'install' && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
+const recovery = command === 'update' && ['rollback', 'disable'].includes(args[0]);
+if (command !== 'install' && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
   await import(pathToFileURL(launcher()).href);
 } else try {
   if (command === 'mcp') {
