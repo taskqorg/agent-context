@@ -50,6 +50,14 @@ test('stable launcher follows atomic upgrade and rollback without changing agent
   assert.equal(updateStatus().enabled, false);
   const f = fixture(); assert.equal((await update({ ...f, automatic: true })).status, 'not_due'); assert.equal(f.calls(), 0);
 });
+test('launcher resolves home aliases; no stable release is an idle state', async () => {
+  restore();
+  const alias = `${home}-alias`; fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const child = spawnSync(process.execPath, [path.join(alias, '.agent-context', 'launcher.mjs'), '--version'], { env: { ...process.env, AGENT_CONTEXT_HOME: alias }, windowsHide: true, encoding: 'utf8' });
+  assert.equal(child.status, 0, child.stderr); assert.equal(JSON.parse(child.stdout).version, version);
+  assert.equal((await update({ fetcher: async () => new Response('', { status: 404 }) })).status, 'no_stable_release');
+  assert.equal(updateStatus().status, 'no_stable_release');
+});
 test('tampered archive/qualification never reaches installation or switches active runtime', async () => {
   for (const options of [{ badDigest: true }, { qualified: false }]) {
     restore(); const before = pointer(); let prepared = false;

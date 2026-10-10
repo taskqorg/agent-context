@@ -13,7 +13,8 @@ import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '.
 const [command, ...args] = process.argv.slice(2);
 const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
-const inManagedRuntime = fileURLToPath(import.meta.url).startsWith(path.join(root(), 'versions') + path.sep);
+const versionsDir = path.join(root(), 'versions');
+const inManagedRuntime = fs.existsSync(versionsDir) && fs.realpathSync(fileURLToPath(import.meta.url)).startsWith(fs.realpathSync(versionsDir) + path.sep);
 if (command !== 'install' && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
   await import(pathToFileURL(launcher()).href);
 } else try {

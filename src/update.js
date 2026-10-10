@@ -39,10 +39,11 @@ const launcherCode = `import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-const base = path.dirname(fileURLToPath(import.meta.url));
+const base = fs.realpathSync(path.dirname(fileURLToPath(import.meta.url)));
 const active = JSON.parse(fs.readFileSync(path.join(base, 'active.json'), 'utf8'));
-const dir = path.resolve(active.dir);
-if (path.dirname(dir) !== path.join(base, 'versions') || fs.lstatSync(dir).isSymbolicLink()) throw new Error('Invalid Agent Context runtime');
+if (fs.lstatSync(active.dir).isSymbolicLink()) throw new Error('Invalid Agent Context runtime');
+const dir = fs.realpathSync(active.dir);
+if (path.dirname(dir) !== fs.realpathSync(path.join(base, 'versions'))) throw new Error('Invalid Agent Context runtime');
 const bin = path.join(dir, 'bin', 'agent-context.js');
 if (['mcp', 'hook'].includes(process.argv[2])) {
   const stateFile = path.join(base, 'updates.json');
@@ -156,6 +157,7 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       record('updated', { activeVersion: next });
       return { status: 'updated', version: next, previous: active.version, reloadRequired: true };
     } catch (error) {
+      if (error.message === 'Update refused: HTTP 404') { record('no_stable_release'); return { status: 'no_stable_release', activeVersion: active.version }; }
       const reason = /^Update refused: [A-Za-z0-9 :_-]+$/.test(error.message) ? error.message : 'Update failed; active runtime preserved';
       record('failed', { reason });
       return { status: 'failed', reason, activeVersion: active.version };
