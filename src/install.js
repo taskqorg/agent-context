@@ -40,7 +40,7 @@ export function instructions(raw, agent) {
   const rule = agent === 'claude'
     ? 'Bash stdout is already handled by the Agent Context hook. Do not recompress it through MCP. Use compress_context only for other new bulky context.'
     : 'Use MCP compress_context once for new bulky context when useful. This does not intercept or replace every model request; do not claim total token savings without measurements.';
-  return `${withoutOld}\n\n<!-- agent-context:start -->\n# Agent Context\n${rule}\nNever compress the user query. Prefer the returned new context; do not read an unrelated global inbox or replay session history. On skipped/failure retain original context; already_seen means no new digest. Keep normal agent login. Run agent-context doctor for configuration checks.\n<!-- agent-context:end -->\n`;
+  return `${withoutOld}\n\n<!-- agent-context:start -->\n# Agent Context\n${rule}\nNever compress the user query or credentials, authentication files, or other secrets. Prefer the returned new context; do not read an unrelated global inbox or replay session history. On skipped/failure retain original context; already_seen means no new digest. Keep normal agent login. Run agent-context doctor for configuration checks.\n<!-- agent-context:end -->\n`;
 }
 function objectAt(file) { const raw = read(file); return raw ? JSON.parse(raw) : {}; }
 function entry(agent) { return { command: process.execPath, args: [bin(), 'mcp', agent], env: { SUPERCOMPRESS_AGENT_NAME: agentNames[agent] } }; }

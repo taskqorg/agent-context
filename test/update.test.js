@@ -18,7 +18,7 @@ const restore = () => {
   fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: 0 }));
   fs.writeFileSync(path.join(root(), 'update-policy.json'), JSON.stringify({ enabled: true }));
 };
-function fixture({ badDigest = false, qualified = true, next = '0.1.7' } = {}) {
+function fixture({ badDigest = false, qualified = true, next = '0.1.9' } = {}) {
   const bytes = Buffer.from('synthetic package archive');
   const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes) }));
   const asset = (name, data) => ({ name, state: 'uploaded', digest: `sha256:${sha(data)}`, size: data.length, browser_download_url: `https://github.com/taskqorg/agent-context/releases/download/v${next}/${name}` });
@@ -45,7 +45,7 @@ test('stable launcher follows atomic upgrade and rollback without changing agent
   assert.equal(JSON.parse(run().stdout).version, version);
   const oldDir = pointer().dir;
   const result = await update(fixture());
-  assert.equal(result.status, 'updated'); assert.equal(JSON.parse(run().stdout).version, '0.1.7');
+  assert.equal(result.status, 'updated'); assert.equal(JSON.parse(run().stdout).version, '0.1.9');
   assert.ok(fs.existsSync(oldDir)); assert.equal(pointer().previous.dir, oldDir);
   assert.equal((await rollbackUpdate()).version, version);
   assert.equal(JSON.parse(run().stdout).version, version);
@@ -115,7 +115,7 @@ test('rollback refuses modified previous code; symlink pointers cannot escape ma
   const previous = pointer().previous;
   const file = path.join(previous.dir, 'src/core.js'), before = fs.readFileSync(file);
   fs.appendFileSync(file, '\n// external edit');
-  try { await assert.rejects(rollbackUpdate(), /package integrity/); assert.equal(pointer().version, '0.1.7'); }
+  try { await assert.rejects(rollbackUpdate(), /package integrity/); assert.equal(pointer().version, '0.1.9'); }
   finally { fs.writeFileSync(file, before); }
   restore(); const alias = path.join(root(), 'versions', 'outside'); fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
   fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ version, dir: alias }));

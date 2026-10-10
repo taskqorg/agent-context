@@ -151,6 +151,7 @@ test('global instructions replace only the old compression section', () => {
   assert.ok(after.includes('Keep this too.'));
   assert.ok(!after.includes('Read stale inbox'));
   assert.ok(after.includes('Do not recompress'));
+  assert.ok(after.includes('Never compress the user query or credentials, authentication files, or other secrets.'));
   assert.equal(instructions(after, 'claude'), after);
 });
 
