@@ -110,7 +110,13 @@ export function planInstall(agents) {
       add(file, doc.toString());
     }
     const instructionFile = path.join(agentDir, agent === 'claude' ? 'CLAUDE.md' : 'AGENTS.md');
-    add(instructionFile, instructions(read(instructionFile), agent));
+    if (agent === 'hermes') {
+      // Hermes discovers policy through MCP metadata; this global AGENTS.md is not loaded.
+      // Remove only our obsolete block, preserving all other bytes and the user's file.
+      const raw = read(instructionFile);
+      const after = raw.replace(/<!-- agent-context:start -->[\s\S]*?<!-- agent-context:end -->/g, '');
+      if (after !== raw) add(instructionFile, after);
+    } else add(instructionFile, instructions(read(instructionFile), agent));
     installed.push(agent);
   }
   return { changes, moves, installed, absent };

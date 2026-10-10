@@ -153,6 +153,34 @@ test('global instructions replace only the old compression section', () => {
   assert.ok(after.includes('Do not recompress'));
   assert.equal(instructions(after, 'claude'), after);
 });
+
+test('Hermes removes only its obsolete global instruction block and rollback restores exact bytes', () => {
+  const file = path.join(sandbox, '.hermes', 'AGENTS.md');
+  const before = '# Private policy\r\nKeep exactly.\r\n<!-- agent-context:start -->\r\nObsolete rule\r\n<!-- agent-context:end -->\r\n# SuperCompress user note\r\nKeep too.\r\n';
+  atomicWrite(file, before);
+  install(['hermes']);
+  assert.equal(fs.readFileSync(file, 'utf8'), before.replace(/<!-- agent-context:start -->[\s\S]*?<!-- agent-context:end -->/, ''));
+  rollback();
+  assert.equal(fs.readFileSync(file, 'utf8'), before);
+});
+
+test('Hermes installation creates no unused global instructions and preserves persona config', () => {
+  const file = path.join(sandbox, '.hermes', 'AGENTS.md');
+  fs.unlinkSync(file);
+  const soul = path.join(sandbox, '.hermes', 'SOUL.md');
+  atomicWrite(soul, 'Private personality\r\n');
+  const config = path.join(sandbox, '.hermes', 'config.yaml');
+  atomicWrite(config, YAML.stringify({ agent: { system_prompt: 'Keep private prompt' }, personalities: { selected: 'Keep personality' } }));
+  const before = fs.readFileSync(config);
+  install(['hermes']);
+  assert.ok(!fs.existsSync(file));
+  assert.equal(fs.readFileSync(soul, 'utf8'), 'Private personality\r\n');
+  const installed = YAML.parse(fs.readFileSync(config, 'utf8'));
+  assert.equal(installed.agent.system_prompt, 'Keep private prompt');
+  assert.equal(installed.personalities.selected, 'Keep personality');
+  rollback();
+  assert.deepEqual(fs.readFileSync(config), before);
+});
 test('owned hook detection is independent of installation directory name', () => {
   const command = '"/usr/local/bin/node" "/tmp/agent-context-011-review/bin/agent-context.js" hook claude';
   const value = stripHooks({ hooks: { PostToolUse: [{ hooks: [{ command }, { command: 'echo agent-context is a word' }] }] } });
@@ -210,6 +238,8 @@ test('native MCP JSONL initializes, lists tools and returns safe missing-key fal
   assert.equal(responses.length, 3);
   assert.equal(responses[0].result.serverInfo.name, 'agent-context');
   assert.equal(responses[1].result.tools[0].name, 'compress_context');
+  const policy = responses[1].result.tools[0].description;
+  for (const rule of ['Never compress the user query', 'retain original context', 'already_seen means no new digest', 'unrelated global inbox', 'total token savings without measurements']) assert.ok(policy.includes(rule), rule);
   const result = JSON.parse(responses[2].result.content[0].text);
   assert.equal(result.skipped, 'missing_key');
   assert.equal(result.compressed_text, context);

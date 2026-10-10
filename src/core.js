@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const version = '0.1.5';
+export const version = '0.1.6';
 export const home = () => process.env.AGENT_CONTEXT_HOME || os.homedir();
 export const root = () => path.join(home(), '.agent-context');
 export const sha = value => crypto.createHash('sha256').update(value).digest('hex');

@@ -41,7 +41,9 @@ This writes the existing config without changing unrelated values and keeps a pr
 |---|---|---|
 | Codex | `~/.codex/config.toml`, `AGENTS.md` | MCP; legacy compression hooks removed. No automatic replacement of native tool output is claimed. |
 | Claude Code | `~/.claude.json`, `~/.claude/settings.json`, `CLAUDE.md` | MCP for other context; one Bash PostToolUse hook replaces stdout only, preserving stderr and response fields. |
-| Hermes | `~/.hermes/config.yaml`, `AGENTS.md` | Native MCP; legacy SC hooks/plugin disabled with backup. No invented Hermes hook API. |
+| Hermes | `~/.hermes/config.yaml` | Native MCP; policy arrives with the discovered tool description. Legacy SC hooks/plugin disabled with backup. |
+
+Hermes does not load `~/.hermes/AGENTS.md` globally. Installation removes only this package's obsolete marker block there, with backup and rollback; it preserves unrelated text, SOUL, personalities and private prompts. Tool metadata makes the integration policy available wherever MCP is loaded; it does not force the model to call the tool.
 
 The automatic Claude hook processes stdout of at least 2048 characters. It does not intercept user prompts or MCP results. MCP instructions explicitly avoid recompressing hook-managed Bash output. Hash deduplication is scoped to agent + session + context + query; unrelated sessions never share a global digest. There is no rolling context replay or global inbox.
 
