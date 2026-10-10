@@ -2,11 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
-import { atomicWrite, root, sha, version, acquireTransaction } from './core.js';
+import { spawn, execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+import { atomicWrite, root, home, sha, version, acquireTransaction } from './core.js';
 
+export const extraRuntimeFiles = ['integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/headroom-fixture.js'];
 const source = fileURLToPath(new URL('../', import.meta.url));
 const repository = 'taskqorg/agent-context';
+// Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
+const hardenedLegacyLauncher = '58010bbde95c55e4c04f3c11ebe26497ef5b024f0d09193625203ce66125d51c';
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
 export const launcher = () => path.join(root(), 'launcher.mjs');
 const pointerFile = () => path.join(root(), 'active.json');
@@ -19,7 +23,7 @@ export function checkPackage(dir, expected) {
   const pkg = read(path.join(dir, 'package.json'));
   if (pkg?.name !== '@alexkirs/agent-context' || pkg.version !== expected || manifest?.version !== expected) fail('package identity');
   for (const [file, digest] of Object.entries(manifest.files || {})) {
-    if (!/^(bin|src)\/[A-Za-z0-9._-]+$/.test(file) || !/^[a-f0-9]{64}$/.test(digest) || sha(fs.readFileSync(path.join(dir, file))) !== digest) fail('package integrity');
+    if ((!/^(bin|src)\/[A-Za-z0-9._-]+$/.test(file) && !extraRuntimeFiles.includes(file)) || !/^[a-f0-9]{64}$/.test(digest) || sha(fs.readFileSync(path.join(dir, file))) !== digest) fail('package integrity');
   }
   if (!manifest.files?.['bin/agent-context.js'] || !manifest.files?.['src/update.js']) fail('missing runtime');
 }
@@ -51,9 +55,9 @@ const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'integrity.json'), 'u
 const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
 if (pkg.name !== '@alexkirs/agent-context' || pkg.version !== active.version || manifest.version !== active.version || !manifest.files?.['bin/agent-context.js'] || !manifest.files?.['src/update.js']) throw new Error('Agent Context integrity failed');
 for (const [file, digest] of Object.entries(manifest.files)) {
-  if (!/^(bin|src)\\/[A-Za-z0-9._-]+$/.test(file) || crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, file))).digest('hex') !== digest) throw new Error('Agent Context integrity failed');
+  if ((!/^(bin|src)\\/[A-Za-z0-9._-]+$/.test(file) && !${JSON.stringify(extraRuntimeFiles)}.includes(file)) || crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, file))).digest('hex') !== digest) throw new Error('Agent Context integrity failed');
 }
-if (['mcp', 'hook'].includes(process.argv[2])) {
+if (['mcp', 'hook', 'lifecycle', 'run', 'retrieval'].includes(process.argv[2])) {
   const stateFile = path.join(base, 'updates.json');
   let state = {}; try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
   try { state = { ...state, ...JSON.parse(fs.readFileSync(path.join(base, 'update-policy.json'), 'utf8')) }; } catch {}
@@ -70,16 +74,30 @@ export function seedRuntime() {
   const existing = read(pointerFile());
   if (existing) {
     checkedPointer(existing);
-    if (fs.readFileSync(launcher(), 'utf8') !== launcherCode) fail('launcher drift');
-    return existing;
+    if (existing.version === version) {
+      if (fs.readFileSync(launcher(), 'utf8') !== launcherCode) fail('launcher drift');
+      return existing;
+    }
+    if (!compatibleUpdate(existing.version, version)) fail('local installation requires migration');
+    // The verified previous installer knows its own exact bootstrap, including older schemas.
+    const module = pathToFileURL(path.join(existing.dir, 'src/update.js')).href;
+    if (sha(fs.readFileSync(launcher())) !== hardenedLegacyLauncher) {
+      execFileSync(process.execPath, ['--input-type=module', '-e', `const m = await import(${JSON.stringify(module)}); m.seedRuntime();`], { timeout: 30000, stdio: 'ignore', windowsHide: true });
+    }
   }
   checkPackage(source, version);
   const dir = path.join(root(), 'versions', `${version}-${crypto.randomUUID()}`);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  for (const name of ['bin', 'src', 'scripts', 'test', 'node_modules', 'package.json', 'integrity.json']) fs.cpSync(path.join(source, name), path.join(dir, name), { recursive: true });
+  for (const name of ['bin', 'src', 'scripts', 'test', 'package.json', 'integrity.json', 'integrations']) fs.cpSync(path.join(source, name), path.join(dir, name), { recursive: true });
+  for (const name of ['smol-toml', 'yaml']) {
+    let dependency = path.dirname(fileURLToPath(import.meta.resolve(name)));
+    while (!fs.existsSync(path.join(dependency, 'package.json')) && path.dirname(dependency) !== dependency) dependency = path.dirname(dependency);
+    if (read(path.join(dependency, 'package.json'))?.name !== name) fail('dependency identity');
+    fs.cpSync(dependency, path.join(dir, 'node_modules', name), { recursive: true });
+  }
   checkPackage(dir, version);
   atomicWrite(launcher(), launcherCode);
-  const active = { version, dir, previous: null };
+  const active = { version, dir, previous: existing ? { version: existing.version, dir: existing.dir } : null };
   atomicWrite(pointerFile(), json(active));
   atomicWrite(stateFile(), json({ enabled: true, channel: 'stable', repository, lastAttempt: 0, status: 'ready' }));
   atomicWrite(policyFile(), json({ enabled: true }));
@@ -114,10 +132,10 @@ export function compatibleUpdate(current, next) {
   const a = /^(\d+)\.(\d+)\.(\d+)$/.exec(current), b = /^(\d+)\.(\d+)\.(\d+)$/.exec(next);
   return Boolean(a && b && a[1] === b[1] && a[2] === b[2] && Number(b[3]) > Number(a[3]));
 }
-async function run(command, args, cwd) {
+async function run(command, args, cwd, { timeout = 120000, environment = {} } = {}) {
   await new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, windowsHide: true, stdio: 'ignore', env: { ...process.env, SUPERCOMPRESS_API_KEY: '', AGENT_CONTEXT_HOME: path.join(cwd, 'isolated-home') } });
-    const timer = setTimeout(() => { child.kill(); reject(new Error('Update refused: self-test timeout')); }, 120000);
+    const child = spawn(command, args, { cwd, windowsHide: true, stdio: 'ignore', env: { ...process.env, SUPERCOMPRESS_API_KEY: '', AGENT_CONTEXT_HOME: path.join(cwd, 'isolated-home'), ...environment } });
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Update refused: self-test timeout')); }, timeout);
     child.on('error', error => { clearTimeout(timer); reject(error); });
     child.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('Update refused: installation or self-test failed')); });
   });
@@ -133,6 +151,10 @@ export async function prepare(archive, stage, expected) {
   checkPackage(dir, expected);
   await run(process.execPath, ['scripts/integrity.js', '--check'], dir);
   await run(process.execPath, ['--test'], dir);
+  if (fs.existsSync(path.join(dir, 'src/headroom.js'))) {
+    const code = `const {prepareHeadroom}=await import('./src/headroom.js');const r=await prepareHeadroom();const {spawnSync}=await import('node:child_process');for(const folder of ['headroom','hermes']){const x=spawnSync(r.python,['-m','unittest','discover','-s','integrations/'+folder,'-p',folder==='headroom'?'test_adapter.py':'test_plugin.py'],{env:{...process.env,PYTHONPATH:'integrations/headroom'},stdio:'ignore',timeout:30000});if(x.status!==0)process.exit(1);}`;
+    await run(process.execPath, ['--input-type=module', '-e', code], dir, { timeout: 240000, environment: { AGENT_CONTEXT_HOME: home(), HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1', AGENT_CONTEXT_LANGFUSE: '0' } });
+  }
   return dir;
 }
 export async function update({ automatic = false, fetcher = fetch, preparer = prepare } = {}) {
@@ -174,11 +196,20 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
   });
 }
 export async function rollbackUpdate() {
-  return lock(() => {
+  return lock(async () => {
     // Recovery must not execute or require integrity of the faulty selected version.
     const active = checkedPointer(read(pointerFile()), false);
     if (!active.previous) fail('no previous package');
     const previous = checkedPointer(active.previous);
+    const integration = read(path.join(root(), 'integration.json'));
+    const oldManifest = read(path.join(previous.dir, 'integrity.json'));
+    if (integration?.mode === 'automatic' && !oldManifest?.files?.['src/automatic.js']) {
+      const install = read(path.join(root(), 'latest-install.json'));
+      const journal = install && read(path.join(install.dir, 'journal.json'));
+      if (journal?.recipe !== active.version) fail('configuration migration rollback needs its original journal');
+      const { applyRollback } = await import('./install.js');
+      applyRollback();
+    }
     atomicWrite(pointerFile(), json({ ...previous, previous: null }));
     atomicWrite(stateFile(), json({ ...read(stateFile()), enabled: false, status: 'rolled_back', activeVersion: previous.version }));
     atomicWrite(policyFile(), json({ enabled: false }));

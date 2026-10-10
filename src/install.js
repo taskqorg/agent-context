@@ -5,6 +5,7 @@ import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import YAML from 'yaml';
 import { atomicWrite, home, root, sha, keyStatus, version, acquireTransaction } from './core.js';
 import { launcher, seedRuntime, updateStatus } from './update.js';
+import { automaticPlan } from './automatic.js';
 
 export const bin = launcher;
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -19,7 +20,7 @@ export function stripHooks(value) {
   return value;
 }
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
-function treeHash(dir) {
+export function treeHash(dir) {
   if (fs.lstatSync(dir).isSymbolicLink()) throw new Error('Unsupported legacy plugin symlink; preserve and reconcile it first');
   const rows = [];
   function visit(current, prefix = '') {
@@ -127,10 +128,20 @@ function transaction(operation) {
   try { return operation(); }
   finally { release(); }
 }
-export const install = agents => transaction(() => applyInstall(agents));
-function applyInstall(agents) {
+export const install = (agents, options = {}) => transaction(() => applyInstall(agents, options));
+function applyInstall(agents, options) {
   seedRuntime();
-  const plan = planInstall(agents);
+  let plan = planInstall(agents);
+  if (options.automatic) {
+    plan = automaticPlan(plan);
+    const file = path.join(root(), 'integration.json');
+    const hermesEnv = read(path.join(home(), '.hermes', '.env'));
+    const telemetry = fs.existsSync(path.join(home(), '.codex', 'langfuse.json')) || Boolean(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY)
+      || Boolean(process.env.HERMES_LANGFUSE_PUBLIC_KEY && process.env.HERMES_LANGFUSE_SECRET_KEY)
+      || ['PUBLIC_KEY', 'SECRET_KEY'].every(name => new RegExp(`(^|\\n)\\s*(?:export\\s+)?HERMES_LANGFUSE_${name}\\s*=\\s*\\S+`).test(hermesEnv));
+    const after = json({ schema: 1, mode: 'automatic', agents: plan.installed, telemetry });
+    if (read(file) !== after) plan.changes.push({ file, after });
+  }
   if (!plan.changes.length && !plan.moves.length) return { ...plan, changes: [], transaction: null };
   const id = `${Date.now()}-${process.pid}`;
   const dir = path.join(root(), 'backups', id);
@@ -140,7 +151,9 @@ function applyInstall(agents) {
     const before = fs.existsSync(change.file) ? fs.readFileSync(change.file) : null;
     const backup = before === null ? null : path.join(dir, `${index}.before`);
     if (backup) fs.writeFileSync(backup, before, { mode: 0o600 });
-    journal.files.push({ file: change.file, backup, beforeHash: before === null ? null : sha(before), afterHash: sha(change.after) });
+    const afterBackup = path.join(dir, `${index}.after`);
+    fs.writeFileSync(afterBackup, change.after, { mode: 0o600 });
+    journal.files.push({ file: change.file, backup, afterBackup, beforeHash: before === null ? null : sha(before), afterHash: sha(change.after) });
   }
   const journalFile = path.join(dir, 'journal.json');
   atomicWrite(journalFile, json(journal));
@@ -176,7 +189,7 @@ function applyInstall(agents) {
 }
 
 export const rollback = () => transaction(applyRollback);
-function applyRollback() {
+export function applyRollback() {
   const pointer = JSON.parse(read(path.join(root(), 'latest-install.json')));
   const journalFile = path.join(pointer.dir, 'journal.json');
   const journal = JSON.parse(read(journalFile));
@@ -211,12 +224,24 @@ export function doctor() {
   if (!credentials.present) issues.push(credentials.error || 'missing_key');
   if (credentials.conflict) issues.push('key_conflict');
   const agents = {};
+  let automatic = [];
+  try { automatic = JSON.parse(read(path.join(root(), 'integration.json'))).agents || []; } catch {}
   for (const agent of Object.keys(agentNames)) {
     const dir = path.join(home(), agent === 'claude' ? '.claude' : `.${agent}`);
     if (!fs.existsSync(dir)) { agents[agent] = 'absent'; continue; }
     try {
       const connection = connectionFor(agent);
       agents[agent] = connection?.command === process.execPath && connection?.args?.[0] === bin() && connection?.args?.[1] === 'mcp' && connection?.args?.[2] === agent ? 'configured' : 'not_configured';
+      if (automatic.includes(agent)) {
+        if (agent === 'hermes') {
+          const config = YAML.parse(read(path.join(dir, 'config.yaml')));
+          agents[agent] = config?.plugins?.enabled?.includes('agent-context') && config?.plugins?.entries?.['agent-context']?.settings?.launcher === bin() ? 'configured' : 'not_configured';
+        } else {
+          const config = agent === 'codex' ? parseToml(read(path.join(dir, 'config.toml'))) : objectAt(path.join(home(), '.claude.json'));
+          const entry = agent === 'codex' ? config.mcp_servers?.headroom : config.mcpServers?.headroom;
+          agents[agent] = entry?.command === process.execPath && entry?.args?.[0] === bin() && entry?.args?.[1] === 'retrieval' && entry?.args?.[2] === agent ? 'configured' : 'not_configured';
+        }
+      }
       if (agents[agent] !== 'configured') issues.push(`${agent}:not_configured`);
       if (agent !== 'hermes') {
         const hooksFile = path.join(dir, agent === 'claude' ? 'settings.json' : 'hooks.json');

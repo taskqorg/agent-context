@@ -1,0 +1,50 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { parse } from 'smol-toml';
+import YAML from 'yaml';
+import { install, doctor, rollback } from '../src/install.js';
+import { diagnose } from '../src/diagnostics.js';
+import { agentExecutable } from '../src/executable.js';
+import { root } from '../src/core.js';
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-automatic-'));
+process.env.AGENT_CONTEXT_HOME = home;
+delete process.env.SUPERCOMPRESS_API_KEY;
+for (const agent of ['codex', 'claude', 'hermes']) fs.mkdirSync(path.join(home, '.' + agent));
+fs.mkdirSync(path.join(home, '.supercompress')); fs.writeFileSync(path.join(home, '.supercompress/config.json'), JSON.stringify({ api_key: 'sc_owned_synthetic_fixture_not_a_real_key' }));
+const codex = path.join(home, '.codex/config.toml');
+fs.writeFileSync(codex, '# owner comment\nmodel="existing"\n[mcp_servers.other]\ncommand="keep"\n');
+test('automatic setup preserves unrelated settings, routes subscription auth, has no output hook duplication, and rolls back', async () => {
+  const before = fs.readFileSync(codex);
+  const report = install(['codex', 'claude', 'hermes'], { automatic: true });
+  assert.equal(report.installed.length, 3);
+  const config = parse(fs.readFileSync(codex, 'utf8'));
+  assert.equal(config.model_providers.agent_context.requires_openai_auth, true);
+  assert.equal(config.mcp_servers.supercompress.enabled, false);
+  assert.equal(config.mcp_servers.other.command, 'keep');
+  assert.ok(fs.readFileSync(codex, 'utf8').includes('# owner comment'));
+  const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json')));
+  assert.equal(claude.env.ANTHROPIC_BASE_URL, `http://127.0.0.1:${process.platform === 'win32' ? 18888 : 18788}`);
+  assert.equal(claude.hooks.SessionStart.length, 1); assert.equal(claude.hooks.PostToolUse.length, 0);
+  const hermes = YAML.parse(fs.readFileSync(path.join(home, '.hermes/config.yaml'), 'utf8'));
+  assert.ok(hermes.plugins.enabled.includes('agent-context'));
+  assert.equal(doctor().healthy, true, JSON.stringify(doctor()));
+  assert.equal(install(['codex', 'claude', 'hermes'], { automatic: true }).transaction, null);
+  fs.unlinkSync(codex);
+  // Remove active service selection for this file-repair-only test; no subprocess/service is started.
+  fs.writeFileSync(path.join(root(), 'integration.json'), JSON.stringify({ agents: [] }));
+  const repaired = await diagnose({ fix: true });
+  assert.ok(repaired.repairs.some(x => x.status === 'restored_missing_owned_file'));
+  assert.equal(parse(fs.readFileSync(codex, 'utf8')).model_provider, 'agent_context');
+  // Restore journal's expected integration bytes before explicit rollback.
+  fs.writeFileSync(path.join(root(), 'integration.json'), JSON.stringify({ schema: 1, mode: 'automatic', agents: ['codex', 'claude', 'hermes'], telemetry: false }, null, 2) + '\n');
+  assert.equal(rollback().status, 'rolled_back'); assert.deepEqual(fs.readFileSync(codex), before);
+});
+test('Windows resolves the native Claude executable relative to its shim directory; WSL refuses Windows paths', () => {
+  const bin = path.join(home, 'npm/node_modules/@anthropic-ai/claude-code/bin'); fs.mkdirSync(bin, { recursive: true });
+  const exe = path.join(bin, 'claude.exe'); fs.writeFileSync(exe, 'synthetic executable');
+  assert.equal(agentExecutable('claude', { PATH: path.join(home, 'npm') }, 'win32').command, fs.realpathSync(exe));
+  assert.throws(() => agentExecutable('claude', { PATH: '', WSL_DISTRO_NAME: 'Ubuntu', AGENT_CONTEXT_CLAUDE_EXE: '/mnt/c/windows/claude.exe' }, 'linux'), /Unsupported/);
+});

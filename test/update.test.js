@@ -18,7 +18,8 @@ const restore = () => {
   fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: 0 }));
   fs.writeFileSync(path.join(root(), 'update-policy.json'), JSON.stringify({ enabled: true }));
 };
-function fixture({ badDigest = false, qualified = true, next = '0.1.7' } = {}) {
+const nextPatch = version.split('.').map((part, index) => index === 2 ? Number(part) + 1 : part).join('.');
+function fixture({ badDigest = false, qualified = true, next = nextPatch } = {}) {
   const bytes = Buffer.from('synthetic package archive');
   const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes) }));
   const asset = (name, data) => ({ name, state: 'uploaded', digest: `sha256:${sha(data)}`, size: data.length, browser_download_url: `https://github.com/taskqorg/agent-context/releases/download/v${next}/${name}` });
@@ -45,7 +46,7 @@ test('stable launcher follows atomic upgrade and rollback without changing agent
   assert.equal(JSON.parse(run().stdout).version, version);
   const oldDir = pointer().dir;
   const result = await update(fixture());
-  assert.equal(result.status, 'updated'); assert.equal(JSON.parse(run().stdout).version, '0.1.7');
+  assert.equal(result.status, 'updated'); assert.equal(JSON.parse(run().stdout).version, nextPatch);
   assert.ok(fs.existsSync(oldDir)); assert.equal(pointer().previous.dir, oldDir);
   assert.equal((await rollbackUpdate()).version, version);
   assert.equal(JSON.parse(run().stdout).version, version);
@@ -59,6 +60,28 @@ test('launcher resolves home aliases; no stable release is an idle state', async
   assert.equal(child.status, 0, child.stderr); assert.equal(JSON.parse(child.stdout).version, version);
   assert.equal((await update({ fetcher: async () => new Response('', { status: 404 }) })).status, 'no_stable_release');
   assert.equal(updateStatus().status, 'no_stable_release');
+});
+test('migration accepts the reviewed hardened legacy bootstrap but refuses unknown edits and damaged old code', () => {
+  const dir = path.join(root(), 'versions', 'legacy-bootstrap');
+  fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  const files = { 'bin/agent-context.js': 'console.log("legacy");', 'src/update.js': 'export function seedRuntime(){throw new Error("launcher drift")}\n' };
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@alexkirs/agent-context', version: '0.1.3', type: 'module' }));
+  fs.writeFileSync(path.join(dir, 'integrity.json'), JSON.stringify({ version: '0.1.3', files: Object.fromEntries(Object.entries(files).map(([name, value]) => [name, sha(value)])) }));
+  const bootstrap = fs.readFileSync(new URL('./fixtures/legacy-launcher.txt', import.meta.url));
+  const legacy = { version: '0.1.3', dir };
+  const select = text => { fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify(legacy)); fs.writeFileSync(launcher(), text); };
+  const originalBootstrap = fs.readFileSync(launcher());
+  try {
+    select(Buffer.concat([bootstrap, Buffer.from('// unknown edit\n')]));
+    assert.throws(seedRuntime); assert.equal(pointer().version, '0.1.3');
+    select(bootstrap); fs.appendFileSync(path.join(dir, 'bin/agent-context.js'), '// damaged');
+    assert.throws(seedRuntime, /package integrity/); assert.equal(pointer().version, '0.1.3');
+    fs.writeFileSync(path.join(dir, 'bin/agent-context.js'), files['bin/agent-context.js']);
+    const migrated = seedRuntime();
+    assert.equal(migrated.version, version); assert.equal(migrated.previous.version, '0.1.3');
+    assert.notEqual(fs.readFileSync(launcher(), 'utf8'), bootstrap.toString());
+  } finally { restore(); fs.writeFileSync(launcher(), originalBootstrap); }
 });
 test('tampered archive/qualification never reaches installation or switches active runtime', async () => {
   for (const options of [{ badDigest: true }, { qualified: false }]) {
@@ -115,7 +138,7 @@ test('rollback refuses modified previous code; symlink pointers cannot escape ma
   const previous = pointer().previous;
   const file = path.join(previous.dir, 'src/core.js'), before = fs.readFileSync(file);
   fs.appendFileSync(file, '\n// external edit');
-  try { await assert.rejects(rollbackUpdate(), /package integrity/); assert.equal(pointer().version, '0.1.7'); }
+  try { await assert.rejects(rollbackUpdate(), /package integrity/); assert.equal(pointer().version, nextPatch); }
   finally { fs.writeFileSync(file, before); }
   restore(); const alias = path.join(root(), 'versions', 'outside'); fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
   fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ version, dir: alias }));

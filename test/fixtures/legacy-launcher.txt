@@ -1,0 +1,29 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
+const base = fs.realpathSync(path.dirname(fileURLToPath(import.meta.url)));
+const active = JSON.parse(fs.readFileSync(path.join(base, 'active.json'), 'utf8'));
+if (fs.lstatSync(active.dir).isSymbolicLink()) throw new Error('Invalid Agent Context runtime');
+const dir = fs.realpathSync(active.dir);
+if (path.dirname(dir) !== fs.realpathSync(path.join(base, 'versions'))) throw new Error('Invalid Agent Context runtime');
+const bin = path.join(dir, 'bin', 'agent-context.js');
+const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'integrity.json'), 'utf8'));
+const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+if (pkg.name !== '@alexkirs/agent-context' || pkg.version !== active.version || manifest.version !== active.version || !manifest.files?.['bin/agent-context.js'] || !manifest.files?.['src/update.js']) throw new Error('Agent Context integrity failed');
+for (const [file, digest] of Object.entries(manifest.files)) {
+  if (!/^(bin|src)\/[A-Za-z0-9._-]+$/.test(file) || crypto.createHash('sha256').update(fs.readFileSync(path.join(dir, file))).digest('hex') !== digest) throw new Error('Agent Context integrity failed');
+}
+if (['mcp', 'hook'].includes(process.argv[2])) {
+  const stateFile = path.join(base, 'updates.json');
+  let state = {}; try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
+  try { state = { ...state, ...JSON.parse(fs.readFileSync(path.join(base, 'update-policy.json'), 'utf8')) }; } catch {}
+  if (state.enabled && Date.now() - (state.lastAttempt || 0) >= 86400000) {
+    try {
+      const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32' });
+      child.on('error', () => {}); child.unref();
+    } catch {}
+  }
+}
+await import(pathToFileURL(bin).href);

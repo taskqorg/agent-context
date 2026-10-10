@@ -10,7 +10,7 @@ One Git tag identifies one reviewed recipe. Test on native macOS, Windows and Li
 
 GitHub releases are sufficient for initial public distribution; publishing to npm is optional and not configured. The package's `private` flag prevents accidental npm publication.
 
-Developers clone the public repo, run `npm ci --ignore-scripts`, `npm test`, `npm pack`, install the tgz globally and run `agent-context install`, `doctor`, and `verify`. A project onboarding document links to this one canonical recipe instead of copying hook scripts/config/key instructions into every repository.
+User onboarding and full removal are defined in [INSTALL.md](INSTALL.md). Developers clone the public repo, run `npm ci --ignore-scripts`, `npm test`, `npm pack`, then qualify `setup` and `uninstall` in an isolated profile. A project onboarding document links to this one canonical recipe instead of copying hook scripts/config/key instructions into every repository. GitHub source installation is an explicit candidate adoption, separate from stable release qualification.
 
 ## Project pin and automatic updates
 
@@ -48,3 +48,5 @@ Publish `recipe.json` only after CI on all three OS platforms and actual-client 
 ```
 
 The fixed launcher is not rewritten automatically. Changes to its schema require an explicit installer migration. Failed staging directories are preserved for diagnosis; automatic garbage collection is not enabled. Rollback pauses updates and keeps configuration untouched.
+
+Full `uninstall` is separate from either rollback: it reverses retained completed installation journals, preserves later unrelated owner settings, stops only verified idle owned services, removes the managed directory and its Python environment, and uninstalls an identified global npm package. It refuses ambiguous state; shared credentials, agent login, external traces/issues and user/npm-owned download caches remain. Restoring a configuration snapshot may restore prior third-party integrations; the onboarding/removal procedure discloses this.
