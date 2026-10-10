@@ -7,7 +7,7 @@ Public source: https://github.com/taskqorg/agent-context. Release/adoption and f
 ## Install
 
 ```sh
-npm install -g ./alexkirs-agent-context-0.1.3.tgz
+npm install -g ./alexkirs-agent-context-0.1.4.tgz
 agent-context install codex claude hermes
 agent-context doctor
 agent-context verify codex
