@@ -55,6 +55,7 @@ Global means one OS user and the default agent profile. Additional profiles/proj
 - One HTTP request, 15-second timeout, no retry loop; outer Claude hook timeout 360 seconds.
 - Maximum 100,000 context characters per request. Larger input bypasses compression unchanged.
 - Query stays unchanged. Only new compressed context is returned.
+- Credentials, authentication files and other secrets must never be submitted as context.
 - Errors, invalid replies, missing key, conflicting key, busy session and no gain preserve original context.
 - Exact input lines beginning ERROR/FATAL/Traceback must survive. This is a bounded log check, not a guarantee that all prose facts survive.
 - Failed input is not marked seen. Successful repeats return `already_seen` and empty new text.
@@ -78,7 +79,7 @@ Install and rollback share one transaction lock. A lock left by a crashed instal
 
 ## Update
 
-Install only a reviewed package version. Test candidate in an isolated user home, verify native adapters, then install and run doctor/verify. The package is independent of `supercompress-proxy`; its npm update cannot overwrite this code. Re-running upstream setup/plugin may rewrite registrations; doctor detects that drift. No auto-update or automatic queue resume.
+Install only a reviewed package version. Test candidate in an isolated user home, verify native adapters, then install and run doctor/verify. A reviewed local package install atomically selects its newer runtime and retains the prior runtime for package rollback; GitHub-qualified stable patches use the automatic updater. The package is independent of `supercompress-proxy`; its npm update cannot overwrite this code. Re-running upstream setup/plugin may rewrite registrations; doctor detects that drift. No auto-update or automatic queue resume.
 
 ```sh
 npm ci --ignore-scripts

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { compress, version } from './core.js';
 
 export function serve(agent) {
-  const policy = 'Use once for new bulky context when useful. Never compress the user query. Prefer returned compressed_text; on skipped/failure retain original context; already_seen means no new digest. Do not read an unrelated global inbox or replay session history. Supply a stable session_id for deduplication. This tool does not intercept every model request; do not claim total token savings without measurements. Keep normal agent login; run agent-context doctor for configuration checks.'
+  const policy = 'Use once for new bulky context when useful. Never compress the user query or credentials, authentication files, or other secrets. Prefer returned compressed_text; on skipped/failure retain original context; already_seen means no new digest. Do not read an unrelated global inbox or replay session history. Supply a stable session_id for deduplication. This tool does not intercept every model request; do not claim total token savings without measurements. Keep normal agent login; run agent-context doctor for configuration checks.'
     + (agent === 'claude' ? ' Bash stdout is already handled by the Agent Context hook; do not recompress it through MCP.' : '');
   const session = crypto.randomUUID();
   let buffer = Buffer.alloc(0);

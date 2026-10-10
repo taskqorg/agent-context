@@ -71,7 +71,18 @@ export function seedRuntime() {
   if (existing) {
     checkedPointer(existing);
     if (fs.readFileSync(launcher(), 'utf8') !== launcherCode) fail('launcher drift');
-    return existing;
+    if (existing.version === version) return existing;
+    // A locally reviewed npm archive may supersede the selected runtime before
+    // a GitHub-qualified patch release exists. Install owns the transaction lock.
+    checkPackage(source, version);
+    const dir = path.join(root(), 'versions', `${version}-${crypto.randomUUID()}`);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const name of ['bin', 'src', 'scripts', 'test', 'node_modules', 'package.json', 'integrity.json']) fs.cpSync(path.join(source, name), path.join(dir, name), { recursive: true });
+    checkPackage(dir, version);
+    const active = { version, dir, previous: { version: existing.version, dir: existing.dir } };
+    atomicWrite(pointerFile(), json(active));
+    atomicWrite(stateFile(), json({ ...read(stateFile()), activeVersion: version, status: 'installed' }));
+    return active;
   }
   checkPackage(source, version);
   const dir = path.join(root(), 'versions', `${version}-${crypto.randomUUID()}`);
