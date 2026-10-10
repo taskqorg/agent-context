@@ -58,7 +58,7 @@ class CorrelatedTracer:
         values['langfuse.observation.type'] = 'span'
         stage = os.environ.get('AGENT_CONTEXT_STAGE', 'qualification')
         values['langfuse.environment'] = stage if stage in {'production', 'development', 'qualification'} else 'qualification'
-        values['agent_context.version'] = '0.1.11'
+        values['agent_context.version'] = os.environ.get('AGENT_CONTEXT_VERSION', 'unknown')
         values['agent_context.agent'] = os.environ.get('AGENT_CONTEXT_AGENT', 'unknown')
         values['agent_context.host'] = os.environ.get('AGENT_CONTEXT_HOST', 'unknown')
         values['langfuse.trace.tags'] = ['agent:' + values['agent_context.agent'], 'host:' + values['agent_context.host'], 'component:compression']

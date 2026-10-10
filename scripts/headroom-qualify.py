@@ -15,13 +15,19 @@ parser.add_argument("--agent", choices=["codex", "claude", "hermes"], default="c
 parser.add_argument("--source", choices=["shell", "mcp", "retrieval"], default="retrieval")
 parser.add_argument("--fixture", choices=["routine", "error", "code"], default="routine")
 parser.add_argument("--protocol", choices=["ws", "http"], default="ws")
-parser.add_argument("--port", type=int, default=18787)
+parser.add_argument("--port", type=int, default=0)
 parser.add_argument("--cwd")
 parser.add_argument("--headroom", required=True)
 parser.add_argument("--hermes")
 parser.add_argument("--approve-fixture-test-tool", action="store_true")
 parser.add_argument("--approve-retrieval-test-tool", action="store_true")
 args = parser.parse_args()
+if not args.port:
+    # Production services own 18787-18790; pick a free loopback port instead.
+    import socket
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        args.port = probe.getsockname()[1]
 root = Path(__file__).resolve().parent.parent
 work = Path(args.cwd or tempfile.mkdtemp(prefix="agent-context-qualification-"))
 work.mkdir(parents=True, exist_ok=True)

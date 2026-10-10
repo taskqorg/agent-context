@@ -50,6 +50,8 @@ export function automaticPlan(plan) {
       config.env ||= {};
       if (config.env.ANTHROPIC_BASE_URL && config.env.ANTHROPIC_BASE_URL !== url) throw new Error('Unsupported existing Claude proxy; preserve its routing');
       config.env.ANTHROPIC_BASE_URL = url;
+      config.permissions ||= {};
+      config.permissions.deny = [...new Set([...(config.permissions.deny || []), 'mcp__headroom__headroom_compress'])];
       config.hooks.PostToolUse = (config.hooks.PostToolUse || []).filter(rule => !rule.hooks?.some(item => item.command?.includes(launcher())));
       config.hooks.SessionStart ||= [];
       config.hooks.SessionStart = config.hooks.SessionStart.filter(rule => !rule.hooks?.some(item => item.command?.includes(launcher()) && item.command?.includes('lifecycle')));

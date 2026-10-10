@@ -1,6 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
-import { connectionFor, bin } from './install.js';
+import { parse as parseToml } from 'smol-toml';
+import { connectionFor, bin, doctor } from './install.js';
+import { compress, home, root } from './core.js';
+import { serviceHealth } from './service.js';
+
+const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 
 export const sample = () => Array.from({ length: 35 }, (_, i) => `Diagnostic item ${i}: global agent integration uses one compressor and preserves the original when unavailable.`).join('\n') + '\nERROR ECONNREFUSED db.internal:5432';
 export async function runChild(command, args, input, env = {}) {
@@ -20,7 +27,39 @@ export async function runChild(command, args, input, env = {}) {
     child.stdin.end(input);
   });
 }
+// Automatic mode: proxy compresses requests; the legacy MCP adapter is disabled or removed.
+async function verifyAutomatic(agent) {
+  const configured = doctor().agents[agent] === 'configured';
+  const service = await serviceHealth(agent) ? 'ready' : 'unavailable';
+  const result = await compress({ context: sample(), query: 'Summarize the observations and preserve the exact ERROR line.', session: `verify-${crypto.randomUUID()}`, agent: names[agent] });
+  const { compressed_text, ...metadata } = result;
+  const report = { agent, mode: 'automatic', configured, service, ...metadata, criticalRetained: compressed_text.includes('ERROR ECONNREFUSED db.internal:5432'), retrieval: 'not_applicable' };
+  // Hermes has no retrieval MCP; Codex and Claude expose headroom_retrieve.
+  const entry = agent === 'codex' ? parseToml(fs.readFileSync(path.join(home(), '.codex', 'config.toml'), 'utf8')).mcp_servers?.headroom
+    : agent === 'claude' ? JSON.parse(fs.readFileSync(path.join(home(), '.claude.json'), 'utf8')).mcpServers?.headroom : null;
+  if (agent !== 'hermes') {
+    report.retrieval = 'unavailable';
+    if (entry?.command && Array.isArray(entry.args)) {
+      try {
+        const raw = await runChild(entry.command, entry.args, [
+          { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'agent-context-verify', version: '1' } } },
+          { jsonrpc: '2.0', method: 'notifications/initialized' },
+          { jsonrpc: '2.0', id: 2, method: 'tools/list' }
+        ].map(value => JSON.stringify(value)).join('\n') + '\n', entry.env);
+        const tools = raw.trim().split('\n').map(line => { try { return JSON.parse(line); } catch { return {}; } }).find(value => value.id === 2)?.result?.tools || [];
+        if (tools.some(tool => tool.name === 'headroom_retrieve')) report.retrieval = 'ready';
+      } catch {}
+    }
+  }
+  report.passed = configured && service === 'ready' && !result.skipped && report.criticalRetained && report.retrieval !== 'unavailable';
+  report.proof = 'owned_service_bridge_and_retrieval_not_model_session';
+  return report;
+}
 export async function verify(agent) {
+  if (!names[agent]) throw new Error('Choose codex, claude or hermes');
+  let automatic = [];
+  try { automatic = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'), 'utf8')).agents || []; } catch {}
+  if (automatic.includes(agent)) return verifyAutomatic(agent);
   const connection = connectionFor(agent);
   if (connection?.command !== process.execPath || connection?.args?.[0] !== bin() || connection?.args?.[1] !== 'mcp' || connection?.args?.[2] !== agent) throw new Error('Native verification requires the installed adapter');
   const args = { context: sample(), query: 'Summarize the observations and preserve the exact ERROR line.', session_id: `verify-${crypto.randomUUID()}` };

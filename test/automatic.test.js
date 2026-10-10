@@ -28,6 +28,7 @@ test('automatic setup preserves unrelated settings, routes subscription auth, ha
   const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json')));
   assert.equal(claude.env.ANTHROPIC_BASE_URL, `http://127.0.0.1:${process.platform === 'win32' ? 18888 : 18788}`);
   assert.equal(claude.hooks.SessionStart.length, 1); assert.equal(claude.hooks.PostToolUse.length, 0);
+  assert.deepEqual(claude.permissions.deny, ['mcp__headroom__headroom_compress']);
   const hermes = YAML.parse(fs.readFileSync(path.join(home, '.hermes/config.yaml'), 'utf8'));
   assert.ok(hermes.plugins.enabled.includes('agent-context'));
   assert.equal(doctor().healthy, true, JSON.stringify(doctor()));
