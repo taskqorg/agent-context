@@ -2,10 +2,12 @@
 
 One local, versioned SuperCompress recipe. No service, provider proxy, daemon, TaskQ dependency or edits to upstream npm files. Node 22+; macOS, native Windows and Linux/WSL.
 
+Public source: https://github.com/alexkirs/agent-context. Release/adoption and future update policy: [DISTRIBUTION.md](DISTRIBUTION.md). Automatic updates are not implemented in this release.
+
 ## Install
 
 ```sh
-npm install -g ./alexkirs-agent-context-0.1.1.tgz
+npm install -g ./alexkirs-agent-context-0.1.2.tgz
 agent-context install codex claude hermes
 agent-context doctor
 agent-context verify codex

@@ -1,10 +1,10 @@
 {
-  "version": "0.1.1",
+  "version": "0.1.2",
   "files": {
     "bin/agent-context.js": "e4bce6f6672599dcc171b700fd1bbdc8a81f3623c85b826bee3b5d6daa0d5c6d",
-    "src/core.js": "b3db063ad8749be7bd83bacb74b7faf2d5feae676411ed7bdd99bb43d45d8c12",
+    "src/core.js": "0fae9f4a6900cf05931c9d23f7b8ec306ea35471ebe8ef706e0ed0656fa89c30",
     "src/hooks.js": "fe3656d551ccc5bc393f6743e4102353a1446a53c6b90b2f743f3b43db9374f7",
-    "src/install.js": "e528246ddecebcdd36f150176476e471f5f2677d75ed17320116a6fee840ce25",
+    "src/install.js": "791d3f297522b11dc0446dc25a6cc6d6c658bb7f260db5b618d983f35d8eec48",
     "src/mcp.js": "a7c269e5534d9acc95f65af1d34ae3e35a1da04aab5f96a4f5f991714cb042aa",
     "src/verify.js": "d5127fce6495d2f95a41ce4462df973b63b74e417df4d61040af25e1ec36d16f"
   }

@@ -1,12 +1,14 @@
 {
   "name": "@alexkirs/agent-context",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/alexkirs/agent-context.git" },
   "description": "Controlled SuperCompress integration for Codex, Claude Code and Hermes",
   "type": "module",
   "bin": { "agent-context": "bin/agent-context.js" },
   "engines": { "node": ">=22" },
-  "files": ["bin", "src", "test", "scripts", "integrity.json", "README.md", "MAC-BRIEF.md", "WINDOWS-RESULT.md"],
+  "files": ["bin", "src", "test", "scripts", "integrity.json", "README.md", "MAC-BRIEF.md", "WINDOWS-RESULT.md", "DISTRIBUTION.md", "LICENSE"],
   "scripts": { "test": "node scripts/integrity.js && node --test", "doctor": "node bin/agent-context.js doctor", "prepack": "node scripts/integrity.js --check" },
   "dependencies": { "smol-toml": "1.9.1", "yaml": "2.9.1" }
 }

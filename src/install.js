@@ -8,7 +8,7 @@ import { atomicWrite, home, root, sha, keyStatus, version } from './core.js';
 export const bin = fileURLToPath(new URL('../bin/agent-context.js', import.meta.url));
 const agentNames = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
-const ownedCommand = hook => /(?:supercompress(?:-proxy)?|agent-context)[\\/]/i.test(`${hook.command || ''} ${hook.commandWindows || ''}`);
+const ownedCommand = hook => /(?:supercompress(?:-proxy)?[\\/]|agent-context\.js["']?\s+(?:hook|mcp)\b)/i.test(`${hook.command || ''} ${hook.commandWindows || ''}`);
 export function stripHooks(value) {
   for (const [event, rules] of Object.entries(value.hooks || {})) {
     if (!Array.isArray(rules)) throw new Error(`Unsupported hook shape: ${event}`);
@@ -226,7 +226,11 @@ export function doctor() {
   if (locks) issues.push('session_locks_present');
   if (fs.existsSync(path.join(root(), 'install.lock'))) issues.push('installation_lock_present');
   // Project overrides are reported, never rewritten by global installation.
-  const isUserHome = (process.platform === 'win32' ? process.cwd().toLowerCase() === home().toLowerCase() : process.cwd() === home());
+  const canonical = file => {
+    const resolved = fs.realpathSync(file);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  };
+  const isUserHome = canonical(process.cwd()) === canonical(home());
   const overrides = (isUserHome ? [] : ['.mcp.json', '.codex/config.toml', '.claude/settings.local.json', '.claude/settings.json']).filter(name => {
     const file = path.join(process.cwd(), name);
     return fs.existsSync(file) && /supercompress|agent-context/i.test(read(file));

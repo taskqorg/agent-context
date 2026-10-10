@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { compress, atomicWrite, root } from '../src/core.js';
 import { claudeHook } from '../src/hooks.js';
-import { install, rollback, doctor, codexConfig, bin, instructions } from '../src/install.js';
+import { install, rollback, doctor, codexConfig, bin, instructions, stripHooks } from '../src/install.js';
 import { parse as toml } from 'smol-toml';
 import YAML from 'yaml';
 
@@ -152,6 +152,21 @@ test('global instructions replace only the old compression section', () => {
   assert.ok(!after.includes('Read stale inbox'));
   assert.ok(after.includes('Do not recompress'));
   assert.equal(instructions(after, 'claude'), after);
+});
+test('owned hook detection is independent of installation directory name', () => {
+  const command = '"/usr/local/bin/node" "/tmp/agent-context-011-review/bin/agent-context.js" hook claude';
+  const value = stripHooks({ hooks: { PostToolUse: [{ hooks: [{ command }, { command: 'echo agent-context is a word' }] }] } });
+  assert.deepEqual(value.hooks.PostToolUse[0].hooks, [{ command: 'echo agent-context is a word' }]);
+});
+test('doctor resolves a symlinked home before checking project overrides', () => {
+  const alias = `${sandbox}-alias`, cwd = process.cwd();
+  fs.symlinkSync(sandbox, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const previous = process.env.AGENT_CONTEXT_HOME;
+  try {
+    process.env.AGENT_CONTEXT_HOME = alias;
+    process.chdir(sandbox);
+    assert.deepEqual(doctor().projectOverrides, []);
+  } finally { process.env.AGENT_CONTEXT_HOME = previous; process.chdir(cwd); }
 });
 test('doctor distinguishes global home config from project overrides', () => {
   const cwd = process.cwd();
