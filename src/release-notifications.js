@@ -4,9 +4,9 @@ import { approvedStableVersion } from './update.js';
 export function releaseNotifications({ check = approvedStableVersion, now = Date.now, waitMs = 25000 } = {}) {
   let current = null, checkedAt = -Infinity, pending;
   const waiters = new Set();
-  const refresh = async () => {
+  const refresh = async ({ notified = false } = {}) => {
     if (pending) return pending;
-    if (now() - checkedAt < 10000) return;
+    if (now() - checkedAt < (notified ? 10000 : 60 * 60000)) return;
     checkedAt = now();
     pending = (async () => {
       try {

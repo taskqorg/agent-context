@@ -14,17 +14,17 @@ test('long poll wakes on a verified release, coalesces checks and removes aborte
   const feed = releaseNotifications({ check: async () => { calls++; return next; }, now: () => now, waitMs: 100 });
   assert.deepEqual(await (await feed.watch(null)).json(), { version: next });
   const pending = feed.watch(next); next = '0.2.7'; now = 11000;
-  await Promise.all([feed.refresh(), feed.refresh()]);
+  await Promise.all([feed.refresh({ notified: true }), feed.refresh({ notified: true })]);
   assert.deepEqual(await (await pending).json(), { version: next }); assert.equal(calls, 2);
   const controller = new AbortController(); const stopped = feed.watch(next, controller.signal);
   controller.abort(); await stopped;
-  now += 11000; next = '0.2.8'; await feed.refresh();
+  now += 11000; next = '0.2.8'; await feed.refresh({ notified: true });
 });
 test('failed signature/source checks never publish a new notification', async () => {
   let invalid = false, now = 0;
   const feed = releaseNotifications({ check: async () => { if (invalid) throw new Error('signature'); return '0.2.6'; }, now: () => now, waitMs: 1 });
   assert.equal((await (await feed.watch(null)).json()).version, '0.2.6');
-  invalid = true; now += 11000; await feed.refresh();
+  invalid = true; now += 11000; await feed.refresh({ notified: true });
   assert.equal((await (await feed.watch(null)).json()).version, '0.2.6');
 });
 test('notification triggers the secure updater; disconnected subscription still checks automatically and respects disable', async () => {
@@ -47,4 +47,14 @@ test('update telemetry accepts only allowlisted metadata and exports versions wi
   const exported = monitorExport(packet); assert.equal(JSON.stringify(exported).includes('PRIVATE'), false);
   assert.ok(JSON.stringify(exported).includes('agent_context.update.installed'));
   assert.throws(() => validateMonitor({ ...packet, updater: { ...updater, secret: 'PRIVATE' } }));
+});
+
+test('connected polls share a hourly cache; publication refresh checks early', async () => {
+  let now = 0, calls = 0;
+  const feed = releaseNotifications({ check: async () => { calls++; return '0.2.9'; }, now: () => now, waitMs: 0 });
+  await feed.watch(null);
+  for (now = 25000; now < 60 * 60000; now += 25000) await feed.watch('0.2.9');
+  assert.equal(calls, 1);
+  await feed.refresh(); assert.equal(calls, 2);
+  now += 11000; await feed.refresh({ notified: true }); assert.equal(calls, 3);
 });
