@@ -20,3 +20,19 @@ jobs:
       - run: npm test
       - run: git diff --exit-code -- integrity.json package-lock.json
       - run: npm pack
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: integrations/headroom/pyproject.toml
+      - name: Qualify Python adapters
+        env:
+          AGENT_CONTEXT_HOME: ${{ runner.temp }}/contextq-python-tests
+          AGENT_CONTEXT_LANGFUSE: '0'
+          HEADROOM_OFFLINE: '1'
+          HEADROOM_STATELESS: 'true'
+          PYTHONPATH: integrations/headroom
+        run: |
+          python -m pip install ./integrations/headroom
+          python -m unittest discover -s integrations/headroom
+          python -m unittest discover -s integrations/hermes
