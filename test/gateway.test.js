@@ -16,14 +16,14 @@ import { install } from '../src/install.js';
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-gateway-'));
 process.env.AGENT_CONTEXT_HOME = path.join(directory, 'client');
 const config = { organization: 'testorg', clientId: 'testclient', stateDir: path.join(directory, 'server'), langfuse: { public_key: 'pk-lf-' + 'p'.repeat(20), secret_key: 'sk-lf-' + 's'.repeat(20), base_url: 'https://langfuse.invalid' }, supercompressKey: 'sc_' + 'c'.repeat(30) };
-let member = true, now = 1000;
+let member = true, now = 1000, neuralFallback = false;
 const calls = [];
 const provider = async (url, options) => {
   calls.push({ url, options });
   assert.equal(options.redirect, 'error');
   if (url === 'https://api.github.com/user') return Response.json({ login: 'employee' });
   if (url.includes('/memberships/')) return Response.json({ state: member ? 'active' : 'pending' });
-  if (url.includes('supercompress')) return Response.json({ compressed_text: 'short', secret_debug: config.supercompressKey });
+  if (url.includes('supercompress')) return Response.json({ mode: 'neural-keep', neural_keep_fallback: neuralFallback, compressed_text: 'short', secret_debug: config.supercompressKey });
   if (url.endsWith('/otel/v1/traces')) return Response.json({});
   if (url.includes('/v2/observations')) return Response.json({ data: [] });
   throw new Error('unexpected destination');
@@ -80,6 +80,14 @@ test('compression uses device credentials, preserves the query and falls back du
   assert.equal(result.compressed_text, 'short');
   const paid = calls.find(call => call.url.includes('supercompress'));
   assert.equal(JSON.parse(paid.options.body).query, input.query);
+  assert.equal(JSON.parse(paid.options.body).mode, 'neural');
+  assert.equal(JSON.parse(paid.options.body).ccr, undefined);
+  neuralFallback = true;
+  try {
+    const unavailable = await compressSupercompress(input, { fetch: (url, options) => gateway.handle(new Request(url, options)) });
+    assert.equal(unavailable.skipped, 'neural_unavailable');
+    assert.equal(unavailable.compressed_text, input.context);
+  } finally { neuralFallback = false; }
   assert.equal(JSON.parse(paid.options.body).session_id.includes('session'), false);
   const fallback = await compressSupercompress(input, { fetch: async () => { throw new Error('offline'); } });
   assert.equal(fallback.compressed_text, input.context);

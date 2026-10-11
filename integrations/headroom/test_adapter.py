@@ -12,6 +12,39 @@ from headroom.transforms.compressor_registry import CompressInput, CompressorReg
 
 
 class AdapterTest(unittest.TestCase):
+    def test_proxy_cannot_reenable_local_compressors_or_prefetch_models(self):
+        from agent_context_headroom import proxy
+        from headroom.transforms.content_router import ContentRouter, CompressionStrategy
+        checked = []
+        def inspect(runner, sockets):
+            app = runner.config.app
+            pipelines = [app.state.proxy.anthropic_pipeline, app.state.proxy.openai_pipeline,
+                         *app.state.proxy._compress_pipeline_cache.values()]
+            for pipeline in pipelines:
+                for router in pipeline.transforms:
+                    if not isinstance(router, ContentRouter):
+                        continue
+                    self.assertFalse(router.config.enable_kompress)
+                    self.assertFalse(router.config.relevance_split)
+                    self.assertEqual(router.config.fallback_strategy, CompressionStrategy.PASSTHROUGH)
+                    self.assertEqual(router.config.active_external_compressors, ['supercompress'])
+                    checked.append(router.eager_load_compressors())
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
+            'AGENT_CONTEXT_HOME': directory, 'AGENT_CONTEXT_PROXY_PORT': '0',
+            'AGENT_CONTEXT_LANGFUSE': '0', 'AGENT_CONTEXT_COMPRESSOR': 'native',
+        }), patch('agent_context_headroom.observability.configure_environment', return_value=True), \
+             patch('agent_context_headroom.observability.attach'), \
+             patch.object(ContentRouter, 'apply', ContentRouter.apply), \
+             patch.object(ContentRouter, '_get_kompress') as kompress, \
+             patch.object(ContentRouter, '_prefetch_kompress_artifacts_async') as prefetch, \
+             patch.object(proxy.uvicorn.Server, 'run', inspect):
+            proxy.main()
+            self.assertGreaterEqual(len(checked), 2)
+            kompress.assert_not_called()
+            prefetch.assert_not_called()
+            self.assertEqual(os.environ['HF_HUB_OFFLINE'], '1')
+            self.assertEqual(os.environ['TRANSFORMERS_OFFLINE'], '1')
+
     def test_accounting_excludes_user_prompt_and_counts_protected_unchanged_tool_text(self):
         from agent_context_headroom.observability import account_tool_context, compression_status
         before = [{'role': 'user', 'content': 'private user query'}, {'role': 'tool', 'content': 'long tool context'}, {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ERROR retain'}, {'type': 'text', 'text': 'user words'}]}]
@@ -29,7 +62,7 @@ class AdapterTest(unittest.TestCase):
             def __init__(self): self.values = {}
             def set_attribute(self, key, value): self.values[key] = value
             def set_status(self, status): self.status = status
-        for outcome, error in [('timeout', True), ('no_gain', False), ('request_budget', False)]:
+        for outcome, error in [('neural_unavailable', True), ('timeout', True), ('no_gain', False), ('request_budget', False)]:
             span = Span()
             with patch('opentelemetry.trace.get_current_span', return_value=span): record_compression(outcome, 100, 100, 1)
             self.assertEqual(span.values.get('langfuse.observation.level') == 'ERROR', error)

@@ -103,7 +103,7 @@ class Supercompress:
             )
             if result.get("skipped") or not isinstance(text, str) or not text.strip():
                 status = result.get('skipped')
-                return original(status if status in {'timeout', 'no_gain', 'missing_key', 'key_conflict', 'too_large', 'empty', 'request_failed', 'invalid_response'} else 'invalid_response')
+                return original(status if status in {'neural_unavailable', 'timeout', 'no_gain', 'missing_key', 'key_conflict', 'too_large', 'empty', 'request_failed', 'invalid_response'} else 'invalid_response')
             digest = hashlib.sha256(inp.content.encode()).hexdigest()[:16]
             marker = f"\nRetrieve original: hash={digest} <<ccr:{digest}>>"
             if len(text + marker) >= len(inp.content):

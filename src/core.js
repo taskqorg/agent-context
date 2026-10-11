@@ -94,7 +94,7 @@ export async function compress({ context, query, session, agent, source = 'mcp' 
     try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') return fallback('invalid_state'); }
     if (!Array.isArray(state.seen) || state.seen.some(value => typeof value !== 'string')) return fallback('invalid_state');
-    const digest = sha(`compiler-ccr\0${context}\0${query}`);
+    const digest = sha(`neural\0${context}\0${query}`);
     if (state.seen.includes(digest)) return { compressed_text: '', skipped: 'already_seen', elapsed_ms: 0 };
     const result = await compressSupercompress({ context, query, session, agent }, { ...options, credentials });
     if (result.skipped) return fallback(result.skipped);

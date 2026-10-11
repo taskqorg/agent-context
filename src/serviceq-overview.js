@@ -31,6 +31,7 @@ const failures = {
   missing_current_query: 'Не определён текущий запрос', timeout: 'Превышено время сжатия',
   missing_key: 'Не настроен доступ к компрессору', key_conflict: 'Конфликт настроек доступа',
   request_failed: 'Ошибка запроса к компрессору', invalid_response: 'Некорректный ответ компрессора',
+  neural_unavailable: 'SuperCompress Neural недоступен',
   fallback: 'Сбой обработки контекста', lost_critical_evidence: 'Компрессор потерял важные данные',
   invalid_device_config: 'Некорректная регистрация устройства', invalid_key_config: 'Некорректные настройки доступа'
 };

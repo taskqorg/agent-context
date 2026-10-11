@@ -17,16 +17,16 @@ const credentials = { present: true, key: 'sc_synthetic_test_key_not_real' };
 const context = 'Background observations '.repeat(120) + '\nERROR ECONNREFUSED db.internal:5432';
 const query = 'Preserve exact errors';
 const input = session => ({ context, query, session, agent: 'Codex' });
-const success = async () => ({ ok: true, json: async () => ({ compressed_text: 'Observations\nERROR ECONNREFUSED db.internal:5432', original_tokens: 800, kept_tokens: 20 }) });
+const success = async () => ({ ok: true, json: async () => ({ mode: 'neural-keep', compressed_text: 'Observations\nERROR ECONNREFUSED db.internal:5432', original_tokens: 800, kept_tokens: 20 }) });
 
-test('CCR selector, original query and single output; duplicate is not billed again', async () => {
+test('Neural selector, original query and single output; duplicate is not billed again', async () => {
   let calls = 0;
   const fetch = async (url, options) => {
     calls++;
     assert.equal(url, 'https://www.supercompress.dev/api/v1/compress');
     const body = JSON.parse(options.body);
-    assert.equal(body.ccr, true);
-    assert.equal(body.mode, 'compiler');
+    assert.equal(body.ccr, undefined);
+    assert.equal(body.mode, 'neural');
     assert.equal(body.query, query);
     assert.equal(body.context, context);
     assert.equal(options.headers['X-API-Key'], credentials.key);
@@ -50,14 +50,14 @@ test('timeout retains context', async () => {
   assert.equal(result.compressed_text, context);
 });
 test('lost error rejects HTTP200 and does not mark input as seen', async () => {
-  const result = await compress(input('quality'), { credentials, fetch: async () => ({ ok: true, json: async () => ({ compressed_text: 'all good' }) }) });
+  const result = await compress(input('quality'), { credentials, fetch: async () => ({ ok: true, json: async () => ({ mode: 'neural-keep', compressed_text: 'all good' }) }) });
   assert.equal(result.skipped, 'lost_critical_evidence');
   assert.equal(result.compressed_text, context);
   assert.equal((await compress(input('quality'), { credentials, fetch: success })).skipped, null);
 });
 test('no-gain, empty result and conflicting key retain original', async () => {
   for (const [text, reason] of [[context, 'no_gain'], ['', 'invalid_response']]) {
-    const result = await compress(input(reason), { credentials, fetch: async () => ({ ok: true, json: async () => ({ compressed_text: text }) }) });
+    const result = await compress(input(reason), { credentials, fetch: async () => ({ ok: true, json: async () => ({ mode: 'neural-keep', compressed_text: text }) }) });
     assert.equal(result.skipped, reason);
     assert.equal(result.compressed_text, context);
   }
@@ -81,7 +81,7 @@ test('state and telemetry contain no context, query or API key', () => {
 });
 test('Claude replaces stdout only, preserves stderr and fields, never compresses user query', async () => {
   const original = { stdout: context, stderr: 'stderr unchanged', exitCode: 7 };
-  const value = await claudeHook({ hook_event_name: 'PostToolUse', tool_name: 'Bash', session_id: 'claude-1', tool_response: original }, async () => ({ compressed_text: 'short', skipped: null }));
+  const value = await claudeHook({ hook_event_name: 'PostToolUse', tool_name: 'Bash', session_id: 'claude-1', tool_response: original }, async () => ({ mode: 'neural-keep', compressed_text: 'short', skipped: null }));
   assert.deepEqual(value.hookSpecificOutput.updatedToolOutput, { ...original, stdout: 'short' });
   assert.deepEqual(await claudeHook({ hook_event_name: 'UserPromptSubmit', prompt: context }, () => { throw new Error('must not call'); }), {});
   assert.deepEqual(await claudeHook({ hook_event_name: 'PostToolUse', tool_name: 'mcp_supercompress_compress_context' }, () => { throw new Error('recursion'); }), {});

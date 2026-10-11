@@ -33,7 +33,7 @@ test('compression skips and failures are disjoint; missing outcome never becomes
   assert.ok(!JSON.stringify(result).includes('SECRET'));
 });
 test('known compression failures at DEFAULT level are visible; unknown outcomes remain observation gaps', () => {
-  const failures = ['bridge_unavailable', 'bridge_failed', 'missing_current_query', 'timeout', 'missing_key', 'key_conflict', 'request_failed', 'invalid_response', 'fallback'];
+  const failures = ['neural_unavailable', 'bridge_unavailable', 'bridge_failed', 'missing_current_query', 'timeout', 'missing_key', 'key_conflict', 'request_failed', 'invalid_response', 'fallback'];
   const result = overview({ compression: [
     ...failures.map(outcome => row({ metadata: meta({ 'compression.outcome': outcome }) })),
     row({ metadata: meta({ 'compression.outcome': 'future_or_SECRET' }) }),

@@ -1,5 +1,9 @@
 """Isolated qualification runner; does not install agent configuration."""
 import os
+
+# Only hosted SuperCompress performs compression; never fetch local model weights.
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 import json
 import socket
 import time
@@ -15,13 +19,11 @@ from headroom.proxy.server import create_app
 def main():
     from .observability import configure_environment, attach, compression_status
     telemetry = configure_environment()
-    # Benchmark-only switch: "native" runs Headroom's built-in compressors (incl. Kompress) instead of SuperCompress.
-    native = os.environ.get("AGENT_CONTEXT_COMPRESSOR") == "native"
     config = ProxyConfig(
         port=int(os.environ.get("AGENT_CONTEXT_PROXY_PORT", "18787")),
-        mode="cache", compressors=None if native else {"supercompress"},
+        mode="cache", compressors={"supercompress"},
         optimize=os.environ.get("AGENT_CONTEXT_OPTIMIZE", "1") != "0",
-        disable_kompress=not native, disable_kompress_fallback=not native,
+        disable_kompress=True, disable_kompress_fallback=True,
         image_optimize=False, read_lifecycle=False,
         cache_enabled=False, rate_limit_enabled=False, retry_enabled=False,
         memory_enabled=False, subscription_tracking_enabled=False,
@@ -59,25 +61,6 @@ def main():
     # Headroom 0.40 has no public option to replace its default Read/Glob exclusion set.
     # shortcut: pinned integration config; requalify this shim before changing Headroom.
     from headroom.transforms.content_router import ContentRouter
-    if native:
-        # shortcut: same retrieval guard the SC adapter has; Codex delta frames omit the tool name,
-        # so stock Headroom recompresses headroom_retrieve output into a new marker (endless loop).
-        from headroom.transforms.content_router import RouterCompressionResult, CompressionStrategy
-        from . import is_retrieval
-        stock = ContentRouter.compress
-        def guarded(self, content, *args, **kwargs):
-            if is_retrieval(content):
-                return RouterCompressionResult(compressed=content, original=content, strategy_used=CompressionStrategy.PASSTHROUGH)
-            from headroom.observability.tracing import get_headroom_tracer
-            from opentelemetry import trace
-            with get_headroom_tracer().start_as_current_span('agent-context.compression.native'):
-                result = stock(self, content, *args, **kwargs)
-                span = trace.get_current_span()
-                span.set_attribute('agent_context.compression.input_chars', len(content))
-                span.set_attribute('agent_context.compression.output_chars', len(result.compressed))
-                span.set_attribute('agent_context.compression.outcome', 'compressed' if len(result.compressed) < len(content) else 'no_gain')
-                return result
-        ContentRouter.compress = guarded
     # Read-only accounting around the pinned router; it never rewrites the user's messages.
     from .observability import account_tool_context
     import copy
@@ -88,11 +71,13 @@ def main():
         account_tool_context(before, result.messages)
         return result
     ContentRouter.apply = accounted_apply
-    for pipeline in (app.state.proxy.anthropic_pipeline, app.state.proxy.openai_pipeline):
+    for pipeline in (app.state.proxy.anthropic_pipeline, app.state.proxy.openai_pipeline,
+                     *app.state.proxy._compress_pipeline_cache.values()):
         routers = [transform for transform in pipeline.transforms if isinstance(transform, ContentRouter)]
         if len(routers) != 1:
             raise RuntimeError('Unsupported Headroom router layout; refuse partial coverage')
         routers[0].config.exclude_tools = set()
+        routers[0].config.relevance_split = False
     if telemetry:
         attach(app)
     from .collector import attach_collector
@@ -103,7 +88,7 @@ def main():
         return {'owner': owner, 'pid': os.getpid(), 'active': app.state.agent_context_active, 'telemetry': telemetry,
                 'version': os.environ.get('AGENT_CONTEXT_VERSION', 'unknown'),
                 'host': os.environ.get('AGENT_CONTEXT_HOST', 'unknown'), 'runtime': os.environ.get('AGENT_CONTEXT_RUNTIME', 'native'),
-                'compressor': 'headroom' if native else 'supercompress', 'compression': compression_status()}
+                'compressor': 'supercompress', 'compression': compression_status()}
     # The native upstream catch-all must follow local management routes.
     app.router.routes.insert(0, app.router.routes.pop())
     @app.post('/agent-context/shutdown')

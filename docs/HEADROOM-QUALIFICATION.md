@@ -2,6 +2,8 @@
 
 Headroom 0.40.0 owns transport and its native compressor registry; the external SuperCompress adapter supplies the paid compressor. Existing agent subscription login and SuperCompress credential source stay in place. No keys are packaged.
 
+Only the external SuperCompress Neural adapter is selected. Built-in Kompress and its fallback are disabled; the former native benchmark switch is removed. The proxy disables Hugging Face/Transformers weight downloads and the unused relevance-split embedding path. Headroom still uses its bundled content detector and local original-content retrieval. Hosted requests omit `ccr` (that selects the provider compiler); compiler or unidentified responses retain the original and report `neural_unavailable`. These settings do not prove hosted Neural availability.
+
 ## Commands
 
 Node 22+ and an installed Python 3.11–3.13 are required; `AGENT_CONTEXT_PYTHON` selects the interpreter. Preparation installs a pinned private virtual environment.

@@ -114,7 +114,7 @@ class CorrelatedTracer:
         values['agent_context.agent'] = os.environ.get('AGENT_CONTEXT_AGENT', 'unknown')
         values['agent_context.host'] = os.environ.get('AGENT_CONTEXT_HOST', 'unknown')
         values['agent_context.runtime'] = os.environ.get('AGENT_CONTEXT_RUNTIME', 'native')
-        values['agent_context.compressor'] = 'headroom' if os.environ.get('AGENT_CONTEXT_COMPRESSOR') == 'native' else 'supercompress'
+        values['agent_context.compressor'] = 'supercompress'
         values['langfuse.trace.tags'] = ['agent:' + values['agent_context.agent'], 'host:' + values['agent_context.host'], 'runtime:' + values['agent_context.runtime'], 'component:compression']
         if values.get('session.id'):
             values['langfuse.session.id'] = values['session.id']

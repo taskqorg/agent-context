@@ -72,7 +72,7 @@ export async function startProxy(runtime, environment = {}) {
   const log = fs.openSync(path.join(dir, 'proxy.log'), 'a', 0o600);
   const identity = profileIdentity({ ...process.env, ...environment });
   const child = spawn(runtime.python, ['-m', 'agent_context_headroom.proxy'], {
-    env: pythonEnvironment({ ...process.env, AGENT_CONTEXT_COMPRESSOR: '', AGENT_CONTEXT_PROXY_PORT: '0',
+    env: pythonEnvironment({ ...process.env, AGENT_CONTEXT_PROXY_PORT: '0',
       AGENT_CONTEXT_HOST: identity.host, AGENT_CONTEXT_RUNTIME: identity.runtime,
       AGENT_CONTEXT_LANGFUSE: process.env.AGENT_CONTEXT_LANGFUSE ?? (langfuseConfig() ? '1' : '0'),
       AGENT_CONTEXT_STAGE: process.env.AGENT_CONTEXT_STAGE || 'production',

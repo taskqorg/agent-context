@@ -166,11 +166,11 @@ export function createGateway(config, { request = fetch, now = Date.now, release
           let response;
           compressing++;
           try {
-            response = await request('https://www.supercompress.dev/api/v1/compress', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.supercompressKey, 'Idempotency-Key': requestId }, body: JSON.stringify({ context: body.context, query: body.query, session_id: sha(device.id + '\0' + body.session_id), request_id: requestId, ccr: true, mode: 'compiler', coding_agent: body.coding_agent, source: 'agent-context' }), signal: AbortSignal.timeout(10000), redirect: 'error' });
+            response = await request('https://www.supercompress.dev/api/v1/compress', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.supercompressKey, 'Idempotency-Key': requestId }, body: JSON.stringify({ context: body.context, query: body.query, session_id: sha(device.id + '\0' + body.session_id), request_id: requestId, mode: 'neural', coding_agent: body.coding_agent, source: 'agent-context' }), signal: AbortSignal.timeout(10000), redirect: 'error' });
           } finally { compressing--; }
           if (!response.ok) return failure(502, 'compressor_unavailable');
           const result = await response.json();
-          return Response.json(Object.fromEntries(['compressed_text', 'compressed_context', 'compressed', 'original_tokens', 'kept_tokens', 'compressed_tokens'].filter(key => typeof result[key] === 'string' || Number.isFinite(result[key])).map(key => [key, result[key]])));
+          return Response.json(Object.fromEntries(['compressed_text', 'compressed_context', 'compressed', 'original_tokens', 'kept_tokens', 'compressed_tokens', 'mode', 'neural_keep_fallback'].filter(key => typeof result[key] === 'string' || Number.isFinite(result[key]) || (key === 'neural_keep_fallback' && typeof result[key] === 'boolean')).map(key => [key, result[key]])));
         }
         if (req.method === 'POST' && url.pathname === '/api/public/otel/v1/traces') {
           if (!rate('telemetry:' + device.id, 120)) return failure(429, 'rate_limited');
