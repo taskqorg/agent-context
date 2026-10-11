@@ -13,7 +13,7 @@ from headroom.proxy.server import create_app
 
 
 def main():
-    from .observability import configure_environment, attach
+    from .observability import configure_environment, attach, compression_status
     telemetry = configure_environment()
     # Benchmark-only switch: "native" runs Headroom's built-in compressors (incl. Kompress) instead of SuperCompress.
     native = os.environ.get("AGENT_CONTEXT_COMPRESSOR") == "native"
@@ -68,7 +68,15 @@ def main():
         def guarded(self, content, *args, **kwargs):
             if is_retrieval(content):
                 return RouterCompressionResult(compressed=content, original=content, strategy_used=CompressionStrategy.PASSTHROUGH)
-            return stock(self, content, *args, **kwargs)
+            from headroom.observability.tracing import get_headroom_tracer
+            from opentelemetry import trace
+            with get_headroom_tracer().start_as_current_span('agent-context.compression.native'):
+                result = stock(self, content, *args, **kwargs)
+                span = trace.get_current_span()
+                span.set_attribute('agent_context.compression.input_chars', len(content))
+                span.set_attribute('agent_context.compression.output_chars', len(result.compressed))
+                span.set_attribute('agent_context.compression.outcome', 'compressed' if len(result.compressed) < len(content) else 'no_gain')
+                return result
         ContentRouter.compress = guarded
     for pipeline in (app.state.proxy.anthropic_pipeline, app.state.proxy.openai_pipeline):
         routers = [transform for transform in pipeline.transforms if isinstance(transform, ContentRouter)]
@@ -80,7 +88,10 @@ def main():
     owner = os.environ.get('AGENT_CONTEXT_PROXY_OWNER', '')
     @app.get('/agent-context/health')
     async def owned_health():
-        return {'owner': owner, 'pid': os.getpid(), 'active': app.state.agent_context_active, 'telemetry': telemetry}
+        return {'owner': owner, 'pid': os.getpid(), 'active': app.state.agent_context_active, 'telemetry': telemetry,
+                'version': os.environ.get('AGENT_CONTEXT_VERSION', 'unknown'),
+                'host': os.environ.get('AGENT_CONTEXT_HOST', 'unknown'), 'runtime': os.environ.get('AGENT_CONTEXT_RUNTIME', 'native'),
+                'compressor': 'headroom' if native else 'supercompress', 'compression': compression_status()}
     # The native upstream catch-all must follow local management routes.
     app.router.routes.insert(0, app.router.routes.pop())
     @app.post('/agent-context/shutdown')

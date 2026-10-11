@@ -17,6 +17,8 @@ import { compressionWarnings } from '../src/conflicts.js';
 import { incidents, recordIncident, reportIncidents, incidentPolicy, pendingPackets } from '../src/incidents.js';
 import { spawn } from 'node:child_process';
 import { uninstall } from '../src/uninstall.js';
+import { telemetryStatus, verifyTelemetry, prepareCodexExporter } from '../src/telemetry.js';
+import { credentialInput, saveLangfuse } from '../src/credentials.js';
 
 const [command, ...args] = process.argv.slice(2);
 const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
@@ -32,17 +34,28 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (selected.some(value => !names[value])) throw new Error('Choose codex, claude or hermes');
     if (!(selected.length ? selected : Object.keys(names)).some(agent => fs.existsSync(path.join(home(), agent === 'claude' ? '.claude' : `.${agent}`)))) throw new Error('Setup requires an installed Codex, Claude Code or Hermes profile');
     const runtime = await prepareHeadroom();
+    const exporters = await prepareCodexExporter(selected.length ? selected : Object.keys(names));
     const report = install(selected.length ? selected : Object.keys(names), { automatic: true });
     const reporting = incidentPolicy(!args.includes('--no-report'));
     report.warnings = compressionWarnings();
-    const checks = doctor();
+    const checks = await diagnose();
     const nextSteps = [];
     if (!checks.keyPresent) nextSteps.push('Set the SuperCompress key through private stdin: agent-context set-key. Never paste a key into command arguments.');
     if (checks.keyConflict) nextSteps.push('Reconcile the conflicting inherited SuperCompress environment privately.');
     if (report.warnings.length) nextSteps.push('Review the listed compression integrations; remove confirmed conflicts before enabling both.');
+    if (checks.telemetry.credentials !== 'configured') nextSteps.push('Provision this profile privately with its Langfuse project credentials. A file without valid credentials does not enable telemetry.');
+    if (Object.values(checks.telemetry.nativeExporters).includes('missing')) nextSteps.push('Install/configure the official native Langfuse exporter for each listed agent; compression spans do not replace model/tool telemetry. Preserve native hook trust review.');
+    nextSteps.push('Run agent-context telemetry verify to check OTLP delivery and readback. This synthetic check does not qualify a native exporter.');
     nextSteps.push('Run doctor --fix --live, then reload agent connections and verify a real tool result. Health checks alone are not compression proof.');
-    output({ ...report, runtime, reporting, onboarding: { status: checks.healthy && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged.' });
+    output({ ...report, runtime, exporters, reporting, onboarding: { status: checks.healthy && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged. Official native telemetry plugins remain owned by the agent and are preserved by package uninstall.' });
     if (!checks.healthy) process.exitCode = 1;
+  } else if (command === 'telemetry') {
+    if (args[0] === 'verify' && args.length <= 2) {
+      const report = await verifyTelemetry(args[1]); output(report); if (report.status !== 'delivered') process.exitCode = 1;
+    } else if (args[0] === 'status' && args.length === 1) {
+      let agents = []; try { agents = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).agents || []; } catch {}
+      output(telemetryStatus(agents));
+    } else throw new Error('Usage: agent-context telemetry status|verify [codex|claude|hermes]');
   } else if (command === 'uninstall') {
     if (args.some(value => value !== '--dry-run')) throw new Error('Usage: agent-context uninstall [--dry-run]');
     output(await uninstall({ dryRun: args.includes('--dry-run') }));
@@ -101,8 +114,13 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     else if (!args.length || args[0] === '--automatic') { const report = await update({ automatic: args[0] === '--automatic' }); output(report); if (report.status === 'failed') process.exitCode = 1; }
     else throw new Error('Usage: agent-context update [status|enable|disable|rollback]');
   }
+  else if (command === 'set-langfuse') {
+    if (args.length) throw new Error('Usage: agent-context set-langfuse (interactive hidden input or private JSON stdin)');
+    output(saveLangfuse(await credentialInput('langfuse')));
+  }
   else if (command === 'set-key') {
-    const key = fs.readFileSync(0, 'utf8').trim();
+    if (args.length) throw new Error('Usage: agent-context set-key (interactive hidden input or private stdin)');
+    const key = (await credentialInput('supercompress')).trim();
     if (!/^sc_[A-Za-z0-9_]{20,}$/.test(key)) throw new Error('Invalid key');
     const file = path.join(home(), '.supercompress', 'config.json');
     let config = {};

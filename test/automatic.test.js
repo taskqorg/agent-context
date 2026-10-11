@@ -9,6 +9,7 @@ import { install, doctor, rollback } from '../src/install.js';
 import { diagnose } from '../src/diagnostics.js';
 import { agentExecutable } from '../src/executable.js';
 import { root } from '../src/core.js';
+import { profileIdentity } from '../src/telemetry.js';
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-automatic-'));
 process.env.AGENT_CONTEXT_HOME = home;
 delete process.env.SUPERCOMPRESS_API_KEY;
@@ -48,7 +49,7 @@ test('automatic setup preserves unrelated settings, routes subscription auth, ha
   assert.ok(repaired.repairs.some(x => x.status === 'restored_missing_owned_file'));
   assert.equal(parse(fs.readFileSync(codex, 'utf8')).model_provider, 'agent_context');
   // Restore journal's expected integration bytes before explicit rollback.
-  fs.writeFileSync(path.join(root(), 'integration.json'), JSON.stringify({ schema: 1, mode: 'automatic', agents: ['codex', 'claude', 'hermes'], telemetry: false }, null, 2) + '\n');
+  fs.writeFileSync(path.join(root(), 'integration.json'), JSON.stringify({ schema: 1, mode: 'automatic', agents: ['codex', 'claude', 'hermes'], telemetry: false, host: profileIdentity().host }, null, 2) + '\n');
   assert.equal(rollback().status, 'rolled_back'); assert.deepEqual(fs.readFileSync(codex), before);
 });
 test('Windows resolves the native Claude executable relative to its shim directory; WSL refuses Windows paths', () => {

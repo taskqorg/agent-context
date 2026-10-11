@@ -93,6 +93,22 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(values['langfuse.observation.type'], 'span')
         self.assertFalse(any(key.startswith('gen_ai.usage') for key in values))
 
+    def test_compression_span_has_native_session_host_runtime_and_no_raw_content(self):
+        from agent_context_headroom.observability import CorrelatedTracer, identity
+        class Delegate:
+            def start_as_current_span(self, name, *, attributes): return attributes
+        token = identity.set({'session.id': 'native-session', 'agent_context.turn_id': 'native-turn'})
+        try:
+            with patch.dict(os.environ, {'AGENT_CONTEXT_HOST': 'fra', 'AGENT_CONTEXT_RUNTIME': 'native', 'AGENT_CONTEXT_AGENT': 'hermes'}):
+                values = CorrelatedTracer(Delegate()).start_as_current_span('compress')
+                self.assertEqual(values['langfuse.session.id'], 'native-session')
+                self.assertEqual(values['agent_context.turn_id'], 'native-turn')
+                self.assertIn('host:fra', values['langfuse.trace.tags'])
+                self.assertIn('runtime:native', values['langfuse.trace.tags'])
+                self.assertEqual(values['agent_context.compressor'], 'supercompress')
+        finally:
+            identity.reset(token)
+
     def test_entrypoint(self):
         registry = CompressorRegistry()
         registry.discover()
@@ -113,8 +129,16 @@ class AdapterTest(unittest.TestCase):
             with patch.dict(os.environ, {"AGENT_CONTEXT_BRIDGE": str(bridge), "AGENT_CONTEXT_NODE": "node"}):
                 response = subprocess.CompletedProcess([], 0, json.dumps({"compressed_text": "retained result", "skipped": None}), "")
                 with patch("subprocess.run", return_value=response) as run:
-                    result = Supercompress().compress(inp)
+                    from agent_context_headroom.observability import identity
+                    token = identity.set({'session.id': 'native-session'})
+                    try:
+                        with patch.dict(os.environ, {'AGENT_CONTEXT_AGENT': 'codex'}):
+                            result = Supercompress().compress(inp)
+                    finally:
+                        identity.reset(token)
                     self.assertEqual(json.loads(run.call_args.kwargs["input"])["query"], inp.query)
+                    self.assertEqual(json.loads(run.call_args.kwargs["input"])["session"], 'native-session')
+                    self.assertEqual(json.loads(run.call_args.kwargs["input"])["agent"], 'codex')
                     self.assertLess(len(result.content), len(inp.content))
                     digest = next(iter(result.recoverable))
                     from headroom.cache.compression_store import get_compression_store

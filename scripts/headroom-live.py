@@ -90,6 +90,8 @@ else:
                 ("This is real update.js source. Report its GitHub repository constant, the automatic update interval in milliseconds, and whether package integrity is checked before loading runtime code." if args.fixture == 'code' else "Report the important release name, port and retry limit.") +
                 " Do not alter files. If compressed data omits needed details, use the headroom retrieval MCP tool."]
 events_file = work / f"events-{args.protocol}.jsonl"
+import time
+started = time.monotonic()
 with events_file.open("w", encoding="utf-8") as out, work.joinpath(f"stderr-{args.protocol}.log").open("w", encoding="utf-8") as err:
     result = subprocess.run(command, stdout=out, stderr=err, timeout=90)
 events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
@@ -105,6 +107,8 @@ if args.fixture == 'code':
 summary = {"protocol": args.protocol, "passed": passed, "exit_code": result.returncode,
            "source": args.source, "fixture": args.fixture, "seed": seed,
            "tool_calls": len(tools), "usage": completed[-1].get("usage") if completed else None,
+           "elapsed_ms": int((time.monotonic() - started) * 1000),
+           "retrieval_calls": sum(event.get('item', {}).get('tool') == 'headroom_retrieve' for event in tools),
            "evidence_dir": str(work)}
 work.joinpath(f"summary-{args.protocol}.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(summary))

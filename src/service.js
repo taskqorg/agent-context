@@ -5,6 +5,7 @@ import { root, home, atomicWrite, version, tryLock } from './core.js';
 import { launcher } from './update.js';
 import { startProxy } from './run.js';
 import { recordIncident } from './incidents.js';
+import { profileIdentity } from './telemetry.js';
 
 export const servicePort = (agent, platform = process.platform) => {
   const port = ({ codex: 18787, claude: 18788, hermes: 18790 })[agent];
@@ -91,7 +92,9 @@ export async function serveService(agent) {
       try {
         let telemetry = false;
         try { telemetry = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).telemetry; } catch {}
+        const identity = profileIdentity();
         proxy = await startProxy(undefined, { AGENT_CONTEXT_PROXY_PORT: String(port), AGENT_CONTEXT_AGENT: agent === 'claude' ? 'claude-code' : agent,
+          AGENT_CONTEXT_HOST: identity.host, AGENT_CONTEXT_RUNTIME: identity.runtime,
           AGENT_CONTEXT_LANGFUSE: telemetry ? '1' : '0', AGENT_CONTEXT_STAGE: process.env.AGENT_CONTEXT_STAGE || 'production',
           AGENT_CONTEXT_LANGFUSE_CONFIG: path.join(home(), '.codex', 'langfuse.json') });
         const ready = JSON.parse(fs.readFileSync(path.join(proxy.dir, 'ready.json'), 'utf8'));

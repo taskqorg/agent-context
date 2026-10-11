@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { langfuseConfig, profileIdentity } from './telemetry.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
@@ -136,11 +137,8 @@ function applyInstall(agents, options) {
   if (options.automatic) {
     plan = automaticPlan(plan);
     const file = path.join(root(), 'integration.json');
-    const hermesEnv = read(path.join(home(), '.hermes', '.env'));
-    const telemetry = fs.existsSync(path.join(home(), '.codex', 'langfuse.json')) || Boolean(process.env.LANGFUSE_PUBLIC_KEY && process.env.LANGFUSE_SECRET_KEY)
-      || Boolean(process.env.HERMES_LANGFUSE_PUBLIC_KEY && process.env.HERMES_LANGFUSE_SECRET_KEY)
-      || ['PUBLIC_KEY', 'SECRET_KEY'].every(name => new RegExp(`(^|\\n)\\s*(?:export\\s+)?HERMES_LANGFUSE_${name}\\s*=\\s*\\S+`).test(hermesEnv));
-    const after = json({ schema: 1, mode: 'automatic', agents: plan.installed, telemetry });
+    const telemetry = Boolean(langfuseConfig());
+    const after = json({ schema: 1, mode: 'automatic', agents: plan.installed, telemetry, host: profileIdentity().host });
     if (read(file) !== after) plan.changes.push({ file, after });
   }
   if (!plan.changes.length && !plan.moves.length) return { ...plan, changes: [], transaction: null };
