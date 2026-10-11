@@ -99,7 +99,7 @@ completed = [event for event in events if event.get("type") == "turn.completed"]
 answers = [event["item"]["text"] for event in events if event.get("item", {}).get("type") == "agent_message"]
 tools = [event for event in events if event.get("type") == "item.completed" and event.get("item", {}).get("type") in ["command_execution", "mcp_tool_call"]]
 answer = answers[-1] if answers else ''
-facts = ['taskqorg/agent-context', '86400000'] if args.fixture == 'code' else ['amber-47', '6543', '2']
+facts = ['taskqorg/agent-context', '3600000'] if args.fixture == 'code' else ['amber-47', '6543', '2']
 normalized = answer.replace(',', '').replace('_', '').replace(' ', '')
 passed = result.returncode == 0 and bool(completed) and bool(tools) and all(value in normalized for value in facts)
 if args.fixture == 'code':

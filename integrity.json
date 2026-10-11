@@ -1,11 +1,11 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.2",
   "files": {
     "bin/agent-context.js": "95c1f89830196924441c25d6173e675b1cd30ccf4a4f60c24290fa5353380620",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "871a4fdd98acb689835af32df4e5a7909a9fb0ddf5cc2f04da3386d1da6a91b3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "f58900a8b23fda7dcdbeb0a5912fae5c8dd4ebcf1cec9c751fd2cf1c80afdf88",
+    "src/core.js": "757be171100c7aec95f9faaaf000f13f04b12371570c8b66213ac171954c8ede",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "bac902d9e07567e4d43109eaf808d96b7b5883f9629b3c25aa12443e8737909d",
     "src/enrollment.js": "744b84eb892bc177553da933cdfc1e32598bd46d53a28fd43c82c98012284e48",
@@ -23,7 +23,7 @@
     "src/supercompress.js": "93099cf3822d247735b057c98f346263b595e9ba04403f7df14b65710fde907c",
     "src/telemetry.js": "cfcb9f7a0f6885150156a3dfcdaa7f94b50d8759b1608d10d7554fb8cfbd888e",
     "src/uninstall.js": "e6c1d6b429b024623e4f5ee82f0923451ad4e19a11289966ae13a5d904a84c1a",
-    "src/update.js": "0bbbd3929dff990c5759e8452ef6b551458ef81b6bec33679f78ae4d1ca450ad",
+    "src/update.js": "1f9c90b6f8205586b53c993f116af6eca5220da09f33019bb17798a0b3702b87",
     "src/verify.js": "08cfdedddf687da531281b71b74e6a9fe2a1df3e1b37235d8c25c29200084cd0",
     "integrations/hermes/agent-context/plugin.yaml": "7ceea299e14c6e213038a9603a2afe19dc34f5339905d351fc68febbed554a58",
     "integrations/hermes/agent-context/__init__.py": "0f2b335f11a9705b67d20c308e6893628d39c1ae2ce2055fb6d9b74b17fd6a49",
@@ -36,7 +36,7 @@
     "scripts/headroom-benchmark.py": "5226d2b03456dcdff9a1d9af69ca1d7b943066709b8d13198e7f4b61fdb15c6e",
     "scripts/headroom-claude.py": "2d5f1ab34cc3027ce114f8a70fd1f3bfe5581287f0e2851fbe568c200266b700",
     "scripts/headroom-hermes.py": "f6901cb4fecb5b3e913b3d51367a3f7bbe7aba41fff0d9f3d1f26111f5ae0f71",
-    "scripts/headroom-live.py": "28f4d14419a88666158df45e26d4179665032bea5bfe5b9b136b2b2817f64b37",
+    "scripts/headroom-live.py": "cc998c6fa76f18c857022bd9b6dfeb555ea0a3971a012c6b88a246506c730957",
     "scripts/headroom-qualify.py": "0f2e96733afab3e4c89c6a3a9fba56301feed4b7548a4f784b05afa4f2489a13",
     "scripts/headroom-fixture.js": "8d33640cda4f299c4fc4ccd99e9ee55fff7ec1164b975b6f7047f1a7c8c09fc7"
   }

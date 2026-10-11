@@ -26,6 +26,7 @@ export function rolloutBucket() {
   try { id = JSON.parse(fs.readFileSync(path.join(root(), 'machine-id.json'), 'utf8')).id || ''; } catch {}
   return parseInt(sha(`rollout\0${id}`).slice(0, 8), 16) % 100;
 }
+export const UPDATE_CHECK_INTERVAL_MS = 3600000;
 const RETRY_BACKOFF_MS = [3600000, 6 * 3600000, 86400000];
 function prune(keep) {
   // Keep active + previous runtime; staging leftovers and older versions only consume disk.
@@ -82,7 +83,7 @@ if (['mcp', 'hook', 'lifecycle', 'run', 'retrieval'].includes(process.argv[2])) 
   const stateFile = path.join(base, 'updates.json');
   let state = {}; try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
   try { state = { ...state, ...JSON.parse(fs.readFileSync(path.join(base, 'update-policy.json'), 'utf8')) }; } catch {}
-  if (state.enabled && Date.now() - (state.lastAttempt || 0) >= 86400000) {
+  if (state.enabled && Date.now() - (state.lastAttempt || 0) >= ${UPDATE_CHECK_INTERVAL_MS}) {
     try {
       const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32' });
       child.on('error', () => {}); child.unref();
@@ -182,13 +183,13 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
   return lock(async () => {
     const active = checkedPointer(read(pointerFile()));
     const state = { ...read(stateFile()), ...read(policyFile()) };
-    if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < 86400000)) return { status: 'not_due' };
+    if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < UPDATE_CHECK_INTERVAL_MS)) return { status: 'not_due' };
     const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: 0, ...extra }));
-    // The fixed launcher retries 24h after lastAttempt; back-date it so failures retry after 1h, 6h, then 24h.
+    // Offset lastAttempt so the hourly launcher preserves 1h, 6h, then 24h failure backoff.
     const failed = (reason) => {
       const failures = (read(stateFile())?.failures || 0) + 1;
       const wait = RETRY_BACKOFF_MS[Math.min(failures, RETRY_BACKOFF_MS.length) - 1];
-      atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now() - 86400000 + wait, status: 'failed', reason, failures }));
+      atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now() - UPDATE_CHECK_INTERVAL_MS + wait, status: 'failed', reason, failures }));
     };
     const failures = read(stateFile())?.failures || 0;
     record('checking', { failures });

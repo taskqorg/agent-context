@@ -27,7 +27,7 @@ Recommended project declaration, once a manifest-aware updater is implemented:
 
 The project manifest remains a design contract, not a consumed file. Version 0.1.5 implements user-level automatic stable patch updates through the fixed taskqorg/agent-context source; project-specific compatibility arbitration is not implemented.
 
-One updater per OS user checks approved stable releases at most daily on MCP/hook startup, not on every tool call or once per project/agent. Install candidates in an immutable version directory, verify the archive digest and compatibility, run isolated self-tests, then atomically select that version through a stable launcher. Keep the previous package and config transaction for rollback. Current MCP sessions retain their loaded version until a supported reload; never kill active clients automatically.
+One updater per OS user checks approved stable releases at most hourly on MCP/hook startup, not on every tool call or once per project/agent. Install candidates in an immutable version directory, verify the archive digest and compatibility, run isolated self-tests, then atomically select that version through a stable launcher. Keep the previous package and config transaction for rollback. Current MCP sessions retain their loaded version until a supported reload; never kill active clients automatically.
 
 Only compatible patch updates should apply automatically within 0.x. A new minor/major, changed hook permissions, config drift or failed self-test requires explicit migration. Failed update retains the last working version. Projects requiring incompatible versions must be reported; do not silently switch global state back and forth on project entry.
 
@@ -46,6 +46,8 @@ Publish `recipe.json` only after CI on all three OS platforms and actual-client 
 ```json
 {"schema":1,"version":"0.1.5","launcherSchema":1,"adapterContract":1,"platforms":["win32","darwin","linux"],"clients":["codex","claude","hermes"],"archive":"alexkirs-agent-context-0.1.5.tgz","sha256":"<archive-sha256>"}
 ```
+
+Hourly checks are installed by reviewed `setup` with candidate 0.2.2; existing daily launchers need this one-time installation. Publishing source commits does not publish a stable release or trigger client reload. There is no persistent push subscription or idle-host timer.
 
 The fixed launcher is not rewritten automatically. Changes to its schema require an explicit installer migration. Failed staging directories are preserved for diagnosis; automatic garbage collection is not enabled. Rollback pauses updates and keeps configuration untouched.
 

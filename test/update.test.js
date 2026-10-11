@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { sha, root, version } from '../src/core.js';
-import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, enableUpdates, verifyRecipeSignature } from '../src/update.js';
+import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, UPDATE_CHECK_INTERVAL_MS, enableUpdates, verifyRecipeSignature } from '../src/update.js';
 import crypto from 'node:crypto';
 import { install, rollback } from '../src/install.js';
 
@@ -183,7 +183,50 @@ test('kill switch and staged rollout keep the active runtime; failures back off 
   await update({ fetcher: async () => { throw new Error('offline'); } });
   const state = JSON.parse(fs.readFileSync(path.join(root(), 'updates.json')));
   assert.equal(state.failures, 1);
-  assert.ok(Math.abs(Date.now() - state.lastAttempt - (86400000 - 3600000)) < 60000, 'next automatic try in ~1h');
+  assert.ok(Math.abs(Date.now() - state.lastAttempt - (UPDATE_CHECK_INTERVAL_MS - 3600000)) < 60000, 'next automatic try in ~1h');
+});
+test('automatic checks wait one hour and preserve escalating network retry backoff', async () => {
+  restore();
+  try {
+    fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now() - 59 * 60000 }));
+    const early = fixture();
+    assert.equal((await update({ ...early, automatic: true })).status, 'not_due');
+    assert.equal(early.calls(), 0);
+    fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now() - 61 * 60000 }));
+    assert.equal((await update({ automatic: true, fetcher: async () => new Response('', { status: 404 }) })).status, 'no_stable_release');
+    restore();
+    for (const wait of [3600000, 6 * 3600000, 86400000]) {
+      assert.equal((await update({ fetcher: async () => { throw new Error('offline'); } })).status, 'failed');
+      const state = updateStatus();
+      assert.ok(Math.abs(state.lastAttempt + UPDATE_CHECK_INTERVAL_MS - Date.now() - wait) < 60000);
+      const blocked = fixture();
+      assert.equal((await update({ ...blocked, automatic: true })).status, 'not_due');
+      assert.equal(blocked.calls(), 0);
+    }
+  } finally { restore(); }
+});
+test('installed launcher starts an hourly updater only after it is due', async () => {
+  restore();
+  const dir = path.join(root(), 'versions', 'hourly-launcher-fixture');
+  const marker = path.join(root(), 'hourly-updater-started');
+  fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  const files = { 'bin/agent-context.js': `import fs from 'node:fs'; if(process.argv[2]==='update')fs.writeFileSync(${JSON.stringify(marker)},'started');`, 'src/update.js': 'export {};\n' };
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@alexkirs/agent-context', version, type: 'module' }));
+  fs.writeFileSync(path.join(dir, 'integrity.json'), JSON.stringify({ version, files: Object.fromEntries(Object.entries(files).map(([name, content]) => [name, sha(content)])) }));
+  try {
+    fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ version, dir }));
+    for (const minutes of [59, 61]) {
+      fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now() - minutes * 60000 }));
+      const child = spawnSync(process.execPath, [launcher(), 'mcp'], { env: process.env, windowsHide: true, encoding: 'utf8' });
+      assert.equal(child.status, 0, child.stderr);
+      if (minutes === 59) assert.equal(fs.existsSync(marker), false);
+      else {
+        for (let i = 0; i < 40 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 50));
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'started');
+      }
+    }
+  } finally { restore(); }
 });
 test('release signature verification accepts only the matching Ed25519 key', () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
