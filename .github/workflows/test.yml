@@ -17,7 +17,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm test
+      # Bound concurrent ACL subprocesses on shared Windows runners.
+      - run: npm test -- --test-concurrency=2
       - run: git diff --exit-code -- integrity.json package-lock.json
       - run: npm pack
       - uses: actions/setup-python@v5
