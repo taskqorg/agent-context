@@ -48,12 +48,18 @@ class AdapterTest(unittest.TestCase):
                 self.assertFalse(configure_environment())
                 self.assertNotIn('LANGFUSE_SECRET_KEY', os.environ)
 
+    def test_explicit_profile_never_resolves_the_operating_system_home(self):
+        from agent_context_headroom.observability import configure_environment
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(os.environ, {'AGENT_CONTEXT_LANGFUSE': '1', 'AGENT_CONTEXT_HOME': directory}, clear=True), patch('pathlib.Path.home', side_effect=RuntimeError('home unavailable')):
+                self.assertFalse(configure_environment())
+
     def test_invalid_optional_telemetry_is_fail_open(self):
         from agent_context_headroom.observability import configure_environment
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'config.json'
             file.write_text('{invalid')
-            with patch.dict(os.environ, {'AGENT_CONTEXT_LANGFUSE': '1', 'AGENT_CONTEXT_LANGFUSE_CONFIG': str(file)}, clear=True):
+            with patch.dict(os.environ, {'AGENT_CONTEXT_LANGFUSE': '1', 'AGENT_CONTEXT_LANGFUSE_CONFIG': str(file), 'AGENT_CONTEXT_HOME': directory}, clear=True):
                 self.assertFalse(configure_environment())
                 self.assertEqual(os.environ['HEADROOM_LANGFUSE_ENABLED'], 'false')
 

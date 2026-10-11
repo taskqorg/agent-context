@@ -182,12 +182,12 @@ export function compatibleUpdate(current, next) {
   const a = /^(\d+)\.(\d+)\.(\d+)$/.exec(current), b = /^(\d+)\.(\d+)\.(\d+)$/.exec(next);
   return Boolean(a && b && a[1] === b[1] && a[2] === b[2] && Number(b[3]) > Number(a[3]));
 }
-async function run(command, args, cwd, { timeout = 120000, environment = {} } = {}) {
+async function run(command, args, cwd, { timeout = 120000, environment = {}, phase = 'self-test' } = {}) {
   await new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, windowsHide: true, stdio: 'ignore', env: { ...process.env, SUPERCOMPRESS_API_KEY: '', AGENT_CONTEXT_HOME: path.join(cwd, 'isolated-home'), ...environment } });
-    const timer = setTimeout(() => { child.kill(); reject(new Error('Update refused: self-test timeout')); }, timeout);
+    const timer = setTimeout(() => { child.kill(); reject(new Error('Update refused: ' + phase + ' timeout')); }, timeout);
     child.on('error', error => { clearTimeout(timer); reject(error); });
-    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('Update refused: installation or self-test failed')); });
+    child.on('close', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('Update refused: ' + (phase === 'python_qualification' ? ({ 91: 'python_adapter_tests', 92: 'python_hermes_tests' }[code] || 'python_preparation') : phase) + ' failed')); });
   });
 }
 export async function prepare(archive, stage, expected) {
@@ -195,15 +195,15 @@ export async function prepare(archive, stage, expected) {
   const candidates = [process.env.npm_execpath, path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'), path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'), ...(process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'npm'))].filter(Boolean);
   const npm = candidates.map(file => { try { return fs.realpathSync(file); } catch { return ''; } }).find(file => file.endsWith('npm-cli.js'));
   if (!npm) fail('npm entrypoint unavailable');
-  await run(process.execPath, [npm, 'install', '--prefix', stage, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', archive], stage, { environment: { npm_config_cache: path.join(stage, 'npm-cache') } });
+  await run(process.execPath, [npm, 'install', '--prefix', stage, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', archive], stage, { phase: 'npm_install', environment: { npm_config_cache: path.join(stage, 'npm-cache') } });
   const dir = path.join(stage, 'node_modules', '@alexkirs', 'agent-context');
   for (const name of ['smol-toml', 'yaml']) fs.cpSync(path.join(stage, 'node_modules', name), path.join(dir, 'node_modules', name), { recursive: true });
   checkPackage(dir, expected);
-  await run(process.execPath, ['scripts/integrity.js', '--check'], dir);
-  await run(process.execPath, ['--test'], dir);
+  await run(process.execPath, ['scripts/integrity.js', '--check'], dir, { phase: 'integrity' });
+  await run(process.execPath, ['--test'], dir, { phase: 'node_tests' });
   if (fs.existsSync(path.join(dir, 'src/headroom.js'))) {
-    const code = `const {prepareHeadroom,pythonEnvironment}=await import('./src/headroom.js');const r=await prepareHeadroom();const {spawnSync}=await import('node:child_process');for(const folder of ['headroom','hermes']){const x=spawnSync(r.python,['-m','unittest','discover','-s','integrations/'+folder,'-p',folder==='headroom'?'test_adapter.py':'test_plugin.py'],{env:{...pythonEnvironment(),PYTHONPATH:'integrations/headroom'},stdio:'ignore',timeout:30000});if(x.status!==0)process.exit(1);}`;
-    await run(process.execPath, ['--input-type=module', '-e', code], dir, { timeout: 240000, environment: { AGENT_CONTEXT_HOME: home(), HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1', AGENT_CONTEXT_LANGFUSE: '0' } });
+    const code = `const {prepareHeadroom,pythonEnvironment}=await import('./src/headroom.js');const r=await prepareHeadroom();const {spawnSync}=await import('node:child_process');const {join}=await import('node:path');for(const folder of ['headroom','hermes']){const x=spawnSync(r.python,['-m','unittest','discover','-s','integrations/'+folder,'-p',folder==='headroom'?'test_adapter.py':'test_plugin.py'],{env:{...pythonEnvironment(),AGENT_CONTEXT_HOME:join(process.cwd(),'isolated-home'),PYTHONPATH:'integrations/headroom'},stdio:'ignore',timeout:30000});if(x.status!==0)process.exit(folder==='headroom'?91:92);}`;
+    await run(process.execPath, ['--input-type=module', '-e', code], dir, { timeout: 600000, phase: 'python_qualification', environment: { AGENT_CONTEXT_HOME: home(), HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1', AGENT_CONTEXT_LANGFUSE: '0' } });
   }
   return dir;
 }
