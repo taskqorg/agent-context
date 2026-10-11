@@ -67,7 +67,7 @@ export async function startProxy(runtime, environment = {}) {
   const controlKey = crypto.randomUUID();
   const log = fs.openSync(path.join(dir, 'proxy.log'), 'a', 0o600);
   const child = spawn(runtime.python, ['-m', 'agent_context_headroom.proxy'], {
-    env: { ...process.env, AGENT_CONTEXT_PROXY_PORT: '0', ...environment, AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey },
+    env: { ...process.env, AGENT_CONTEXT_COMPRESSOR: '', AGENT_CONTEXT_PROXY_PORT: '0', ...environment, AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey },
     windowsHide: true, stdio: ['ignore', log, log],
   });
   fs.closeSync(log);

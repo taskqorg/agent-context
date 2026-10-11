@@ -16,16 +16,36 @@ export function atomicWrite(file, data) {
     fs.renameSync(temp, file);
   } finally { if (fs.existsSync(temp)) fs.unlinkSync(temp); }
 }
+// Directory lock with owner PID; a lock whose owner died or outlived staleMs is reclaimed once.
+// ponytail: PID check is per host; a lock shared across hosts relies on staleMs only.
+export function tryLock(lock, staleMs) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(lock, { mode: 0o700 });
+      fs.writeFileSync(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, at: Date.now() }), { mode: 0o600 });
+      return () => fs.rmSync(lock, { recursive: true, force: true });
+    } catch (error) {
+      if (error.code !== 'EEXIST' || attempt) return null;
+      let owner = {};
+      try { owner = JSON.parse(fs.readFileSync(path.join(lock, 'owner.json'), 'utf8')); } catch {}
+      const at = Number.isFinite(owner.at) ? owner.at : fs.statSync(lock).mtimeMs;
+      // No owner yet: either legacy or mid-acquire; give a fresh one a 10s grace.
+      let alive = Number.isInteger(owner.pid) && owner.pid > 0 ? true : Date.now() - at < 10000;
+      if (Number.isInteger(owner.pid) && owner.pid > 0) try { process.kill(owner.pid, 0); } catch (probe) { alive = probe.code === 'EPERM'; }
+      if (alive && Date.now() - at < staleMs) return null;
+      fs.rmSync(lock, { recursive: true, force: true });
+    }
+  }
+  return null;
+}
 export function acquireTransaction() {
   fs.mkdirSync(root(), { recursive: true, mode: 0o700 });
-  const lock = path.join(root(), 'install.lock');
-  try { fs.mkdirSync(lock, { mode: 0o700 }); }
-  catch (error) {
-    if (error.code !== 'EEXIST') throw error;
+  const release = tryLock(path.join(root(), 'install.lock'), 30 * 60000);
+  if (!release) {
     const busy = new Error('Configuration transaction busy; inspect existing installation before retrying');
     busy.code = 'AGENT_CONTEXT_BUSY'; throw busy;
   }
-  return () => fs.rmdirSync(lock);
+  return release;
 }
 export function keyStatus() {
   let fileKey = '';
@@ -62,8 +82,9 @@ export async function compress({ context, query, session, agent, source = 'mcp' 
   const lock = `${stateFile}.lock`;
   try { fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 }); }
   catch { return fallback('state_unavailable'); }
-  try { fs.mkdirSync(lock, { mode: 0o700 }); }
-  catch (error) { return fallback(error.code === 'EEXIST' ? 'session_busy' : 'state_unavailable'); }
+  let release;
+  try { release = tryLock(lock, 60000); } catch { return fallback('state_unavailable'); }
+  if (!release) return fallback('session_busy');
   try {
     let state = { seen: [] };
     try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }
@@ -77,5 +98,5 @@ export async function compress({ context, query, session, agent, source = 'mcp' 
     atomicWrite(stateFile, JSON.stringify(state));
     audit({ agent, source, status: 'compressed', ...Object.fromEntries(Object.entries(result).filter(([key]) => key !== 'compressed_text')) });
     return result;
-  } finally { fs.rmdirSync(lock); }
+  } finally { release(); }
 }

@@ -23,7 +23,7 @@ def register(ctx):
         # One lifecycle per session; a failed proxy call clears it so the next turn restarts the service.
         if node and launcher and session_id not in started:
             try:
-                subprocess.run([node, launcher, 'lifecycle', 'hermes'], timeout=40, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                subprocess.run([node, launcher, 'lifecycle', 'hermes'], timeout=25, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError):
                 return None
             with lock:
@@ -54,7 +54,7 @@ def register(ctx):
         body = {'model': ctx.get_config('tokenizer_model', 'gpt-6.1-sol'), 'messages': [{'role': 'user', 'content': query}, {'role': 'tool', 'content': result}]}
         request = urllib.request.Request(base + '/v1/compress', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json', 'x-session-id': session_id, 'x-turn-id': turn_id})
         try:
-            with urllib.request.urlopen(request, timeout=25) as response:
+            with urllib.request.urlopen(request, timeout=20) as response:
                 value = json.load(response)['messages'][-1]['content']
             if isinstance(value, str) and value and len(value) < len(result):
                 return value

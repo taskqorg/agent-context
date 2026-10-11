@@ -28,7 +28,7 @@ export function automaticPlan(plan) {
       value.model_providers ||= {};
       value.model_providers.agent_context = { name: 'Agent Context', base_url: url + '/v1', wire_api: 'responses', requires_openai_auth: true, supports_websockets: true };
       value.mcp_servers.supercompress.enabled = false;
-      value.mcp_servers.headroom = { ...recovery(agent), enabled_tools: ['headroom_retrieve'] };
+      value.mcp_servers.headroom = { ...recovery(agent), enabled_tools: ['headroom_retrieve'], startup_timeout_sec: 30, tool_timeout_sec: 60 };
       const preserved = current(file).split(/(?=^\s*\[)/m).filter(section => {
         const header = /^\s*\[([^\]\r\n]+)\]/.exec(section);
         if (!header) return true;

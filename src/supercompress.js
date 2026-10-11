@@ -16,7 +16,7 @@ export async function compressSupercompress({ context, query, session, agent }, 
   if (!credentials.present) return fallback(credentials.error || 'missing_key');
   const requestId = sha(`${version}\0${agent}\0${session}\0${context}\0${query}`);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 15000);
+  const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10000);
   try {
     const response = await (options.fetch || fetch)('https://www.supercompress.dev/api/v1/compress', {
       method: 'POST',

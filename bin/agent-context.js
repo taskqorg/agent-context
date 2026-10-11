@@ -11,7 +11,7 @@ import { verify } from '../src/verify.js';
 import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '../src/update.js';
 import { prepareHeadroom, qualifyHeadroom } from '../src/headroom.js';
 import { runAgent } from '../src/run.js';
-import { ensureService, serveService, lifecycle } from '../src/service.js';
+import { servicePort, ensureService, serveService, lifecycle } from '../src/service.js';
 import { diagnose } from '../src/diagnostics.js';
 import { compressionWarnings } from '../src/conflicts.js';
 import { incidents, recordIncident, reportIncidents, incidentPolicy } from '../src/incidents.js';
@@ -55,7 +55,9 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); tool results are not compressed. Use the claude CLI for compression.',
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings.' } });
   } else if (command === 'retrieval') {
-    const service = await ensureService(args[0]);
+    // Do not block the MCP handshake on proxy startup; a marker can only exist if the proxy already ran.
+    if (!servicePort(args[0])) throw new Error('Choose codex, claude or hermes');
+    const service = { url: `http://127.0.0.1:${servicePort(args[0])}` };
     const runtime = await prepareHeadroom();
     process.exitCode = await new Promise((resolve, reject) => {
       const child = spawn(runtime.headroom, ['mcp', 'serve', '--proxy-url', service.url], { stdio: 'inherit', env: { ...process.env, HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1' }, windowsHide: true });

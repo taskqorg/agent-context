@@ -61,7 +61,7 @@ class Supercompress:
         try:
             process = subprocess.run(
                 [node, bridge], input=json.dumps(payload),
-                capture_output=True, text=True, encoding="utf-8", timeout=20,
+                capture_output=True, text=True, encoding="utf-8", timeout=12,
             )
             if process.returncode:
                 logger.warning("SC bridge failed exit_code=%s", process.returncode)

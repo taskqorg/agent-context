@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { root, atomicWrite, sha, version } from './core.js';
+import { root, atomicWrite, sha, version, tryLock } from './core.js';
 
 const execute = promisify(execFile);
 const components = ['core', 'installer', 'updater', 'proxy', 'compressor', 'telemetry', 'agent-adapter'];
@@ -18,10 +18,11 @@ export function incidentPolicy(enabled) {
 export function recordIncident({ component, operation, category, agent = 'unknown' }) {
   // Public fields are constructed, never redacted from exception text or raw logs.
   if (!components.includes(component) || !/^[a-z_]{1,40}$/.test(operation) || !categories.includes(category) && !/^http_[45][0-9]{2}$/.test(category) || !['codex', 'claude-code', 'hermes', 'headroom', 'unknown'].includes(agent)) return null;
-  let lock, acquired = false;
+  let release;
   try {
     fs.mkdirSync(directory(), { recursive: true, mode: 0o700 });
-    lock = path.join(directory(), 'write.lock'); fs.mkdirSync(lock); acquired = true;
+    release = tryLock(path.join(directory(), 'write.lock'), 60000);
+    if (!release) return null;
     const identityFile = path.join(root(), 'machine-id.json');
     if (!fs.existsSync(identityFile)) atomicWrite(identityFile, JSON.stringify({ id: crypto.randomUUID() }));
     const machine = read(identityFile).id;
@@ -39,21 +40,21 @@ export function recordIncident({ component, operation, category, agent = 'unknow
       last_reported: prior?.last_reported || null, reported_occurrences: prior?.reported_occurrences || 0 };
     atomicWrite(file, JSON.stringify(item)); return item;
   } catch { return null; }
-  finally { if (acquired) { try { fs.rmdirSync(lock); } catch {} } }
+  finally { try { release?.(); } catch {} }
 }
 export function incidents() {
   try { return fs.readdirSync(directory()).filter(x => /^[a-f0-9]{24}\.json$/.test(x)).slice(0, 1000).flatMap(x => { try { return [read(path.join(directory(), x))]; } catch { return []; } }); }
   catch { return []; }
 }
 function updateDelivery(item, changes) {
-  const lock = path.join(directory(), 'write.lock');
-  fs.mkdirSync(lock);
+  const release = tryLock(path.join(directory(), 'write.lock'), 60000);
+  if (!release) throw new Error('Incident store busy');
   try {
     const file = path.join(directory(), item.fingerprint + '.json');
     const current = read(file);
     if (current.event_id !== item.event_id) throw new Error('Incident changed');
     atomicWrite(file, JSON.stringify({ ...current, ...changes }));
-  } finally { fs.rmdirSync(lock); }
+  } finally { release(); }
 }
 function publicPacket(item) {
   if (item.schema !== 1 || item.product !== 'agent-context' || !components.includes(item.component) || !categories.includes(item.category) && !/^http_[45][0-9]{2}$/.test(item.category) || !/^[a-z_]{1,40}$/.test(item.operation) || !/^[a-f0-9]{24}$/.test(item.fingerprint) || !/^[a-f0-9-]{36}$/.test(item.machine_id) || !/^[a-f0-9-]{36}$/.test(item.event_id) || !['codex', 'claude-code', 'hermes', 'headroom', 'unknown'].includes(item.agent) || !['darwin', 'linux', 'win32'].includes(item.platform) || !['native', 'wsl'].includes(item.topology)) throw new Error('Invalid incident packet');
@@ -73,11 +74,11 @@ function publicPacket(item) {
 }
 export async function reportIncidents(run = execute) {
   if (!policy().enabled) return { status: 'disabled' };
-  const lock = path.join(directory(), 'report.lock');
   fs.mkdirSync(directory(), { recursive: true, mode: 0o700 });
-  try { fs.mkdirSync(lock); } catch { return { status: 'busy' }; }
+  const release = tryLock(path.join(directory(), 'report.lock'), 5 * 60000);
+  if (!release) return { status: 'busy' };
   try { return await deliver(run); }
-  finally { fs.rmdirSync(lock); }
+  finally { release(); }
 }
 async function deliver(run) {
   const results = [], deadline = Date.now() + 60000;

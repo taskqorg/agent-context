@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { root, home, atomicWrite, version } from './core.js';
+import { root, home, atomicWrite, version, tryLock } from './core.js';
 import { launcher } from './update.js';
 import { startProxy } from './run.js';
 import { recordIncident } from './incidents.js';
@@ -28,11 +28,10 @@ export async function ensureService(agent) {
   const healthy = await serviceHealth(agent);
   if (healthy && (healthy.version === version || healthy.active)) return { status: 'ready', url: `http://127.0.0.1:${healthy.port}`, version: healthy.version, updateDeferred: healthy.version !== version };
   fs.mkdirSync(path.dirname(stateFile(agent)), { recursive: true, mode: 0o700 });
-  const lock = stateFile(agent) + '.lock';
-  let acquired = false;
+  // Null release: another startup owns this lock; observe only.
+  const release = tryLock(stateFile(agent) + '.lock', 2 * 60000);
   try {
-    try { fs.mkdirSync(lock); acquired = true; } catch { /* Another startup owns this lock; observe only. */ }
-    if (acquired) {
+    if (release) {
       if (healthy) {
         const stopped = await fetch(`http://127.0.0.1:${healthy.port}/agent-context/shutdown`, { method: 'POST', headers: { 'x-agent-context-control': healthy.controlKey }, signal: AbortSignal.timeout(2000) });
         if (!stopped.ok) throw new Error('Proxy update deferred; active service preserved');
@@ -50,7 +49,7 @@ export async function ensureService(agent) {
     }
     recordIncident({ component: 'proxy', operation: 'ensure', category: 'startup_failed', agent: agent === 'claude' ? 'claude-code' : agent });
     throw new Error('Proxy startup failed; inspect doctor');
-  } finally { if (acquired) fs.rmdirSync(lock); }
+  } finally { release?.(); }
 }
 export async function stopService(agent) {
   if (!fs.existsSync(stateFile(agent))) return;
@@ -87,7 +86,8 @@ export async function serveService(agent) {
   const stop = () => { stopping = true; proxy?.stop(); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
   try {
-    for (let attempt = 0; attempt < 3 && !stopping; attempt++) {
+    // Agents route every model request here, so keep restarting; backoff caps at 60s.
+    for (let attempt = 0; !stopping; attempt++) {
       try {
         let telemetry = false;
         try { telemetry = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).telemetry; } catch {}
@@ -98,11 +98,13 @@ export async function serveService(agent) {
         atomicWrite(stateFile(agent), JSON.stringify({ agent, port, owner: ready.owner, childPid: ready.pid, controlKey: proxy.controlKey, pid: process.pid, version, recipe: proxy.runtime.recipe }));
         const code = await new Promise(resolve => proxy.child.once('close', resolve));
         if (stopping || code === 0) break;
+        attempt = 0; // it was healthy; restart promptly
         recordIncident({ component: 'proxy', operation: 'serve', category: 'process_exit', agent: agent === 'claude' ? 'claude-code' : agent });
       } catch {
         recordIncident({ component: 'proxy', operation: 'serve', category: 'startup_failed', agent: agent === 'claude' ? 'claude-code' : agent });
       } finally { await proxy?.stop(); }
-      if (!stopping) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+      if (fs.existsSync(path.join(root(), 'uninstalling.json'))) break;
+      if (!stopping) await new Promise(resolve => setTimeout(resolve, Math.min(60000, 1000 * 2 ** attempt)));
     }
   } finally {
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
