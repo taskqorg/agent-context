@@ -212,7 +212,7 @@ export async function update({ automatic = false, notifiedVersion = null, fetche
     const active = checkedPointer(read(pointerFile()));
     const state = { ...read(stateFile()), ...read(policyFile()) };
     if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < UPDATE_CHECK_INTERVAL_MS && (!notifiedVersion || notifiedVersion === state.attemptedVersion))) return { status: 'not_due' };
-    const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: 0, ...extra }));
+    const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: ['checking', 'downloading', 'testing', 'downloaded'].includes(status) ? read(stateFile())?.failures || 0 : 0, ...extra }));
     // Offset lastAttempt so the hourly launcher preserves 1h, 6h, then 24h failure backoff.
     const failed = (reason) => {
       const failures = (read(stateFile())?.failures || 0) + 1;

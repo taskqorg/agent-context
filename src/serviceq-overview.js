@@ -55,7 +55,7 @@ export function overview({ health = [], compression = [], activity = [], inciden
     if (service === 'updater') {
       const semver = key => /^\d+\.\d+\.\d+$/.test(attribute(row, 'update.' + key) || '') ? attribute(row, 'update.' + key) : null;
       const status = attribute(row, 'update.status'), subscription = attribute(row, 'update.subscription');
-      h.update = { installed: semver('installed'), available: semver('available'), monitor: semver('monitor'), enabled: attribute(row, 'update.enabled') === 'true', status: ['ready', 'checking', 'current', 'migration_required', 'paused', 'staged_wait', 'downloading', 'testing', 'downloaded', 'updated', 'failed', 'rolled_back', 'no_stable_release', 'disabled_before_activation'].includes(status) ? status : 'unknown', subscription: ['connected', 'reconnecting', 'disabled'].includes(subscription) ? subscription : 'unknown', checkedAt: number(attribute(row, 'update.checkedAt')) };
+      h.update = { installed: semver('installed'), available: semver('available'), monitor: semver('monitor'), enabled: [true, 'true'].includes(attribute(row, 'update.enabled')) ? true : [false, 'false'].includes(attribute(row, 'update.enabled')) ? false : null, status: ['ready', 'checking', 'current', 'migration_required', 'paused', 'staged_wait', 'downloading', 'testing', 'downloaded', 'updated', 'failed', 'rolled_back', 'no_stable_release', 'disabled_before_activation'].includes(status) ? status : 'unknown', subscription: ['connected', 'reconnecting', 'disabled'].includes(subscription) ? subscription : 'unknown', checkedAt: number(attribute(row, 'update.checkedAt')) };
     }
     h.at = Math.max(h.at || 0, at); h.fresh = now - h.at <= freshness;
     const metrics = {};

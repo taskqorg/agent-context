@@ -281,3 +281,14 @@ test('monitor supervisor reloads a verified new runtime without restarting agent
     assert.equal(child.status, 0, child.stderr); assert.equal(fs.readFileSync(marker, 'utf8'), 'reloaded');
   } finally { restore(); }
 });
+test('package download and self-test failures preserve escalating backoff across progress writes', async () => {
+  restore();
+  try {
+    for (const failures of [1, 2, 3]) {
+      const result = await update({ ...fixture(), preparer: async () => { throw new Error('self-test failed'); } });
+      assert.equal(result.status, 'failed'); assert.equal(updateStatus().failures, failures);
+      const wait = [3600000, 6 * 3600000, 86400000][failures - 1];
+      assert.ok(Math.abs(updateStatus().lastAttempt + UPDATE_CHECK_INTERVAL_MS - Date.now() - wait) < 60000);
+    }
+  } finally { restore(); }
+});
