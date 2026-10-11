@@ -16,7 +16,7 @@
 npm exec --yes --ignore-scripts --package=github:taskqorg/agent-context -- agent-context setup
 ```
 
-Нужны Node.js 22+, npm, Git, Python 3.11–3.13 с `venv`/`ensurepip` и ключ SuperCompress. [Стабильный релиз 0.1.12](https://github.com/taskqorg/agent-context/releases/tag/v0.1.12) проверен на macOS, Windows, WSL и Linux. Автообновления принимают совместимые стабильные patch-релизы: проверка не чаще раза в сутки при запуске launcher, без прерывания активных клиентов. Подробная процедура: [INSTALL.md](INSTALL.md).
+Нужны Node.js 22+, npm, Git, Python 3.11–3.13 с `venv`/`ensurepip` и ключ SuperCompress. [Релиз 0.1.13](https://github.com/taskqorg/agent-context/releases/tag/v0.1.13) квалифицирован на macOS (Codex, Claude Code); автообновление пока раскатывается только на macOS. 0.1.12 проверен на macOS, Windows, WSL и Linux. Автообновления принимают совместимые стабильные patch-релизы: проверка не чаще раза в сутки при запуске launcher, без прерывания активных клиентов. Подробная процедура: [INSTALL.md](INSTALL.md).
 
 ## Удалить через агента
 
@@ -42,6 +42,6 @@ agent-context update status
 
 Doctor исправляет только принадлежащие пакету регистрации и сервисы. Сжатие при ошибках сохраняет исходный результат. Успешный doctor подтверждает здоровье сервисов; реальную экономию проверяют отдельным агентским вызовом.
 
-Онбординг предупреждает о другом сжатии. Публичные инциденты содержат только разрешённые метаданные, без запросов, исходного текста и ключей; `setup --no-report` отключает отправку.
+Онбординг предупреждает о другом сжатии. Публичные инциденты содержат только разрешённые метаданные, без запросов, исходного текста и ключей; По умолчанию отправка идёт анонимно через relay (без GitHub-аккаунта, дедуп и счётчики на сервере); `agent-context incidents show` показывает, что уйдёт; `setup --no-report` отключает отправку; `incidents enable --gh` — отправка от вашего GitHub-аккаунта.
 
 [Интеграции и ограничения](docs/INTEGRATION-DETAILS.md) · [Дистрибуция](DISTRIBUTION.md) · [Инциденты](docs/INCIDENTS.md)

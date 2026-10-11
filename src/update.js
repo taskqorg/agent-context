@@ -12,6 +12,27 @@ const repository = 'taskqorg/agent-context';
 // Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
 const hardenedLegacyLauncher = '58010bbde95c55e4c04f3c11ebe26497ef5b024f0d09193625203ce66125d51c';
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
+// Ed25519 public key (SPKI PEM) for recipe.json.sig; unsigned or mis-signed releases are refused.
+// Private key: owner-held (scripts/sign-recipe.js), never in this repository.
+export const releasePublicKey = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA6fkOsxlO3Eqbsqa3cmZpzAUFTPNr8uOkMyZ9d9Rsyg8=\n-----END PUBLIC KEY-----\n';
+export function verifyRecipeSignature(bytes, signature, publicKey = releasePublicKey) {
+  if (!publicKey) return true;
+  if (!signature?.length) return false;
+  try { return crypto.verify(null, bytes, crypto.createPublicKey(publicKey), signature); } catch { return false; }
+}
+// Staged rollout: stable bucket 0..99 per machine; a release reaches a machine once its bucket < rolloutPercent.
+export function rolloutBucket() {
+  let id = '';
+  try { id = JSON.parse(fs.readFileSync(path.join(root(), 'machine-id.json'), 'utf8')).id || ''; } catch {}
+  return parseInt(sha(`rollout\0${id}`).slice(0, 8), 16) % 100;
+}
+const RETRY_BACKOFF_MS = [3600000, 6 * 3600000, 86400000];
+function prune(keep) {
+  // Keep active + previous runtime; staging leftovers and older versions only consume disk.
+  const versions = path.join(root(), 'versions');
+  const kept = new Set(keep.filter(Boolean).map(dir => path.resolve(dir)));
+  try { for (const name of fs.readdirSync(versions)) { const dir = path.resolve(versions, name); if (!kept.has(dir)) fs.rmSync(dir, { recursive: true, force: true }); } } catch {}
+}
 export const launcher = () => path.join(root(), 'launcher.mjs');
 const pointerFile = () => path.join(root(), 'active.json');
 const stateFile = () => path.join(root(), 'updates.json');
@@ -157,25 +178,42 @@ export async function prepare(archive, stage, expected) {
   }
   return dir;
 }
-export async function update({ automatic = false, fetcher = fetch, preparer = prepare } = {}) {
+export async function update({ automatic = false, fetcher = fetch, preparer = prepare, publicKey = releasePublicKey } = {}) {
   return lock(async () => {
     const active = checkedPointer(read(pointerFile()));
     const state = { ...read(stateFile()), ...read(policyFile()) };
     if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < 86400000)) return { status: 'not_due' };
-    const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, ...extra }));
-    record('checking');
+    const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: 0, ...extra }));
+    // The fixed launcher retries 24h after lastAttempt; back-date it so failures retry after 1h, 6h, then 24h.
+    const failed = (reason) => {
+      const failures = (read(stateFile())?.failures || 0) + 1;
+      const wait = RETRY_BACKOFF_MS[Math.min(failures, RETRY_BACKOFF_MS.length) - 1];
+      atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now() - 86400000 + wait, status: 'failed', reason, failures }));
+    };
+    const failures = read(stateFile())?.failures || 0;
+    record('checking', { failures });
+    let stage;
     try {
       const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
       if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
       const next = release.tag_name.slice(1);
       if (next === active.version) { record('current'); return { status: 'current', version: next }; }
       if (!compatibleUpdate(active.version, next)) { record('migration_required'); return { status: 'migration_required', version: next }; }
-      const recipe = JSON.parse(await assetBytes(releaseAsset(release, 'recipe.json'), fetcher));
+      const recipeBytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
+      if (publicKey) {
+        const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
+        if (!verifyRecipeSignature(recipeBytes, signature, publicKey)) fail('recipe signature');
+      }
+      const recipe = JSON.parse(recipeBytes);
+      // Kill switch and staged rollout are recipe fields, so they are covered by the same digest/signature.
+      if (recipe.paused === true) { record('paused', { version: next }); return { status: 'paused', version: next }; }
+      const percent = Number.isInteger(recipe.rolloutPercent) ? recipe.rolloutPercent : 100;
+      if (rolloutBucket() >= percent) { record('staged_wait', { version: next }); return { status: 'staged_wait', version: next, rolloutPercent: percent }; }
       if (recipe.schema !== 1 || recipe.version !== next || recipe.launcherSchema !== 1 || recipe.adapterContract !== 1 || !recipe.platforms?.includes(process.platform) || !['codex', 'claude', 'hermes'].every(agent => recipe.clients?.includes(agent))) fail('release not qualified');
       const asset = releaseAsset(release, recipe.archive);
       if (recipe.sha256 !== asset.digest.slice(7)) fail('qualification digest');
       const bytes = await assetBytes(asset, fetcher);
-      const stage = path.join(root(), 'versions', `stage-${crypto.randomUUID()}`);
+      stage = path.join(root(), 'versions', `stage-${crypto.randomUUID()}`);
       fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
       const archive = path.join(stage, 'candidate.tgz'); fs.writeFileSync(archive, bytes, { mode: 0o600 });
       const prepared = await preparer(archive, stage, next);
@@ -186,13 +224,14 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       if (read(policyFile())?.enabled === false) { record('disabled_before_activation'); return { status: 'disabled_before_activation', activeVersion: active.version }; }
       atomicWrite(pointerFile(), json({ version: next, dir, previous: { version: active.version, dir: active.dir } }));
       record('updated', { activeVersion: next });
+      prune([dir, active.dir]);
       return { status: 'updated', version: next, previous: active.version, reloadRequired: true };
     } catch (error) {
       if (error.message === 'Update refused: HTTP 404') { record('no_stable_release'); return { status: 'no_stable_release', activeVersion: active.version }; }
       const reason = /^Update refused: [A-Za-z0-9 :_-]+$/.test(error.message) ? error.message : 'Update failed; active runtime preserved';
-      record('failed', { reason });
+      failed(reason);
       return { status: 'failed', reason, activeVersion: active.version };
-    }
+    } finally { if (stage) fs.rmSync(stage, { recursive: true, force: true }); }
   });
 }
 export async function rollbackUpdate() {

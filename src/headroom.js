@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { root, sha, atomicWrite } from './core.js';
+import { root, sha, atomicWrite, tryLock } from './core.js';
 
 const execute = promisify(execFile);
 const source = fileURLToPath(new URL('../', import.meta.url));
@@ -18,8 +18,8 @@ export async function prepareHeadroom(run = execute) {
   const ready = path.join(dir, 'ready.json');
   if (fs.existsSync(ready) && fs.existsSync(python) && fs.existsSync(headroom)) return { python, headroom, recipe, reused: true };
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const lock = path.join(dir, 'prepare.lock');
-  try { fs.mkdirSync(lock); } catch { throw new Error('Headroom preparation already running'); }
+  const release = tryLock(path.join(dir, 'prepare.lock'), 10 * 60000);
+  if (!release) throw new Error('Headroom preparation already running');
   try {
   const candidates = process.env.AGENT_CONTEXT_PYTHON ? [[process.env.AGENT_CONTEXT_PYTHON]]
     : [...(process.platform === 'win32' ? [['py', '-3.13'], ['py', '-3.12']] : []), ['python3.13'], ['python3.12'], ['python3'], ['python']];
@@ -36,7 +36,7 @@ export async function prepareHeadroom(run = execute) {
   await run(python, ['-c', 'import importlib.metadata as m; assert m.version("headroom-ai") == "0.40.0"; from headroom.transforms.compressor_registry import CompressorRegistry; r=CompressorRegistry(); r.discover(); assert r.get("supercompress") is not None'], { timeout: 30000, windowsHide: true });
   atomicWrite(ready, JSON.stringify({ recipe, headroom: '0.40.0' }));
   return { python, headroom, recipe, reused: false };
-  } finally { fs.rmSync(lock, { recursive: true, force: true }); }
+  } finally { release(); }
 }
 
 export async function qualifyHeadroom(args, run = execute) {

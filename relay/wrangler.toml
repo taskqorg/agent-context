@@ -1,0 +1,17 @@
+name = "agent-context-incidents"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[[durable_objects.bindings]]
+name = "INCIDENTS"
+class_name = "Incident"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Incident"]
+
+[vars]
+GITHUB_APP_ID = ""
+GITHUB_INSTALLATION_ID = ""
+KILL_SWITCH = "0"
+# Secret (never in this file): wrangler secret put GITHUB_APP_PRIVATE_KEY

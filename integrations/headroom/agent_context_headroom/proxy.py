@@ -15,11 +15,13 @@ from headroom.proxy.server import create_app
 def main():
     from .observability import configure_environment, attach
     telemetry = configure_environment()
+    # Benchmark-only switch: "native" runs Headroom's built-in compressors (incl. Kompress) instead of SuperCompress.
+    native = os.environ.get("AGENT_CONTEXT_COMPRESSOR") == "native"
     config = ProxyConfig(
         port=int(os.environ.get("AGENT_CONTEXT_PROXY_PORT", "18787")),
-        mode="cache", compressors={"supercompress"},
+        mode="cache", compressors=None if native else {"supercompress"},
         optimize=os.environ.get("AGENT_CONTEXT_OPTIMIZE", "1") != "0",
-        disable_kompress=True, disable_kompress_fallback=True,
+        disable_kompress=not native, disable_kompress_fallback=not native,
         image_optimize=False, read_lifecycle=False,
         cache_enabled=False, rate_limit_enabled=False, retry_enabled=False,
         memory_enabled=False, subscription_tracking_enabled=False,
@@ -31,8 +33,8 @@ def main():
     # This override is process-local and must be requalified on any Headroom update.
     from headroom.proxy import tool_schema_compaction
     tool_schema_compaction.compact_tools = lambda payload: (payload, False, 0, 0)
-    # shortcut: Headroom 0.40 hardcodes a 5s Codex WS frame budget; SuperCompress calls take up to 15s,
-    # so slower frames were forwarded uncompressed after a paid call. Match the bridge timeout; requalify on update.
+    # shortcut: Headroom 0.40 hardcodes a 5s Codex WS frame budget. Invariant: SC fetch 10s < bridge 12s < frame 15s,
+    # so a paid call always finishes inside the frame budget. Requalify on Headroom update.
     from headroom.proxy.handlers import openai as openai_handler
     openai_handler._CODEX_WS_COMPRESSION_TIMEOUT_SECONDS = 15.0
     app = create_app(config)
@@ -57,6 +59,17 @@ def main():
     # Headroom 0.40 has no public option to replace its default Read/Glob exclusion set.
     # shortcut: pinned integration config; requalify this shim before changing Headroom.
     from headroom.transforms.content_router import ContentRouter
+    if native:
+        # shortcut: same retrieval guard the SC adapter has; Codex delta frames omit the tool name,
+        # so stock Headroom recompresses headroom_retrieve output into a new marker (endless loop).
+        from headroom.transforms.content_router import RouterCompressionResult, CompressionStrategy
+        from . import is_retrieval
+        stock = ContentRouter.compress
+        def guarded(self, content, *args, **kwargs):
+            if is_retrieval(content):
+                return RouterCompressionResult(compressed=content, original=content, strategy_used=CompressionStrategy.PASSTHROUGH)
+            return stock(self, content, *args, **kwargs)
+        ContentRouter.compress = guarded
     for pipeline in (app.state.proxy.anthropic_pipeline, app.state.proxy.openai_pipeline):
         routers = [transform for transform in pipeline.transforms if isinstance(transform, ContentRouter)]
         if len(routers) != 1:

@@ -6,6 +6,7 @@ import YAML from 'yaml';
 import { atomicWrite, home, root, sha, keyStatus, version, acquireTransaction } from './core.js';
 import { launcher, seedRuntime, updateStatus } from './update.js';
 import { automaticPlan } from './automatic.js';
+import { servicePort } from './service.js';
 
 export const bin = launcher;
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -241,6 +242,12 @@ export function doctor() {
           const entry = agent === 'codex' ? config.mcp_servers?.headroom : config.mcpServers?.headroom;
           agents[agent] = entry?.command === process.execPath && entry?.args?.[0] === bin() && entry?.args?.[1] === 'retrieval' && entry?.args?.[2] === agent ? 'configured' : 'not_configured';
         }
+        // Routing is what actually sends model traffic through the proxy; MCP registration alone proves nothing.
+        const url = `http://127.0.0.1:${servicePort(agent)}`;
+        const routed = agent === 'claude' ? objectAt(path.join(dir, 'settings.json')).env?.ANTHROPIC_BASE_URL === url
+          : agent === 'codex' ? (config => config.model_provider === 'agent_context' && config.model_providers?.agent_context?.base_url === url + '/v1')(parseToml(read(path.join(dir, 'config.toml'))))
+          : YAML.parse(read(path.join(dir, 'config.yaml')))?.plugins?.entries?.['agent-context']?.settings?.proxy_url === url;
+        if (!routed) issues.push(`${agent}:routing_drift`);
       }
       if (agents[agent] !== 'configured') issues.push(`${agent}:not_configured`);
       if (agent !== 'hermes') {

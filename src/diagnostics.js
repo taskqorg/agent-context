@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { root, home, sha, atomicWrite, acquireTransaction } from './core.js';
-import { doctor } from './install.js';
+import { doctor, install } from './install.js';
 import { checkPackage, rollbackUpdate, updateStatus } from './update.js';
 import { ensureService, serviceHealth } from './service.js';
 import { incidents, recordIncident } from './incidents.js';
@@ -53,6 +53,14 @@ export async function diagnose({ fix = false, live = false } = {}) {
         }
       }
     } finally { release(); }
+  }
+  if (fix) {
+    // Re-apply only drifted routing; install refuses foreign providers/URLs instead of overwriting them.
+    for (const issue of doctor().issues.filter(item => item.endsWith(':routing_drift'))) {
+      const agent = issue.split(':')[0];
+      try { install([agent], { automatic: true }); actions.push({ agent, status: 'routing_reapplied' }); }
+      catch { actions.push({ agent, status: 'routing_unresolved' }); }
+    }
   }
   const config = doctor();
   for (const issue of config.issues) recordIncident({ component: 'installer', operation: 'doctor', category: issue.startsWith('recipe_integrity') ? 'runtime_integrity' : issue === 'missing_key' || issue === 'key_conflict' ? issue : 'configuration_drift' });

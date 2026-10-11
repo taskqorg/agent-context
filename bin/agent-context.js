@@ -11,10 +11,10 @@ import { verify } from '../src/verify.js';
 import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '../src/update.js';
 import { prepareHeadroom, qualifyHeadroom } from '../src/headroom.js';
 import { runAgent } from '../src/run.js';
-import { ensureService, serveService, lifecycle } from '../src/service.js';
+import { servicePort, serviceHealth, ensureService, serveService, lifecycle } from '../src/service.js';
 import { diagnose } from '../src/diagnostics.js';
 import { compressionWarnings } from '../src/conflicts.js';
-import { incidents, recordIncident, reportIncidents, incidentPolicy } from '../src/incidents.js';
+import { incidents, recordIncident, reportIncidents, incidentPolicy, pendingPackets } from '../src/incidents.js';
 import { spawn } from 'node:child_process';
 import { uninstall } from '../src/uninstall.js';
 
@@ -55,7 +55,11 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); tool results are not compressed. Use the claude CLI for compression.',
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings.' } });
   } else if (command === 'retrieval') {
-    const service = await ensureService(args[0]);
+    // Do not block the MCP handshake on proxy startup. Owner identity is checked (1s); if the port is not
+    // our proxy, start ours in the background. Same loopback trust boundary as the agent's base URL.
+    if (!servicePort(args[0])) throw new Error('Choose codex, claude or hermes');
+    const service = { url: `http://127.0.0.1:${servicePort(args[0])}` };
+    if (!await serviceHealth(args[0])) ensureService(args[0]).catch(() => {});
     const runtime = await prepareHeadroom();
     process.exitCode = await new Promise((resolve, reject) => {
       const child = spawn(runtime.headroom, ['mcp', 'serve', '--proxy-url', service.url], { stdio: 'inherit', env: { ...process.env, HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1' }, windowsHide: true });
@@ -67,9 +71,10 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
   } else if (command === 'incidents') {
     if (args[0] === 'report') output(await reportIncidents());
     else if (args[0] === 'record') { const item = recordIncident(JSON.parse(fs.readFileSync(0, 'utf8'))); if (!item) throw new Error('Unsupported incident fields'); output({ event_id: item.event_id, fingerprint: item.fingerprint }); }
-    else if (['enable', 'disable'].includes(args[0])) output(incidentPolicy(args[0] === 'enable'));
+    else if (['enable', 'disable'].includes(args[0])) output(incidentPolicy(args[0] === 'enable', args.includes('--gh') ? 'gh' : 'relay'));
+    else if (args[0] === 'show') output(pendingPackets());
     else if (!args.length || args[0] === 'list') output(incidents());
-    else throw new Error('Usage: agent-context incidents list|report|enable|disable');
+    else throw new Error('Usage: agent-context incidents list|show|report|enable [--gh]|disable');
   } else if (command === 'run') {
     process.exitCode = await runAgent(args[0], args.slice(1));
   } else if (command === 'mcp') {
@@ -99,7 +104,10 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (fs.existsSync(file)) {
       const before = fs.readFileSync(file);
       config = JSON.parse(before.toString());
-      atomicWrite(path.join(root(), 'backups', `key-${Date.now()}.before`), before);
+      // One previous key copy is enough for recovery; older plaintext copies are removed.
+      const backups = path.join(root(), 'backups');
+      try { for (const name of fs.readdirSync(backups)) if (/^key-\d+\.before$/.test(name)) fs.rmSync(path.join(backups, name), { force: true }); } catch {}
+      atomicWrite(path.join(backups, `key-${Date.now()}.before`), before);
     }
     config.api_key = key;
     atomicWrite(file, `${JSON.stringify(config, null, 2)}\n`);

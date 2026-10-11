@@ -23,6 +23,10 @@ test('migration from a verified legacy bootstrap upgrades code and restores matc
   const pointer = JSON.parse(fs.readFileSync(path.join(root(), 'active.json')));
   assert.equal(pointer.version, version); assert.equal(pointer.previous.version, legacyVersion);
   assert.match(fs.readFileSync(config, 'utf8'), /model_provider = "agent_context"/);
+  const routed = fs.readFileSync(config);
   const result = await rollbackUpdate();
-  assert.equal(result.version, legacyVersion); assert.deepEqual(fs.readFileSync(config), before);
+  assert.equal(result.version, legacyVersion);
+  // A previous version that already speaks automatic mode keeps the routed config; older ones get it restored.
+  const legacyAutomatic = fs.existsSync(path.join(old, 'src/automatic.js'));
+  assert.deepEqual(fs.readFileSync(config), legacyAutomatic ? routed : before);
 });

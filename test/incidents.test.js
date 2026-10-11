@@ -24,7 +24,7 @@ test('reporting is opt-in until disclosed setup; unknown create is reconciled an
     throw new Error('unknown create outcome containing secret');
   };
   assert.equal((await reportIncidents(run)).status, 'disabled'); assert.equal(calls.length, 0);
-  incidentPolicy(true);
+  incidentPolicy(true, 'gh');
   await reportIncidents(run); await reportIncidents(run);
   assert.equal(calls.filter(x => x[1] === 'create').length, 1);
   assert.ok(!JSON.stringify(incidents()).includes('containing secret'));
@@ -51,4 +51,31 @@ test('report lock and offline transport preserve local queue without exposing er
   const result = await reportIncidents(async () => { throw new Error('private offline details'); });
   assert.ok(!JSON.stringify(result).includes('private'));
   assert.ok(incidents().some(item => item.category === 'request_failed' && item.state === 'queued'));
+});
+test('default relay transport is anonymous, deduplicated per day, and shows exactly what leaves the machine', async () => {
+  incidentPolicy(true);
+  recordIncident({ ...event, category: 'startup_failed', operation: 'ensure', component: 'proxy' });
+  const { pendingPackets } = await import('../src/incidents.js');
+  const shown = pendingPackets();
+  assert.equal(shown.transport, 'relay');
+  assert.ok(shown.packets.some(packet => packet.category === 'startup_failed'));
+  const posts = [];
+  const fetcher = async (url, request) => { posts.push([url, JSON.parse(request.body)]); return { ok: true }; };
+  const first = await reportIncidents(() => { throw new Error('gh must not run'); }, { fetcher });
+  assert.equal(first.transport, 'relay');
+  assert.ok(posts.length >= 1 && posts.every(([url]) => url.startsWith('https://')));
+  assert.ok(posts.every(([, packet]) => !('body' in packet) && /^[a-f0-9]{24}$/.test(packet.fingerprint)));
+  const count = posts.length;
+  await reportIncidents(() => { throw new Error('gh must not run'); }, { fetcher });
+  assert.equal(posts.length, count, 'same fingerprint is not resent within a day');
+});
+test('gh unknown create is reconciled after a day: found event becomes reported without a new create', async () => {
+  incidentPolicy(true, 'gh');
+  const item = recordIncident({ ...event, category: 'process_exit', component: 'proxy', operation: 'serve' });
+  const file = path.join(root(), 'incidents', item.fingerprint + '.json');
+  fs.writeFileSync(file, JSON.stringify({ ...item, state: 'create_unknown', unknown_at: '2020-01-01T00:00:00Z' }));
+  const calls = [];
+  await reportIncidents(async (_cmd, args) => { calls.push(args[1]); return { stdout: JSON.stringify([{ number: 7, state: 'OPEN', body: `incident-v1:${item.fingerprint} event:${item.event_id}`, url: 'https://github.com/taskqorg/agent-context/issues/7' }]) }; });
+  assert.ok(!calls.includes('create'));
+  assert.equal(JSON.parse(fs.readFileSync(file)).state, 'reported');
 });
