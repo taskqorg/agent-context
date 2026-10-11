@@ -195,7 +195,7 @@ export async function prepare(archive, stage, expected) {
   const candidates = [process.env.npm_execpath, path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'), path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'), ...(process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'npm'))].filter(Boolean);
   const npm = candidates.map(file => { try { return fs.realpathSync(file); } catch { return ''; } }).find(file => file.endsWith('npm-cli.js'));
   if (!npm) fail('npm entrypoint unavailable');
-  await run(process.execPath, [npm, 'install', '--prefix', stage, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', archive], stage);
+  await run(process.execPath, [npm, 'install', '--prefix', stage, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', archive], stage, { environment: { npm_config_cache: path.join(stage, 'npm-cache') } });
   const dir = path.join(stage, 'node_modules', '@alexkirs', 'agent-context');
   for (const name of ['smol-toml', 'yaml']) fs.cpSync(path.join(stage, 'node_modules', name), path.join(dir, 'node_modules', name), { recursive: true });
   checkPackage(dir, expected);
