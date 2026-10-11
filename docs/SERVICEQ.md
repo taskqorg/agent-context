@@ -2,6 +2,38 @@
 
 Shared Langfuse project `Agents` (`tight-hermes`), dashboard `ServiceQ`.
 
+## Operational overview
+
+The readable overview lives at `https://langfuse.ufobe.com/serviceq`. It reads
+Langfuse on the server; project keys never reach the browser. It shows the latest
+snapshot for each device, freshness (ten minutes), service problems separately
+from unknown status, observed model activity and compression outcomes for the
+selected period. Mac, Windows, WSL and FRA are the expected pilot hosts; other
+observed hosts are discovered automatically. Devices keep their newest runtime
+identity, so corrected WSL labels do not duplicate a host.
+
+Compression successes, normal skips and failures are disjoint. Character reduction
+is displayed only when every counted call contains before/after measurements.
+It is not model-token savings or a full-traffic compression ratio. Process counters
+have a separate disclosure and retain their restart/reset semantics. Historical
+incidents are deduplicated and never presented as unresolved current failures.
+Missing measurements remain missing. A read failure marks the previous snapshot
+as unconfirmed; a capped query is explicitly marked incomplete.
+
+Run `scripts/serve-serviceq.js` with `AGENT_CONTEXT_LANGFUSE_CONFIG` pointing to
+the existing private Langfuse config or gateway config. The server binds only
+`127.0.0.1:18881`. Deploy `/serviceq` and `/serviceq/*` **after** the existing
+Langfuse UI `forward_auth` guard and before its final reverse proxy. Never route
+the overview under `/api/public`, never bypass the guard and never expose its
+loopback port. This shares the existing UI audience; it is not a new public portal.
+
+The page refreshes every minute; the server coalesces reads for thirty seconds.
+Queries are bounded to 24 hours for health/history and 30 minutes, 2 hours or
+24 hours for activity/compression, with cursor pagination and a 10,000-row cap
+per source. It fetches metadata only, never conversation or tool content.
+No new agent configuration, monitor restart or database is needed for this UI.
+Rollback removes the guarded Caddy route and stops `serviceq-overview.service`.
+
 The monitor reads existing ContextQ proxy health, native telemetry queue metadata,
 local incident summaries and fresh ServerQ reports. It does not run or duplicate
 ServerQ checks. TaskQ without an explicit fresh status snapshot is unknown.

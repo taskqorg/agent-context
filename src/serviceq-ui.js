@@ -1,0 +1,61 @@
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const n = value => value === null || value === undefined ? '—' : new Intl.NumberFormat('ru-RU').format(value);
+const when = value => value ? new Date(value).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' }) + ' BKK' : 'нет записи';
+const age = value => value ? Math.max(0, Math.round((Date.now() - value) / 60000)) + ' мин назад' : 'нет данных';
+const trace = id => id ? `<a href="/project/tight-hermes/traces/${encodeURIComponent(id)}" target="_blank" rel="noopener">Запись ↗</a>` : '';
+const badge = (state, text) => `<span class="badge ${esc(state)}">${esc(text || { ok: 'Доступен', error: 'Ошибка', warning: 'Проверить', unknown: 'Нет данных' }[state])}</span>`;
+let model, selected = 'all', loading = false;
+function render() {
+  if (!model) return;
+  const hosts = model.hosts.filter(h => selected === 'all' || h.id === selected), agents = hosts.flatMap(h => h.agents.map(a => ({ ...a, host: h }))), match = x => selected === 'all' || x.host === selected;
+  const issues = model.issues.filter(match), gaps = model.gaps.filter(match), history = model.incidents.filter(match), fresh = hosts.filter(h => h.fresh).length;
+  const totals = agents.reduce((s, a) => ({ compressed: s.compressed + (a.compression?.compressed || 0), passthrough: s.passthrough + (a.compression?.passthrough || 0), failed: s.failed + (a.compression?.failed || 0) }), { compressed: 0, passthrough: 0, failed: 0 });
+  const calls = totals.compressed + totals.passthrough + totals.failed, active = agents.filter(a => a.activity?.calls).length;
+  const insight = fresh === hosts.length ? 'Телеметрия поступает со всех выбранных хостов.' : `${hosts.length - fresh} хостов без свежей телеметрии.`;
+  const summary = issues.length ? `${issues.length} проблем требуют проверки.` : 'В доступных данных текущих проблем не обнаружено.';
+  const gapGroups = new Map();
+  for (const g of gaps) { const key = (g.service || g.title) + '|' + g.detail; const previous = gapGroups.get(key); if (previous) previous.hosts.push(hosts.find(h => h.id === g.host)?.name); else gapGroups.set(key, { ...g, title: g.service || g.title, hosts: [hosts.find(h => h.id === g.host)?.name] }); }
+  const issueHTML = items => items.map(i => `<div class="issue"><strong>${esc(i.title)}</strong><p>${esc(i.detail)}</p>${trace(i.traceId)}</div>`).join('');
+  $('content').innerHTML = `
+    <div class="notice"><strong>${esc(insight)}</strong><p>${esc(summary)} ${gaps.length ? `${gaps.length} проверок не подтверждены — см. пробелы наблюдения ниже.` : ''}</p></div>
+    ${model.truncated.length ? '<div class="notice error">Достигнут лимит чтения. Показана только часть записей; счётчики за период неполные.</div>' : ''}
+    <div class="summary-grid">
+      <div class="stat"><div class="label">Хосты со свежими данными</div><div class="value ${fresh === hosts.length ? 'green' : 'amber'}">${fresh}<span class="muted"> / ${hosts.length}</span></div><p class="muted small">Проверка не старше 10 минут</p></div>
+      <div class="stat"><div class="label">Агенты с активностью</div><div class="value">${active}<span class="muted"> / ${agents.length}</span></div><p class="muted small">Есть записи вызовов модели за период</p></div>
+      <div class="stat"><div class="label">Требует внимания</div><div class="value ${issues.length ? 'red' : 'green'}">${issues.length}</div><p class="muted small">${gaps.length} пробелов наблюдения отдельно</p></div>
+      <div class="stat"><div class="label">Измеренных вызовов компрессии</div><div class="value">${calls ? n(calls) : '—'}</div><p class="muted small">${calls ? `${n(totals.compressed)} сжато · ${n(totals.failed)} ошибок` : 'За период нет измерений'}</p></div>
+    </div>
+    <div class="section-head"><h2>Хосты и сервисы</h2><nav class="filters" aria-label="Фильтр хостов"><button data-host="all" aria-pressed="${selected === 'all'}">Все хосты</button>${model.hosts.map(h => `<button data-host="${esc(h.id)}" aria-pressed="${selected === h.id}">${esc(h.name)}</button>`).join('')}</nav></div>
+    <div class="host-grid">${hosts.map(h => `<div class="host"><div class="host-heading"><h3>${esc(h.name)}</h3>${badge(h.fresh ? 'ok' : 'unknown', h.fresh ? 'Данные свежие' : 'Нет связи с монитором')}</div><div class="host-lines">${h.services.filter(s => s.service !== 'contextq').map(s => `<div class="host-line"><span>${esc(s.name)}</span>${badge(s.state)}</div>`).join('') || '<p class="muted small">Состояние сервисов не подтверждено</p>'}<div class="host-line"><span>Прокси агентов</span><span>${h.services.filter(s => s.service === 'contextq' && s.state === 'ok').length} доступны / ${h.services.filter(s => s.service === 'contextq').length}</span></div></div><p class="timestamp muted small">Последняя проверка: ${when(h.at)} · ${age(h.at)}</p></div>`).join('')}</div>
+    <div class="section-head"><div><h2>Агенты и компрессия</h2><p class="muted small">Активность и результаты за ${$('period').selectedOptions[0].text.toLowerCase()}. «Нет измерений» не означает, что агент выключен.</p></div></div>
+    <div class="legend"><span class="compressed">Сжато</span><span>Без сжатия</span><span class="failed">Ошибка сжатия</span></div>
+    <div class="panel"><div class="table-wrap"><table><thead><tr><th>Хост / агент</th><th>Прокси</th><th>Последняя активность</th><th class="number">Вызовы модели</th><th>Компрессия за период</th><th>Эффект на объём</th><th>Подробности</th></tr></thead><tbody>${agents.map(a => {
+      const c = a.compression, total = c ? c.compressed + c.passthrough + c.failed : 0;
+      const good = a.proxy.length && a.proxy.every(p => p.state === 'ok');
+      const bytes = c?.sizeSamples === total && c.input > 0 ? Math.round((1 - c.output / c.input) * 100) : null;
+      return `<tr><td><strong>${esc(a.name)}</strong><div class="muted">${esc(a.host.name)}</div></td><td>${badge(a.proxy.length ? good ? 'ok' : a.proxy.some(p => p.state === 'error') ? 'error' : 'unknown' : 'unknown')}<div class="muted">${a.proxy.length ? n(a.proxy.reduce((sum, p) => sum + (p.metrics.active_connections || 0), 0)) + ' подключений' : 'Нет проверки'}</div></td><td>${a.activity ? when(a.activity.at) : '<span class="muted">Нет измерений</span>'}<div class="muted">${a.activity ? n(a.activity.sessions) + ' сессий за период' : 'Вызовы модели не зарегистрированы'}</div></td><td class="number">${a.activity ? n(a.activity.calls) : '—'}</td><td>${total ? `<strong class="green">${n(c.compressed)}</strong> / ${n(c.passthrough)} / <span class="${c.failed ? 'red' : ''}">${n(c.failed)}</span><div class="bar" aria-label="Сжато ${c.compressed}, без сжатия ${c.passthrough}, ошибок ${c.failed}"><i class="compressed" data-width="${c.compressed / total * 100}"></i><i class="passthrough" data-width="${c.passthrough / total * 100}"></i><i class="failed" data-width="${c.failed / total * 100}"></i></div><span class="muted">${Math.round(c.compressed / total * 100)}% вызовов со сжатием</span>` : '<span class="muted">Нет измерений</span>'}</td><td>${bytes !== null ? `<strong>${bytes >= 0 ? '−' : '+'}${Math.abs(bytes)}%</strong><div class="muted">${n(c.input)} → ${n(c.output)} символов</div>` : '<span class="muted">Объём не измерен</span>'}</td><td>${trace(c?.traceId || a.activity?.traceId || a.proxy[0]?.traceId)}${c ? `<div class="muted">${Object.entries(c.outcomes).map(([label, count]) => `${esc(label)}: ${n(count)}`).join('<br>')}</div>` : ''}</td></tr>`;
+    }).join('') || '<tr><td colspan="7">Нет данных об агентах на выбранных хостах.</td></tr>'}</tbody></table></div><div class="help">Компрессия измерена только для перехваченных блоков контекста. Доля охвата всех запросов и экономия токенов модели пока не измеряются. «Без сжатия» — успешный пропуск; ошибки показаны отдельно.</div>
+    <details><summary>Счётчики процессов и очередь телеметрии</summary><p class="muted small">Эти счётчики накоплены с запуска прокси, а не за выбранный период. После перезапуска обнуляются. Устаревшие значения не показываем.</p><div class="detail">${agents.flatMap(a => a.proxy.map(p => `<div class="detail-item"><strong>${esc(a.host.name)} · ${esc(a.name)}</strong><p>${Date.now() - p.at > 600000 ? 'Нет свежего снимка счётчиков.' : `Сжато: ${n(p.metrics.compressed)} · без сжатия, включая ошибки: ${n(p.metrics.passthrough)} · ошибок: ${n(p.metrics.compression_failed)}<br>Очередь: ${n(p.metrics.queue_batches)} пакетов · самый старый: ${n(p.metrics.queue_oldest_seconds)} с`}</p><p>Версия монитора: ${esc(p.monitorVersion || 'неизвестна')}; версия прокси этим не подтверждена.</p>${trace(p.traceId)}</div>`)).join('')}</div></details></div>
+    ${model.unattributed ? `<p class="warning-note">${n(model.unattributed)} записей активности или компрессии имеют неполные метаданные. Они не включены в таблицу.</p>` : ''}
+    <div class="section-head"><h2>Что проверить</h2></div><div class="issues"><section class="panel"><div class="panel-heading"><h3>Проблемы <span class="red">${issues.length}</span></h3><p class="muted small">Свежие проверки и ошибки за период</p></div>${issues.length ? `<div class="issue-list">${issueHTML(issues)}</div>` : '<div class="empty"><strong>В доступных данных ошибок нет</strong>Неподтверждённые сервисы вынесены в соседний блок.</div>'}</section><section class="panel"><div class="panel-heading"><h3>Пробелы наблюдения <span class="amber">${gaps.length}</span></h3><p class="muted small">Здесь статус неизвестен — это не подтверждённая поломка</p></div>${gaps.length ? `<div class="issue-list">${issueHTML([...gapGroups.values()].map(g => ({ ...g, title: g.title + ' · ' + g.hosts.filter(Boolean).join(', ') })))}</div>` : '<div class="empty">Все полученные проверки имеют подтверждённое состояние.</div>'}</section></div>
+    <div class="section-head"><div><h2>История инцидентов</h2><p class="muted small">Последние 24 часа. Исторический инцидент не означает, что проблема сохраняется сейчас.</p></div></div><div class="panel">${history.slice(0, 20).map(i => `<div class="incident"><span class="muted">${when(i.at)} · ${age(i.at)}</span><span>${esc(model.hosts.find(h => h.id === i.host)?.name || i.host)} · ${esc(i.agent)}</span><span>${esc(i.title)}${i.occurrences ? ` <span class="muted">· ${n(i.occurrences)} повторений всего</span>` : ''}</span>${trace(i.traceId)}</div>`).join('') || '<div class="empty">За последние сутки инцидентов не зарегистрировано.</div>'}</div>`;
+  $('content').setAttribute('aria-busy', 'false');
+  document.querySelectorAll('[data-width]').forEach(bar => { bar.style.width = Number(bar.dataset.width) + '%'; });
+  document.querySelectorAll('[data-host]').forEach(button => button.addEventListener('click', () => { selected = button.dataset.host; render(); }));
+}
+async function refresh() {
+  if (loading) return;
+  loading = true; $('refresh').disabled = true; $('period').disabled = true;
+  try {
+    const response = await fetch('/serviceq/data?period=' + $('period').value, { cache: 'no-store', signal: AbortSignal.timeout(60000) });
+    if (!response.ok) throw new Error();
+    model = await response.json(); render(); $('error').hidden = true; $('content').classList.remove('stale');
+    $('update').textContent = 'Данные прочитаны: ' + when(model.checkedAt) + ' · время Bangkok';
+  } catch {
+    $('error').textContent = 'Не удалось обновить данные из Langfuse. Текущее состояние не подтверждено.' + (model ? ' Ниже сохранён предыдущий снимок.' : ' Попробуйте обновить страницу.');
+    $('error').hidden = false; $('content').classList.add('stale');
+  } finally { loading = false; $('refresh').disabled = false; $('period').disabled = false; }
+}
+$('refresh').addEventListener('click', refresh); $('period').addEventListener('change', refresh);
+refresh(); setInterval(() => { if (!document.hidden) refresh(); }, 60000);
