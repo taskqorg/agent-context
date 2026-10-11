@@ -1,11 +1,11 @@
 {
-  "version": "0.1.19",
+  "version": "0.1.20",
   "files": {
     "bin/agent-context.js": "8aac9fdc766dba9120260fe634ec70c4485383f29efc80da3cb5daf32be32fe8",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
-    "src/automatic.js": "fd58d86e9e6167874b7bad92f9120fc443826f546f3012bedfa57bccc3d5563c",
+    "src/automatic.js": "4b2a0874258309a5fbd0d8641ca91df53a3fd9eaba6ea28fb06ed7ea61142ad5",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "8745b6b162ef5c578ea4f744e201cce996e027abeab1deff133065745c772622",
+    "src/core.js": "a7ce094191465002900dc416ae920c52b1aac3746e369566700c3bba767969b4",
     "src/credentials.js": "c1cc783d32c4a05a7eb24b373fe7a0ecfff808b5892fc2c0c3ff7369648f881e",
     "src/diagnostics.js": "1313bb7cffa3b6dbb2f1b5e33508336170b56c348cf6adc379935b4f6b78498f",
     "src/executable.js": "d5dab0048128f53b65c9d418241f7d5a184c27804c95b3ae9e0175bc9a497e6a",

@@ -113,3 +113,21 @@ test('setup enables missing native hook feature after official installation, pre
     if (features.includes('# owner feature')) assert.ok(result.includes('# owner feature'));
   }
 });
+
+test('fresh Codex exporter config enables capture; explicit owner disable is preserved', () => {
+  process.env.LANGFUSE_PUBLIC_KEY = config.public_key;
+  process.env.LANGFUSE_SECRET_KEY = config.secret_key;
+  process.env.LANGFUSE_BASE_URL = config.base_url;
+  try {
+    for (const before of [null, { ...config, tags: ['team:fixture'] }, { ...config, enabled: false }]) {
+      if (before) fs.writeFileSync(file, JSON.stringify(before)); else fs.rmSync(file, { force: true });
+      const after = JSON.parse(automaticPlan({ changes: [], installed: ['codex'], moves: [] }).changes.find(item => item.file === file).after);
+      assert.equal(after.enabled, before?.enabled ?? true);
+      assert.ok(after.tags.includes('agent:codex'));
+      if (before?.tags) assert.ok(after.tags.includes('team:fixture'));
+    }
+  } finally {
+    for (const name of ['LANGFUSE_PUBLIC_KEY', 'LANGFUSE_SECRET_KEY', 'LANGFUSE_BASE_URL']) delete process.env[name];
+    fs.writeFileSync(file, JSON.stringify(config));
+  }
+});

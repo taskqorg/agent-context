@@ -30,7 +30,7 @@ export function automaticPlan(plan) {
         const file = path.join(dir, 'langfuse.json');
         const config = JSON.parse(current(file) || '{}');
         const tags = [...(config.tags || []).filter(tag => !/^(agent|host|runtime):/.test(tag)), ...labels];
-        changes.set(file, json({ ...config, public_key: telemetry.public_key, secret_key: telemetry.secret_key, base_url: telemetry.base_url, environment: stage, tags }));
+        changes.set(file, json({ ...config, enabled: config.enabled ?? true, public_key: telemetry.public_key, secret_key: telemetry.secret_key, base_url: telemetry.base_url, environment: stage, tags }));
       }
       const file = path.join(dir, 'config.toml');
       const value = parse(current(file));
