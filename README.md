@@ -16,7 +16,7 @@
 npm exec --yes --ignore-scripts --package=github:taskqorg/agent-context -- agent-context setup
 ```
 
-Нужны Node.js 22+, npm, Git, Python 3.11–3.13 с `venv`/`ensurepip` и ключ SuperCompress. [Релиз 0.1.13](https://github.com/taskqorg/agent-context/releases/tag/v0.1.13) квалифицирован на macOS (Codex, Claude Code); автообновление пока раскатывается только на macOS. 0.1.12 проверен на macOS, Windows, WSL и Linux. Автообновления принимают совместимые стабильные patch-релизы: проверка не чаще раза в сутки при запуске launcher, без прерывания активных клиентов. Подробная процедура: [INSTALL.md](INSTALL.md).
+Нужны Node.js 22+, npm, Git, Python 3.11–3.13 с `venv`/`ensurepip` и ключ SuperCompress. [Релиз 0.1.14](https://github.com/taskqorg/agent-context/releases/tag/v0.1.14) квалифицирован на macOS (Codex, Claude Code); автообновление пока раскатывается только на macOS. 0.1.12 проверен на macOS, Windows, WSL и Linux. Автообновления принимают совместимые стабильные patch-релизы: проверка не чаще раза в сутки при запуске launcher, без прерывания активных клиентов. Подробная процедура: [INSTALL.md](INSTALL.md).
 
 ## Удалить через агента
 
