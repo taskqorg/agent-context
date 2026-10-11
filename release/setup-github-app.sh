@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Owner step: finish the relay GitHub App from the manifest code, install it, and configure the Worker.
+# Done for this repository (App 5269111). Do not reuse with a third-party redirect_url: the one-time
+# manifest code is a credential (exchangeable for the App key within 1h); redirect only to a host you control.
 # Usage: ./release/setup-github-app.sh [code]   (without code: read from the active Chrome tab)
 set -euo pipefail
 CODE=${1:-}
