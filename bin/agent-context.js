@@ -54,7 +54,9 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     const result = await lifecycle(args[0]);
     // The launcher's own requests stay direct, but commands this session runs (claude -p, TaskQ workers) can use the proxy.
     // Drop the launcher's short-lived token so children refresh their own login.
-    if (result.bypassed && process.env.CLAUDE_ENV_FILE) fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ANTHROPIC_BASE_URL='${result.url}'\nunset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH\n`);
+    // Same gate as install: never take over a third-party gateway or its credentials, only the first-party default.
+    if (result.bypassed && process.env.CLAUDE_ENV_FILE && process.env.ANTHROPIC_BASE_URL === 'https://api.anthropic.com'
+      && !process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN && !process.env.CLAUDE_CODE_USE_BEDROCK && !process.env.CLAUDE_CODE_USE_VERTEX) fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ANTHROPIC_BASE_URL='${result.url}'\nunset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH\n`);
     if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); its own requests are not compressed. Claude processes it starts (claude -p, TaskQ workers) use the proxy.',
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: its own tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings for this session. Claude processes started from Bash here are routed through the proxy.' } });
   } else if (command === 'retrieval') {

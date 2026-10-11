@@ -1,7 +1,7 @@
 {
   "version": "0.1.16",
   "files": {
-    "bin/agent-context.js": "e4a2ac0116b60183b85e0b48b4fbc0b117ef827e1b9576b5596e5c5f1956961c",
+    "bin/agent-context.js": "df204b1bfd4336c1a9a87a45b8b319790b9a961f02cdefc4c516782bd55811af",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "4b84edf4fe23d60b377dddd3f095c10a5f871e415504fc048296f27ad31cd5e3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
