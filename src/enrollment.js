@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { root, atomicWrite } from './core.js';
+import { root } from './core.js';
+import { atomicSecretWrite } from './private-file.js';
 
 export function gatewayURL(value) {
   const url = new URL(value);
@@ -49,7 +50,7 @@ export async function connectGateway(origin, { request = fetch, pause = ms => ne
     if (!response.ok) throw new Error('Gateway enrollment refused; check GitHub team membership');
     const value = await response.json();
     if (!/^[a-f0-9]{32}$/.test(value.device) || !/^acd_[a-f0-9]{64}$/.test(value.token) || !/^[a-zA-Z0-9-]{1,39}$/.test(value.user)) throw new Error('Unsupported enrollment response');
-    atomicWrite(path.join(root(), 'enrollment.json'), JSON.stringify({ gateway, device: value.device, token: value.token, user: value.user }, null, 2) + '\n');
+    atomicSecretWrite(path.join(root(), 'enrollment.json'), JSON.stringify({ gateway, device: value.device, token: value.token, user: value.user }, null, 2) + '\n');
     return { status: 'connected', gateway, device: value.device, user: value.user, nextSteps: ['agent-context setup', 'agent-context telemetry verify'] };
   }
   throw new Error('GitHub sign-in expired');

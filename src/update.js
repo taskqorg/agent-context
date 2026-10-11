@@ -242,6 +242,7 @@ export async function rollbackUpdate() {
     const previous = checkedPointer(active.previous);
     const integration = read(path.join(root(), 'integration.json'));
     const oldManifest = read(path.join(previous.dir, 'integrity.json'));
+    if (fs.existsSync(path.join(root(), 'enrollment.json')) && !oldManifest?.files?.['src/enrollment.js']) fail('gateway migration rollback requires reviewed credential routing restoration before selecting the previous package');
     if (integration?.mode === 'automatic' && !oldManifest?.files?.['src/automatic.js']) {
       const install = read(path.join(root(), 'latest-install.json'));
       const journal = install && read(path.join(install.dir, 'journal.json'));

@@ -8,6 +8,8 @@ import { atomicWrite, home, root, sha, keyStatus, version, acquireTransaction } 
 import { launcher, seedRuntime, updateStatus } from './update.js';
 import { automaticPlan } from './automatic.js';
 import { servicePort } from './service.js';
+import { enrollment } from './enrollment.js';
+import { atomicSecretWrite, writeConfig } from './private-file.js';
 
 export const bin = launcher;
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -132,6 +134,18 @@ function transaction(operation) {
 }
 export const install = (agents, options = {}) => transaction(() => applyInstall(agents, options));
 function applyInstall(agents, options) {
+  if (options.automatic && enrollment()) for (const agent of agents) {
+    const file = path.join(root(), 'services', agent + '.json');
+    if (!fs.existsSync(file)) continue;
+    const state = JSON.parse(fs.readFileSync(file));
+    if (state.version === version) continue;
+    for (const pid of [state.pid, state.childPid]) {
+      if (!Number.isInteger(pid) || pid <= 0) throw new Error('Setup requires verified service identity before gateway migration');
+      try { process.kill(pid, 0); }
+      catch (error) { if (error.code === 'ESRCH') continue; throw error; }
+      throw new Error('Setup requires stopped old proxy services before gateway credential routing');
+    }
+  }
   seedRuntime({ migrate: options.migrate });
   let plan = planInstall(agents);
   if (options.automatic) {
@@ -149,9 +163,9 @@ function applyInstall(agents, options) {
   for (const [index, change] of plan.changes.entries()) {
     const before = fs.existsSync(change.file) ? fs.readFileSync(change.file) : null;
     const backup = before === null ? null : path.join(dir, `${index}.before`);
-    if (backup) fs.writeFileSync(backup, before, { mode: 0o600 });
+    if (backup) atomicSecretWrite(backup, before);
     const afterBackup = path.join(dir, `${index}.after`);
-    fs.writeFileSync(afterBackup, change.after, { mode: 0o600 });
+    atomicSecretWrite(afterBackup, change.after);
     journal.files.push({ file: change.file, backup, afterBackup, beforeHash: before === null ? null : sha(before), afterHash: sha(change.after) });
   }
   const journalFile = path.join(dir, 'journal.json');
@@ -169,7 +183,7 @@ function applyInstall(agents, options) {
     }
     for (const [index, change] of plan.changes.entries()) {
       if (!unchanged(journal.files[index])) throw new Error('Configuration changed during installation');
-      atomicWrite(change.file, change.after);
+      writeConfig(change.file, change.after);
       written.push(journal.files[index]);
     }
     journal.status = 'installed';
@@ -178,7 +192,7 @@ function applyInstall(agents, options) {
   } catch (error) {
     for (const item of written.reverse()) {
       if (sha(fs.readFileSync(item.file)) !== item.afterHash) continue;
-      if (item.backup) atomicWrite(item.file, fs.readFileSync(item.backup));
+      if (item.backup) writeConfig(item.file, fs.readFileSync(item.backup));
       else fs.unlinkSync(item.file);
     }
     for (const move of moved.reverse()) if (!fs.existsSync(move.from) && treeHash(move.to) === move.hash) fs.renameSync(move.to, move.from);
@@ -201,7 +215,7 @@ export function applyRollback() {
     if (fs.existsSync(move.from) || !fs.existsSync(move.to) || treeHash(move.to) !== move.hash) throw new Error('Rollback refused: legacy plugin drift; preserve and reconcile it first');
   }
   for (const item of journal.files) {
-    if (item.backup) atomicWrite(item.file, fs.readFileSync(item.backup));
+    if (item.backup) writeConfig(item.file, fs.readFileSync(item.backup));
     else fs.unlinkSync(item.file);
   }
   for (const move of journal.moves || []) fs.renameSync(move.to, move.from);

@@ -89,6 +89,17 @@ test('migration accepts the reviewed hardened legacy bootstrap but refuses unkno
     assert.notEqual(fs.readFileSync(launcher(), 'utf8'), bootstrap.toString());
   } finally { restore(); fs.writeFileSync(launcher(), originalBootstrap); }
 });
+test('gateway rollback cannot select a previous package without a collector while device routing remains', async () => {
+  restore();
+  const previous = { version: '0.1.3', dir: path.join(root(), 'versions', 'legacy-bootstrap') };
+  fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ ...initial, previous }));
+  fs.writeFileSync(path.join(root(), 'enrollment.json'), '{}');
+  const before = pointer();
+  try {
+    await assert.rejects(rollbackUpdate(), /credential routing restoration/);
+    assert.deepEqual(pointer(), before);
+  } finally { fs.rmSync(path.join(root(), 'enrollment.json')); restore(); }
+});
 test('tampered archive/qualification never reaches installation or switches active runtime', async () => {
   for (const options of [{ badDigest: true }, { qualified: false }]) {
     restore(); const before = pointer(); let prepared = false;

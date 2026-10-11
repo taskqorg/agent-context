@@ -11,7 +11,7 @@ import { verify } from '../src/verify.js';
 import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '../src/update.js';
 import { pythonEnvironment, prepareHeadroom, qualifyHeadroom } from '../src/headroom.js';
 import { runAgent } from '../src/run.js';
-import { servicePort, serviceHealth, ensureService, serveService, lifecycle } from '../src/service.js';
+import { servicePort, serviceHealth, ensureService, stopService, serveService, lifecycle } from '../src/service.js';
 import { diagnose } from '../src/diagnostics.js';
 import { compressionWarnings } from '../src/conflicts.js';
 import { incidents, recordIncident, reportIncidents, incidentPolicy, pendingPackets } from '../src/incidents.js';
@@ -21,6 +21,7 @@ import { telemetryStatus, verifyTelemetry, prepareCodexExporter } from '../src/t
 import { credentialInput, saveLangfuse } from '../src/credentials.js';
 import { connectGateway, enrollment } from '../src/enrollment.js';
 import { serveGateway } from '../src/gateway-server.js';
+import { atomicSecretWrite } from '../src/private-file.js';
 
 const [command, ...args] = process.argv.slice(2);
 const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
@@ -40,9 +41,22 @@ if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway'].include
     const selected = args.filter(value => !['--no-report', '--migrate'].includes(value));
     if (selected.some(value => !names[value])) throw new Error('Choose codex, claude or hermes');
     if (!(selected.length ? selected : Object.keys(names)).some(agent => fs.existsSync(path.join(home(), agent === 'claude' ? '.claude' : `.${agent}`)))) throw new Error('Setup requires an installed Codex, Claude Code or Hermes profile');
+    const agents = selected.length ? selected : Object.keys(names);
+    if (enrollment()) {
+      // No native exporter may send device credentials to an older proxy's upstream catch-all.
+      for (const agent of agents) {
+        const state = await serviceHealth(agent);
+        if (state && state.version !== version && state.active) throw new Error('Setup requires closing active old proxy sessions before gateway migration');
+      }
+      for (const agent of agents) {
+        const file = path.join(root(), 'services', agent + '.json');
+        if (fs.existsSync(file) && JSON.parse(fs.readFileSync(file)).version !== version) await stopService(agent);
+      }
+    }
     const runtime = await prepareHeadroom();
     const exporters = await prepareCodexExporter(selected.length ? selected : Object.keys(names));
     const report = install(selected.length ? selected : Object.keys(names), { automatic: true, migrate: args.includes('--migrate') });
+    if (enrollment()) for (const agent of report.installed) await ensureService(agent);
     const reporting = incidentPolicy(!args.includes('--no-report'));
     report.warnings = compressionWarnings();
     const checks = await diagnose();
@@ -57,7 +71,15 @@ if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway'].include
     output({ ...report, runtime, exporters, reporting, onboarding: { status: checks.healthy && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged. Official native telemetry plugins remain owned by the agent and are preserved by package uninstall.' });
     if (!checks.healthy) process.exitCode = 1;
   } else if (command === 'telemetry') {
-    if (args[0] === 'verify' && args.length <= 2) {
+    if (args[0] === 'enqueue' && args.length === 2) {
+      const device = enrollment();
+      const relative = path.relative(path.join(root(), 'telemetry-outbox'), path.resolve(args[1])).split(path.sep).join('/');
+      if (!device || !new RegExp('^' + device.device + '/(codex|claude-code|hermes)/[a-f0-9]{32}\\.json$').test(relative)) throw new Error('Unsupported private outbox target');
+      const data = fs.readFileSync(0);
+      if (data.length > 4 * 1024 * 1024) throw new Error('Unsupported outbox batch size');
+      atomicSecretWrite(path.resolve(args[1]), data);
+      output({ status: 'queued' });
+    } else if (args[0] === 'verify' && args.length <= 2) {
       if (enrollment()) await ensureService(args[1] || 'codex');
       const report = await verifyTelemetry(args[1]); output(report); if (report.status !== 'delivered') process.exitCode = 1;
     } else if (args[0] === 'status' && args.length === 1) {
@@ -138,10 +160,10 @@ if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway'].include
       // One previous key copy is enough for recovery; older plaintext copies are removed.
       const backups = path.join(root(), 'backups');
       try { for (const name of fs.readdirSync(backups)) if (/^key-\d+\.before$/.test(name)) fs.rmSync(path.join(backups, name), { force: true }); } catch {}
-      atomicWrite(path.join(backups, `key-${Date.now()}.before`), before);
+      atomicSecretWrite(path.join(backups, `key-${Date.now()}.before`), before);
     }
     config.api_key = key;
-    atomicWrite(file, `${JSON.stringify(config, null, 2)}\n`);
+    atomicSecretWrite(file, `${JSON.stringify(config, null, 2)}\n`);
     output({ keySaved: true, environmentNotModified: true });
   }
   else if (command === 'rollback') output(rollback());

@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 spec = importlib.util.spec_from_file_location('collector', Path(__file__).parent / 'agent_context_headroom/collector.py')
 collector = importlib.util.module_from_spec(spec)
@@ -14,6 +15,19 @@ spec.loader.exec_module(collector)
 
 
 class CollectorTests(unittest.IsolatedAsyncioTestCase):
+    def test_windows_outbox_uses_the_private_writer_stdin_without_creating_a_plaintext_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            queue = Path(directory) / 'queue'
+            data = b'{"resourceSpans":[]}'
+            fake_os = SimpleNamespace(name='nt', environ={'AGENT_CONTEXT_HOME': directory, 'AGENT_CONTEXT_NODE': 'node-fixture'})
+            with patch.object(collector, 'os', fake_os), patch('subprocess.run') as run:
+                collector.enqueue(queue, data)
+                args = run.call_args.args[0]
+                self.assertEqual(args[2:4], ['telemetry', 'enqueue'])
+                self.assertEqual(run.call_args.kwargs['input'], data)
+                self.assertNotIn(data.decode(), ' '.join(args))
+                self.assertEqual(list(queue.iterdir()), [])
+
     def test_protobuf_and_gzip_keep_native_ids_and_attributes(self):
         from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
         message = ExportTraceServiceRequest()

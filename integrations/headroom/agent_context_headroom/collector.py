@@ -69,6 +69,15 @@ def enqueue(directory, data):
     if len(data) > MAX_BODY or sum(p.stat().st_size for p in directory.glob('*.json') if not p.is_symlink()) + len(data) > MAX_QUEUE:
         raise ValueError('Outbox full')
     target = directory / (uuid.uuid4().hex + '.json')
+    if os.name == 'nt':
+        import shutil
+        import subprocess
+        home = Path(os.environ.get('AGENT_CONTEXT_HOME', str(Path.home())))
+        node = os.environ.get('AGENT_CONTEXT_NODE') or shutil.which('node')
+        if not node:
+            raise ValueError('Private Windows outbox writer unavailable')
+        subprocess.run([node, str(home / '.agent-context/launcher.mjs'), 'telemetry', 'enqueue', str(target)], input=data, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12, check=True)
+        return
     temporary = target.with_suffix('.tmp')
     try:
         with temporary.open('xb') as out:

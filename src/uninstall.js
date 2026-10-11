@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { writeConfig } from './private-file.js';
 import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import YAML from 'yaml';
@@ -187,7 +188,7 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
       for (const item of changes) {
         const current = fs.existsSync(item.file) ? fs.readFileSync(item.file) : null;
         if (!equal(current, item.initial)) fail('configuration changed during removal');
-        if (item.after === null) fs.rmSync(item.file, { force: true }); else atomicWrite(item.file, item.after);
+        if (item.after === null) fs.rmSync(item.file, { force: true }); else writeConfig(item.file, item.after);
         written.push(item);
       }
       for (const move of moves) {
@@ -201,7 +202,7 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
       for (const item of written.reverse()) {
         const current = fs.existsSync(item.file) ? fs.readFileSync(item.file) : null;
         if (!equal(current, item.after)) continue;
-        if (item.initial === null) fs.rmSync(item.file, { force: true }); else atomicWrite(item.file, item.initial);
+        if (item.initial === null) fs.rmSync(item.file, { force: true }); else writeConfig(item.file, item.initial);
       }
       throw error;
     }

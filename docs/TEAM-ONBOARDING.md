@@ -8,6 +8,10 @@
 
 Кандидат должен распространяться по полному проверенному commit SHA; moving main до публикации не содержит обещанной схемы. Автоматическое обновление 0.1.x → 0.2.0 требует явной миграции. Для рассмотренного существующего профиля агент использует `setup --migrate`; без этого переход minor отказывает. Подписанные автоматические patch-обновления этот запрет не обходят. Проверка прежнего bootstrap и возможность package rollback сохраняются; downgrade через `--migrate` запрещён.
 
+Gateway setup сначала отказывает занятому старому proxy. Только свободные старые сервисы останавливаются штатно с проверкой owner/control token; после смены routing запускается новая версия с collector. До этого native exporters не получают device credentials для loopback endpoint старого upstream catch-all. Если запуск не удался, native exporter повторяет local delivery; на provider такой OTLP не пересылается.
+
+Package rollback на версию без gateway/collector отказывает, пока device routing не восстановлен рассмотренной процедурой удаления/переустановки. Это предотвращает пересылку OTLP/доступа устройства в upstream catch-all старой версии. Обычный rollback внутри поддерживающих gateway версий сохраняется.
+
 ## Однократная настройка владельца
 
 1. Зарегистрировать OAuth App организации: https://github.com/organizations/taskqorg/settings/applications/new . Имя `Agent Context`; homepage `https://github.com/taskqorg/agent-context`; callback `https://github.com/taskqorg/agent-context` (Device Flow callback не использует). Включить **Enable Device Flow**. Нужен только публичный **Client ID**; Client Secret для этой схемы не нужен.
@@ -35,6 +39,7 @@
 - Удаление сотрудника из разрешённой организации/team отказывает при следующей проверке, максимум 60 секунд после предыдущей успешной проверки. Ошибка GitHub после истечения cache отказывает доступу. Старые очереди не уходят под новым устройством после повторного подключения.
 - Capture содержит conversation/tool payloads согласно native exporter. Закрытые очереди могут содержать чувствительные данные; маскирование сторонних exporters не гарантирует удаление всех секретов. Не логировать тела/Authorization ни в gateway, ни в reverse proxy.
 - Uninstall восстанавливает собственные изменения native credential routing, сохраняет последующие unrelated owner edits и удаляет local outbox/device token. Общие серверные ключи, сторонние exporters и существующие Langfuse traces не удаляются.
+- На native Windows секрет сначала получает защищённый DACL на пустом temp file, затем записывается и атомарно заменяет файл: только владелец профиля/SYSTEM/Administrators, без наследуемого доступа других пользователей. Это относится к credential/device files, содержащим device credentials native configs и закрытым installer backups; parent ACL и общие permission policies не меняются. Отказ установить DACL сохраняет прежний файл. Installer/exporter должен работать как владелец профиля; живой тест этого механизма на native Windows остаётся частью квалификации, а не доказан unit mock.
 
 ## Квалификация
 

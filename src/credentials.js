@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
-import { home, atomicWrite } from './core.js';
+import { home } from './core.js';
+import { atomicSecretWrite } from './private-file.js';
 
 // Native terminal input stays local; neither key appears in argv, chat or stdout.
 export async function credentialInput(kind) {
@@ -42,6 +43,6 @@ export function saveLangfuse(input) {
   catch (error) { if (error.code !== 'ENOENT') throw new Error('Unsupported existing Langfuse configuration; preserve it'); }
   if (!current || typeof current !== 'object' || Array.isArray(current)) throw new Error('Unsupported existing Langfuse configuration; preserve it');
   // Explicit credential replacement invalidates delivery; owner metadata/trust remains intact.
-  atomicWrite(file, JSON.stringify({ ...current, enabled: true, public_key: value.public_key, secret_key: value.secret_key, base_url: value.base_url.replace(/\/$/, '') }, null, 2) + '\n');
+  atomicSecretWrite(file, JSON.stringify({ ...current, enabled: true, public_key: value.public_key, secret_key: value.secret_key, base_url: value.base_url.replace(/\/$/, '') }, null, 2) + '\n');
   return { keysSaved: true, delivery: 'unverified', nextSteps: ['agent-context setup', 'agent-context telemetry verify'] };
 }

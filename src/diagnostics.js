@@ -7,6 +7,7 @@ import { ensureService, serviceHealth } from './service.js';
 import { incidents, recordIncident } from './incidents.js';
 import { compressionWarnings } from './conflicts.js';
 import { telemetryStatus } from './telemetry.js';
+import { writeConfig } from './private-file.js';
 
 export async function diagnose({ fix = false, live = false } = {}) {
   const actions = [];
@@ -49,7 +50,8 @@ export async function diagnose({ fix = false, live = false } = {}) {
         for (const { file, bytes } of pending) {
           fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
           // Exclusive creation preserves a file the owner may have recreated after diagnosis.
-          fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 });
+          if (fs.existsSync(file)) continue;
+          writeConfig(file, bytes, { exclusive: true });
           actions.push({ status: 'restored_missing_owned_file' });
         }
       }

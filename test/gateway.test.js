@@ -10,6 +10,7 @@ import { compressSupercompress } from '../src/supercompress.js';
 import { langfuseConfig } from '../src/telemetry.js';
 import { automaticPlan } from '../src/automatic.js';
 import { serveGateway } from '../src/gateway-server.js';
+import { install } from '../src/install.js';
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-gateway-'));
 process.env.AGENT_CONTEXT_HOME = path.join(directory, 'client');
@@ -118,6 +119,13 @@ test('installed native exporters route through local outboxes without service ma
   assert.equal(keyStatus().present, false);
   assert.equal(langfuseConfig(), null);
   fs.writeFileSync(enrollmentFile, bytes);
+  const serviceFile = path.join(home, '.agent-context/services/codex.json');
+  fs.mkdirSync(path.dirname(serviceFile), { recursive: true });
+  fs.writeFileSync(serviceFile, JSON.stringify({ version: '0.1.20', pid: process.pid, childPid: process.pid }));
+  const before = fs.readFileSync(path.join(home, '.codex/config.toml'));
+  assert.throws(() => install(['codex'], { automatic: true, migrate: true }), /stopped old proxy/);
+  assert.deepEqual(fs.readFileSync(path.join(home, '.codex/config.toml')), before);
+  fs.rmSync(serviceFile);
 });
 
 test('team gate and partially rejected ingestion fail closed', async () => {
