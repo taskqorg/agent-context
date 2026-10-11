@@ -14,7 +14,7 @@ import { runAgent } from '../src/run.js';
 import { servicePort, serviceHealth, ensureService, serveService, lifecycle } from '../src/service.js';
 import { diagnose } from '../src/diagnostics.js';
 import { compressionWarnings } from '../src/conflicts.js';
-import { incidents, recordIncident, reportIncidents, incidentPolicy } from '../src/incidents.js';
+import { incidents, recordIncident, reportIncidents, incidentPolicy, pendingPackets } from '../src/incidents.js';
 import { spawn } from 'node:child_process';
 import { uninstall } from '../src/uninstall.js';
 
@@ -71,9 +71,10 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
   } else if (command === 'incidents') {
     if (args[0] === 'report') output(await reportIncidents());
     else if (args[0] === 'record') { const item = recordIncident(JSON.parse(fs.readFileSync(0, 'utf8'))); if (!item) throw new Error('Unsupported incident fields'); output({ event_id: item.event_id, fingerprint: item.fingerprint }); }
-    else if (['enable', 'disable'].includes(args[0])) output(incidentPolicy(args[0] === 'enable'));
+    else if (['enable', 'disable'].includes(args[0])) output(incidentPolicy(args[0] === 'enable', args.includes('--gh') ? 'gh' : 'relay'));
+    else if (args[0] === 'show') output(pendingPackets());
     else if (!args.length || args[0] === 'list') output(incidents());
-    else throw new Error('Usage: agent-context incidents list|report|enable|disable');
+    else throw new Error('Usage: agent-context incidents list|show|report|enable [--gh]|disable');
   } else if (command === 'run') {
     process.exitCode = await runAgent(args[0], args.slice(1));
   } else if (command === 'mcp') {

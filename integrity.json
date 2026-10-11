@@ -1,7 +1,7 @@
 {
   "version": "0.1.12",
   "files": {
-    "bin/agent-context.js": "6ef789460640c77c891ed60d9112d13cf9f009a1b05a3e8b732ccc1f4d1532dd",
+    "bin/agent-context.js": "2360d4ea46255a7751d0870d9d1bd040b1f5e214d0073199555314bed8c20bc5",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "3978ebd68a3d83a52a503230bee7ee1ca6782a5d1f4281c3b58cf9bd70a67695",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
@@ -10,7 +10,7 @@
     "src/executable.js": "d5dab0048128f53b65c9d418241f7d5a184c27804c95b3ae9e0175bc9a497e6a",
     "src/headroom.js": "f1775007e673aa1366584f3eea202b00f108ff66cb77834f63227a760d4ecbe9",
     "src/hooks.js": "fe3656d551ccc5bc393f6743e4102353a1446a53c6b90b2f743f3b43db9374f7",
-    "src/incidents.js": "31e05c33584ec121155fe13cbde1718871435211bbe1612440f8efc0a4be2ef2",
+    "src/incidents.js": "db14d2b3a60b57b85dedbdec9cd71fbda049904a8688d7ddeec90897e05981d7",
     "src/install.js": "5a60dd61e979fd16104308a64c971e74cd6416ca9ee1d4d1f3f35f891dc7922f",
     "src/mcp.js": "6efe4b678105422dbbdaf48faa9022a3275b1800b515138009369bee7d2bf1c0",
     "src/run.js": "36648d4a619d1a6598d133bdb4229b9ac5f46113622b30e14cbc86db8c314a64",
