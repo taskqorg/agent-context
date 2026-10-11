@@ -19,7 +19,7 @@ MAX_QUEUE = 20 * 1024 * 1024
 
 
 def device_config():
-    home = Path(os.environ.get('AGENT_CONTEXT_HOME', str(Path.home())))
+    home = Path(os.environ.get('AGENT_CONTEXT_HOME') or str(Path.home()))
     value = json.loads((home / '.agent-context/enrollment.json').read_text())
     import re
     url = urlparse(value['gateway'])
@@ -72,7 +72,7 @@ def enqueue(directory, data):
     if os.name == 'nt':
         import shutil
         import subprocess
-        home = Path(os.environ.get('AGENT_CONTEXT_HOME', str(Path.home())))
+        home = Path(os.environ.get('AGENT_CONTEXT_HOME') or str(Path.home()))
         node = os.environ.get('AGENT_CONTEXT_NODE') or shutil.which('node')
         if not node:
             raise ValueError('Private Windows outbox writer unavailable')

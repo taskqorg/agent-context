@@ -39,7 +39,7 @@ export async function prepareHeadroom(run = execute) {
   }
   if (!interpreter) throw new Error('Headroom requires an installed Python 3.11–3.13; set AGENT_CONTEXT_PYTHON to its executable');
   await run(interpreter[0], [...interpreter.slice(1), '-m', 'venv', path.join(dir, 'venv')], { timeout: 60000, windowsHide: true, env: pythonEnvironment() });
-  await run(python, ['-m', 'pip', 'install', project], { timeout: 180000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: pythonEnvironment() });
+  await run(python, ['-m', 'pip', 'install', project], { timeout: 300000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: pythonEnvironment() });
   await run(python, ['-c', 'import importlib.metadata as m; assert m.version("headroom-ai") == "0.40.0"; from headroom.transforms.compressor_registry import CompressorRegistry; r=CompressorRegistry(); r.discover(); assert r.get("supercompress") is not None'], { timeout: 30000, windowsHide: true, env: pythonEnvironment() });
   atomicWrite(ready, JSON.stringify({ recipe, headroom: '0.40.0' }));
   return { python, headroom, recipe, reused: false };
