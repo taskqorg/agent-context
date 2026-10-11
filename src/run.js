@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { prepareHeadroom } from './headroom.js';
+import { prepareHeadroom, pythonEnvironment } from './headroom.js';
 import { root, version } from './core.js';
 import { agentExecutable } from './executable.js';
 
@@ -16,7 +16,7 @@ export async function runAgent(agent, args) {
   if (!['codex', 'claude'].includes(agent)) throw new Error('Usage: agent-context run codex|claude [agent arguments]');
   const proxy = await startProxy(undefined, { AGENT_CONTEXT_AGENT: agent === 'claude' ? 'claude-code' : agent });
   const env = { ...process.env };
-  const recovery = { command: proxy.runtime.headroom, args: ['mcp', 'serve', '--proxy-url', proxy.url], env: { HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1' } };
+  const recovery = { command: proxy.runtime.headroom, args: ['mcp', 'serve', '--proxy-url', proxy.url], env: { PYTHONPATH: '', PYTHONHOME: '', HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1' } };
   const agentArgs = agent === 'codex' ? [
     '-c', 'model_provider="agent_context"',
     '-c', 'model_providers.agent_context.name="Agent Context"',
@@ -27,7 +27,10 @@ export async function runAgent(agent, args) {
     '-c', 'mcp_servers.supercompress.enabled=false',
     '-c', `mcp_servers.headroom.command=${JSON.stringify(recovery.command)}`,
     '-c', `mcp_servers.headroom.args=${JSON.stringify(recovery.args)}`,
+    '-c', 'mcp_servers.headroom.tools.headroom_retrieve.approval_mode="approve"',
     '-c', 'mcp_servers.headroom.enabled_tools=["headroom_retrieve"]',
+    '-c', 'mcp_servers.headroom.env.PYTHONPATH=""',
+    '-c', 'mcp_servers.headroom.env.PYTHONHOME=""',
     '-c', 'mcp_servers.headroom.env.HEADROOM_STATELESS="true"',
     '-c', 'mcp_servers.headroom.env.HEADROOM_OFFLINE="1"', ...args,
   ] : args;
@@ -67,7 +70,7 @@ export async function startProxy(runtime, environment = {}) {
   const controlKey = crypto.randomUUID();
   const log = fs.openSync(path.join(dir, 'proxy.log'), 'a', 0o600);
   const child = spawn(runtime.python, ['-m', 'agent_context_headroom.proxy'], {
-    env: { ...process.env, AGENT_CONTEXT_COMPRESSOR: '', AGENT_CONTEXT_PROXY_PORT: '0', ...environment, AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey },
+    env: pythonEnvironment({ ...process.env, AGENT_CONTEXT_COMPRESSOR: '', AGENT_CONTEXT_PROXY_PORT: '0', ...environment, AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey }),
     windowsHide: true, stdio: ['ignore', log, log],
   });
   fs.closeSync(log);

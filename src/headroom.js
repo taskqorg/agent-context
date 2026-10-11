@@ -8,6 +8,13 @@ import { root, sha, atomicWrite, tryLock } from './core.js';
 
 const execute = promisify(execFile);
 const source = fileURLToPath(new URL('../', import.meta.url));
+// Private Python runtimes must not import the parent agent's Python installation.
+export function pythonEnvironment(environment = process.env) {
+  const env = { ...environment };
+  delete env.PYTHONPATH;
+  delete env.PYTHONHOME;
+  return env;
+}
 export async function prepareHeadroom(run = execute) {
   const project = path.join(source, 'integrations', 'headroom');
   const files = ['pyproject.toml', 'agent_context_headroom/__init__.py', 'agent_context_headroom/proxy.py', 'agent_context_headroom/observability.py', 'agent_context_headroom/request_context.py'];
@@ -26,14 +33,14 @@ export async function prepareHeadroom(run = execute) {
   let interpreter;
   for (const candidate of candidates) {
     try {
-      await run(candidate[0], [...candidate.slice(1), '-c', 'import sys; assert (3,11) <= sys.version_info[:2] < (3,14)'], { timeout: 10000, windowsHide: true });
+      await run(candidate[0], [...candidate.slice(1), '-c', 'import sys; assert (3,11) <= sys.version_info[:2] < (3,14)'], { timeout: 10000, windowsHide: true, env: pythonEnvironment() });
       interpreter = candidate; break;
     } catch { /* Try another installed interpreter; never alter the system Python. */ }
   }
   if (!interpreter) throw new Error('Headroom requires an installed Python 3.11–3.13; set AGENT_CONTEXT_PYTHON to its executable');
-  await run(interpreter[0], [...interpreter.slice(1), '-m', 'venv', path.join(dir, 'venv')], { timeout: 60000, windowsHide: true });
-  await run(python, ['-m', 'pip', 'install', project], { timeout: 180000, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
-  await run(python, ['-c', 'import importlib.metadata as m; assert m.version("headroom-ai") == "0.40.0"; from headroom.transforms.compressor_registry import CompressorRegistry; r=CompressorRegistry(); r.discover(); assert r.get("supercompress") is not None'], { timeout: 30000, windowsHide: true });
+  await run(interpreter[0], [...interpreter.slice(1), '-m', 'venv', path.join(dir, 'venv')], { timeout: 60000, windowsHide: true, env: pythonEnvironment() });
+  await run(python, ['-m', 'pip', 'install', project], { timeout: 180000, maxBuffer: 4 * 1024 * 1024, windowsHide: true, env: pythonEnvironment() });
+  await run(python, ['-c', 'import importlib.metadata as m; assert m.version("headroom-ai") == "0.40.0"; from headroom.transforms.compressor_registry import CompressorRegistry; r=CompressorRegistry(); r.discover(); assert r.get("supercompress") is not None'], { timeout: 30000, windowsHide: true, env: pythonEnvironment() });
   atomicWrite(ready, JSON.stringify({ recipe, headroom: '0.40.0' }));
   return { python, headroom, recipe, reused: false };
   } finally { release(); }
@@ -45,7 +52,7 @@ export async function qualifyHeadroom(args, run = execute) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-qualification-'));
   const result = await run(runtime.python, [path.join(source, 'scripts', 'headroom-qualify.py'), '--headroom', runtime.headroom, '--cwd', work, ...args], {
     timeout: 170000, maxBuffer: 4 * 1024 * 1024, windowsHide: true,
-    env: { ...process.env, AGENT_CONTEXT_NODE: process.execPath },
+    env: pythonEnvironment({ ...process.env, AGENT_CONTEXT_NODE: process.execPath }),
   });
   return { ...runtime, evidenceDir: work, result: result.stdout.trim() };
 }

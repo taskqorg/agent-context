@@ -28,7 +28,7 @@ export function automaticPlan(plan) {
       value.model_providers ||= {};
       value.model_providers.agent_context = { name: 'Agent Context', base_url: url + '/v1', wire_api: 'responses', requires_openai_auth: true, supports_websockets: true };
       value.mcp_servers.supercompress.enabled = false;
-      value.mcp_servers.headroom = { ...recovery(agent), enabled_tools: ['headroom_retrieve'], startup_timeout_sec: 30, tool_timeout_sec: 60 };
+      value.mcp_servers.headroom = { ...recovery(agent), enabled_tools: ['headroom_retrieve'], startup_timeout_sec: 30, tool_timeout_sec: 60, tools: { ...value.mcp_servers.headroom?.tools, headroom_retrieve: { ...value.mcp_servers.headroom?.tools?.headroom_retrieve, approval_mode: 'approve' } } };
       const preserved = current(file).split(/(?=^\s*\[)/m).filter(section => {
         const header = /^\s*\[([^\]\r\n]+)\]/.exec(section);
         if (!header) return true;
@@ -51,6 +51,7 @@ export function automaticPlan(plan) {
       if (config.env.ANTHROPIC_BASE_URL && config.env.ANTHROPIC_BASE_URL !== url) throw new Error('Unsupported existing Claude proxy; preserve its routing');
       config.env.ANTHROPIC_BASE_URL = url;
       config.permissions ||= {};
+      config.permissions.allow = [...new Set([...(config.permissions.allow || []), 'mcp__headroom__headroom_retrieve'])];
       config.permissions.deny = [...new Set([...(config.permissions.deny || []), 'mcp__headroom__headroom_compress'])];
       config.hooks.PostToolUse = (config.hooks.PostToolUse || []).filter(rule => !rule.hooks?.some(item => item.command?.includes(launcher())));
       config.hooks.SessionStart ||= [];

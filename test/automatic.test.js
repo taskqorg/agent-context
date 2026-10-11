@@ -15,7 +15,7 @@ delete process.env.SUPERCOMPRESS_API_KEY;
 for (const agent of ['codex', 'claude', 'hermes']) fs.mkdirSync(path.join(home, '.' + agent));
 fs.mkdirSync(path.join(home, '.supercompress')); fs.writeFileSync(path.join(home, '.supercompress/config.json'), JSON.stringify({ api_key: 'sc_owned_synthetic_fixture_not_a_real_key' }));
 const codex = path.join(home, '.codex/config.toml');
-fs.writeFileSync(codex, '# owner comment\nmodel="existing"\n[mcp_servers.other]\ncommand="keep"\n');
+fs.writeFileSync(codex, '# owner comment\nmodel="existing"\napproval_policy="never"\n[mcp_servers.other]\ncommand="keep"\n');
 test('automatic setup preserves unrelated settings, routes subscription auth, has no output hook duplication, and rolls back', async () => {
   const before = fs.readFileSync(codex);
   const report = install(['codex', 'claude', 'hermes'], { automatic: true });
@@ -24,10 +24,13 @@ test('automatic setup preserves unrelated settings, routes subscription auth, ha
   assert.equal(config.model_providers.agent_context.requires_openai_auth, true);
   assert.equal(config.mcp_servers.supercompress.enabled, false);
   assert.equal(config.mcp_servers.other.command, 'keep');
+  assert.equal(config.approval_policy, 'never');
+  assert.equal(config.mcp_servers.headroom.tools.headroom_retrieve.approval_mode, 'approve');
   assert.ok(fs.readFileSync(codex, 'utf8').includes('# owner comment'));
   const claude = JSON.parse(fs.readFileSync(path.join(home, '.claude/settings.json')));
   assert.equal(claude.env.ANTHROPIC_BASE_URL, `http://127.0.0.1:${process.platform === 'win32' ? 18888 : 18788}`);
   assert.equal(claude.hooks.SessionStart.length, 1); assert.equal(claude.hooks.PostToolUse.length, 0);
+  assert.deepEqual(claude.permissions.allow, ['mcp__headroom__headroom_retrieve']);
   assert.deepEqual(claude.permissions.deny, ['mcp__headroom__headroom_compress']);
   const hermes = YAML.parse(fs.readFileSync(path.join(home, '.hermes/config.yaml'), 'utf8'));
   assert.ok(hermes.plugins.enabled.includes('agent-context'));

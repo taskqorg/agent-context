@@ -9,7 +9,7 @@ import { serve } from '../src/mcp.js';
 import { install, rollback, doctor } from '../src/install.js';
 import { verify } from '../src/verify.js';
 import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '../src/update.js';
-import { prepareHeadroom, qualifyHeadroom } from '../src/headroom.js';
+import { pythonEnvironment, prepareHeadroom, qualifyHeadroom } from '../src/headroom.js';
 import { runAgent } from '../src/run.js';
 import { servicePort, serviceHealth, ensureService, serveService, lifecycle } from '../src/service.js';
 import { diagnose } from '../src/diagnostics.js';
@@ -62,7 +62,7 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (!await serviceHealth(args[0])) ensureService(args[0]).catch(() => {});
     const runtime = await prepareHeadroom();
     process.exitCode = await new Promise((resolve, reject) => {
-      const child = spawn(runtime.headroom, ['mcp', 'serve', '--proxy-url', service.url], { stdio: 'inherit', env: { ...process.env, HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1' }, windowsHide: true });
+      const child = spawn(runtime.headroom, ['mcp', 'serve', '--proxy-url', service.url], { stdio: 'inherit', env: pythonEnvironment({ ...process.env, HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1' }), windowsHide: true });
       child.once('error', reject); child.once('close', code => resolve(code ?? 1));
       process.once('SIGTERM', () => child.kill());
     });

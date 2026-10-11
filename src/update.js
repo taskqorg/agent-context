@@ -173,7 +173,7 @@ export async function prepare(archive, stage, expected) {
   await run(process.execPath, ['scripts/integrity.js', '--check'], dir);
   await run(process.execPath, ['--test'], dir);
   if (fs.existsSync(path.join(dir, 'src/headroom.js'))) {
-    const code = `const {prepareHeadroom}=await import('./src/headroom.js');const r=await prepareHeadroom();const {spawnSync}=await import('node:child_process');for(const folder of ['headroom','hermes']){const x=spawnSync(r.python,['-m','unittest','discover','-s','integrations/'+folder,'-p',folder==='headroom'?'test_adapter.py':'test_plugin.py'],{env:{...process.env,PYTHONPATH:'integrations/headroom'},stdio:'ignore',timeout:30000});if(x.status!==0)process.exit(1);}`;
+    const code = `const {prepareHeadroom,pythonEnvironment}=await import('./src/headroom.js');const r=await prepareHeadroom();const {spawnSync}=await import('node:child_process');for(const folder of ['headroom','hermes']){const x=spawnSync(r.python,['-m','unittest','discover','-s','integrations/'+folder,'-p',folder==='headroom'?'test_adapter.py':'test_plugin.py'],{env:{...pythonEnvironment(),PYTHONPATH:'integrations/headroom'},stdio:'ignore',timeout:30000});if(x.status!==0)process.exit(1);}`;
     await run(process.execPath, ['--input-type=module', '-e', code], dir, { timeout: 240000, environment: { AGENT_CONTEXT_HOME: home(), HEADROOM_STATELESS: 'true', HEADROOM_OFFLINE: '1', AGENT_CONTEXT_LANGFUSE: '0' } });
   }
   return dir;

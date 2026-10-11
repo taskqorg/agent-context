@@ -3,12 +3,18 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { prepareHeadroom } from '../src/headroom.js';
+import { prepareHeadroom, pythonEnvironment } from '../src/headroom.js';
 import { startProxy, runAgent } from '../src/run.js';
 
 test('owned proxy startup rejects a missing executable without hanging; invalid agents do not start it', async () => {
   await assert.rejects(startProxy({ python: path.join(os.tmpdir(), 'agent-context-nonexistent-python') }), /startup failed/);
   await assert.rejects(runAgent('unsupported', []), /Usage:/);
+});
+
+test('private Python environment removes parent imports without changing credentials or the parent', () => {
+  const parent = { PYTHONPATH: 'foreign/site-packages', PYTHONHOME: 'foreign', PATH: 'native', SUPERCOMPRESS_API_KEY: 'synthetic' };
+  assert.deepEqual(pythonEnvironment(parent), { PATH: 'native', SUPERCOMPRESS_API_KEY: 'synthetic' });
+  assert.equal(parent.PYTHONPATH, 'foreign/site-packages');
 });
 
 test('Headroom preparation marks only verified runtime ready and releases failure lock', async () => {
@@ -24,7 +30,9 @@ test('Headroom preparation marks only verified runtime ready and releases failur
     assert.equal(fs.existsSync(path.join(recipeDir, 'ready.json')), false);
     assert.equal(fs.existsSync(path.join(recipeDir, 'prepare.lock')), false);
     const calls = [];
-    const runtime = await prepareHeadroom(async (exe, args) => {
+    const runtime = await prepareHeadroom(async (exe, args, options) => {
+      assert.equal('PYTHONPATH' in options.env, false);
+      assert.equal('PYTHONHOME' in options.env, false);
       calls.push(args);
       if (args.includes('pip')) {
         fs.writeFileSync(exe, '');
