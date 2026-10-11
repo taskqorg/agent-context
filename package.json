@@ -1,6 +1,6 @@
 {
   "name": "@alexkirs/agent-context",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -43,7 +43,9 @@
     "integrations/hermes/agent-context/plugin.yaml",
     "integrations/hermes/test_plugin.py",
     "INSTALL.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "dashboards/serviceq.json",
+    "docs/SERVICEQ.md"
   ],
   "scripts": {
     "test": "node scripts/integrity.js && node --test",

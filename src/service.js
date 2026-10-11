@@ -6,6 +6,7 @@ import { launcher } from './update.js';
 import { startProxy } from './run.js';
 import { recordIncident } from './incidents.js';
 import { profileIdentity } from './telemetry.js';
+import { startMonitoring } from './monitor.js';
 
 export const servicePort = (agent, platform = process.platform) => {
   const port = ({ codex: 18787, claude: 18788, hermes: 18790 })[agent];
@@ -83,6 +84,7 @@ export async function serveService(agent) {
   const port = servicePort(agent);
   if (!port) throw new Error('Choose codex, claude or hermes');
   if (fs.existsSync(path.join(root(), 'uninstalling.json'))) throw new Error('Uninstall refused: removal in progress');
+  const stopMonitoring = startMonitoring();
   let proxy, stopping = false;
   const stop = () => { stopping = true; proxy?.stop(); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
@@ -110,6 +112,7 @@ export async function serveService(agent) {
       if (!stopping) await new Promise(resolve => setTimeout(resolve, Math.min(60000, 1000 * 2 ** attempt)));
     }
   } finally {
+    stopMonitoring();
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
   }
 }

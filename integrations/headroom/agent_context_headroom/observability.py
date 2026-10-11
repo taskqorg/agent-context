@@ -16,6 +16,7 @@ identity = ContextVar('agent_context_request', default={})
 _outcomes = Counter()
 _outcome_lock = Lock()
 _last_compression = None
+_tool_context = Counter()
 
 
 def record_compression(status, before, after, elapsed_ms):
@@ -28,11 +29,19 @@ def record_compression(status, before, after, elapsed_ms):
     for key, value in {'outcome': status, 'input_chars': before, 'output_chars': after,
                        'elapsed_ms': elapsed_ms, 'compressor': 'supercompress'}.items():
         span.set_attribute('agent_context.compression.' + key, value)
+    normal = {'compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget'}
+    if status not in normal:
+        span.set_attribute('langfuse.observation.level', 'ERROR')
+        span.set_attribute('langfuse.observation.status_message', status)
+        from opentelemetry.trace import Status, StatusCode
+        span.set_status(Status(StatusCode.ERROR, status))
 
 
 def compression_status():
     with _outcome_lock:
         return {'supercompress_outcomes': dict(_outcomes), 'last_attempt_at': _last_compression,
+                'tool_context': dict(_tool_context),
+                'coverage': 'router_tool_blocks_only_not_all_codex_ws_frames',
                 'proof': 'adapter_outcomes_not_model_token_savings'}
 
 
@@ -193,3 +202,37 @@ def delivery_probe(probe):
 if __name__ == '__main__':
     import sys
     print(json.dumps({'status': delivery_probe(json.loads(sys.argv[1]))}))
+
+
+def tool_blocks(messages):
+    """Count only textual tool payloads; exclude user prompts, instructions and binary media."""
+    blocks = []
+    for message in messages:
+        content = message.get('content', [])
+        if message.get('role') == 'tool':
+            if isinstance(content, str):
+                blocks.append(content)
+            elif isinstance(content, list):
+                blocks.extend(block.get('text', '') for block in content if isinstance(block, dict) and block.get('type') == 'text')
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict) or block.get('type') != 'tool_result':
+                    continue
+                result = block.get('content', '')
+                if isinstance(result, str):
+                    blocks.append(result)
+                elif isinstance(result, list):
+                    blocks.extend(item.get('text', '') for item in result if isinstance(item, dict) and item.get('type') == 'text')
+    return [block for block in blocks if isinstance(block, str)]
+
+
+def account_tool_context(before, after):
+    originals, transmitted = tool_blocks(before), tool_blocks(after)
+    # A changed block layout has no reliable per-block denominator.
+    if len(originals) != len(transmitted):
+        return
+    with _outcome_lock:
+        _tool_context['input_chars'] += sum(map(len, originals))
+        _tool_context['output_chars'] += sum(map(len, transmitted))
+        _tool_context['compressed'] += sum(len(b) < len(a) for a, b in zip(originals, transmitted))
+        _tool_context['passthrough'] += sum(len(b) >= len(a) for a, b in zip(originals, transmitted))

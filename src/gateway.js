@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { atomicWrite, sha } from './core.js';
+import { validateMonitor } from './monitor-protocol.js';
+import { sendMonitor } from './monitor.js';
 
 const label = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 const failure = (status, error) => Response.json({ error }, { status });
@@ -86,7 +88,26 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
     if (bytes.length > limitBytes) throw new Error('body_limit');
     return bytes.length ? JSON.parse(Buffer.from(bytes).toString('utf8')) : {};
   };
+  let monitorFlushing = false;
+  const monitorDirectory = path.join(config.stateDir, 'monitor-outbox');
   return {
+    async flushMonitor() {
+      if (monitorFlushing) return;
+      monitorFlushing = true;
+      try {
+        fs.mkdirSync(monitorDirectory, { recursive: true, mode: 0o700 });
+        for (const name of fs.readdirSync(monitorDirectory).filter(name => /^[a-f0-9]{64}\.json$/.test(name)).slice(0, 8)) {
+          const file = path.join(monitorDirectory, name);
+          if (fs.lstatSync(file).isSymbolicLink()) throw new Error('Invalid monitor queue');
+          const item = JSON.parse(fs.readFileSync(file));
+          // Revoked devices cannot continue uploading queued snapshots.
+          if (!Object.values(devices).some(device => device.id === item.device && !device.revoked) || Date.parse(item.packet.at) < now() - 7 * 86400000) { fs.unlinkSync(file); continue; }
+          if (!await sendMonitor(item.packet, config.langfuse, request, { device: item.device, user: item.user, now: now() })) break;
+          fs.unlinkSync(file);
+        }
+      } catch { /* Keep the private queue for the next bounded retry. */ }
+      finally { monitorFlushing = false; }
+    },
     revoke(id) { const device = Object.values(devices).find(value => value.id === id); if (!device) return false; device.revoked = true; save(); return true; },
     async handle(req, peer = 'local') {
       try {
@@ -112,6 +133,19 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
         }
         const device = await authenticate(req.headers.get('authorization'));
         if (!device) return failure(401, 'device_access_denied');
+        if (req.method === 'POST' && url.pathname === '/v1/monitor') {
+          if (!rate('monitor:' + device.id, 12)) return failure(429, 'rate_limited');
+          const packet = await readJSON(req);
+          try { validateMonitor(packet, now()); } catch { return failure(400, 'invalid_monitor_snapshot'); }
+          fs.mkdirSync(monitorDirectory, { recursive: true, mode: 0o700 });
+          const file = path.join(monitorDirectory, sha(device.id + packet.id) + '.json');
+          const bytes = JSON.stringify({ packet, device: device.id, user: device.user });
+          if (fs.existsSync(file)) return fs.readFileSync(file, 'utf8') === bytes ? Response.json({ status: 'queued' }) : failure(409, 'monitor_id_conflict');
+          const pending = fs.readdirSync(monitorDirectory).filter(name => /^[a-f0-9]{64}\.json$/.test(name));
+          if (pending.length >= 1000 || pending.reduce((n, name) => n + fs.lstatSync(path.join(monitorDirectory, name)).size, 0) + Buffer.byteLength(bytes) > 20 * 1024 * 1024) return failure(503, 'monitor_outbox_full');
+          atomicWrite(file, bytes);
+          return Response.json({ status: 'queued' });
+        }
         if (req.method === 'POST' && url.pathname === '/v1/compress') {
           if (!rate('compress:' + device.id, 60) || compressing >= 8) return failure(429, 'rate_limited');
           const body = await readJSON(req);

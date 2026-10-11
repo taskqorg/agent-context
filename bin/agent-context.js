@@ -21,6 +21,7 @@ import { telemetryStatus, verifyTelemetry, prepareCodexExporter } from '../src/t
 import { credentialInput, saveLangfuse } from '../src/credentials.js';
 import { connectGateway, enrollment } from '../src/enrollment.js';
 import { serveGateway } from '../src/gateway-server.js';
+import { monitorTick, MONITOR_INTERVAL_MS } from '../src/monitor.js';
 import { atomicSecretWrite } from '../src/private-file.js';
 
 const [command, ...args] = process.argv.slice(2);
@@ -29,10 +30,21 @@ const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\
 const versionsDir = path.join(root(), 'versions');
 const inManagedRuntime = fs.existsSync(versionsDir) && fs.realpathSync(fileURLToPath(import.meta.url)).startsWith(fs.realpathSync(versionsDir) + path.sep);
 const recovery = command === 'update' && ['rollback', 'disable'].includes(args[0]) || command === 'doctor' && args.includes('--fix');
-if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
+if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway', 'monitor'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
   await import(pathToFileURL(launcher()).href);
 } else try {
-  if (command === 'connect') {
+  if (command === 'monitor') {
+    if (args[0] === 'tick' && args.length === 1) output(await monitorTick({ force: true }));
+    else if (args[0] === 'serve' && args.length === 1) {
+      let stopped = false;
+      const stop = () => { stopped = true; };
+      process.once('SIGINT', stop); process.once('SIGTERM', stop);
+      while (!stopped && fs.existsSync(root()) && !fs.existsSync(path.join(root(), 'uninstalling.json'))) {
+        try { await monitorTick(); } catch { /* Retry without logging raw errors or credentials. */ }
+        await new Promise(resolve => { const done = () => { clearTimeout(timer); process.off('SIGTERM', done); process.off('SIGINT', done); resolve(); }; const timer = setTimeout(done, MONITOR_INTERVAL_MS); process.once('SIGTERM', done); process.once('SIGINT', done); });
+      }
+    } else throw new Error('Usage: agent-context monitor tick|serve');
+  } else if (command === 'connect') {
     if (args.length !== 1) throw new Error('Usage: agent-context connect <https://gateway-origin>');
     output(await connectGateway(args[0]));
   } else if (command === 'gateway' && args[0] === 'serve' && args.length === 2) {

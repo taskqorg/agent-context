@@ -27,5 +27,8 @@ export async function serveGateway(file) {
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
+  const monitorTimer = setInterval(() => gateway.flushMonitor(), 15000);
+  monitorTimer.unref(); gateway.flushMonitor();
+  server.once('close', () => clearInterval(monitorTimer));
   return server;
 }

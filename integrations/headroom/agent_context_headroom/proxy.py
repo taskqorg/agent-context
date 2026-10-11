@@ -78,6 +78,16 @@ def main():
                 span.set_attribute('agent_context.compression.outcome', 'compressed' if len(result.compressed) < len(content) else 'no_gain')
                 return result
         ContentRouter.compress = guarded
+    # Read-only accounting around the pinned router; it never rewrites the user's messages.
+    from .observability import account_tool_context
+    import copy
+    original_apply = ContentRouter.apply
+    def accounted_apply(self, messages, *args, **kwargs):
+        before = copy.deepcopy(messages)
+        result = original_apply(self, messages, *args, **kwargs)
+        account_tool_context(before, result.messages)
+        return result
+    ContentRouter.apply = accounted_apply
     for pipeline in (app.state.proxy.anthropic_pipeline, app.state.proxy.openai_pipeline):
         routers = [transform for transform in pipeline.transforms if isinstance(transform, ContentRouter)]
         if len(routers) != 1:

@@ -12,6 +12,28 @@ from headroom.transforms.compressor_registry import CompressInput, CompressorReg
 
 
 class AdapterTest(unittest.TestCase):
+    def test_accounting_excludes_user_prompt_and_counts_protected_unchanged_tool_text(self):
+        from agent_context_headroom.observability import account_tool_context, compression_status
+        before = [{'role': 'user', 'content': 'private user query'}, {'role': 'tool', 'content': 'long tool context'}, {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ERROR retain'}, {'type': 'text', 'text': 'user words'}]}]
+        after = [{'role': 'user', 'content': 'private user query'}, {'role': 'tool', 'content': 'short'}, {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ERROR retain'}]}]
+        prior = compression_status()['tool_context']
+        account_tool_context(before, after)
+        current = compression_status()['tool_context']
+        self.assertEqual(current.get('input_chars', 0) - prior.get('input_chars', 0), len('long tool context') + len('ERROR retain'))
+        self.assertEqual(current.get('compressed', 0) - prior.get('compressed', 0), 1)
+        self.assertEqual(current.get('passthrough', 0) - prior.get('passthrough', 0), 1)
+
+    def test_compression_failures_have_error_level_while_normal_skip_does_not(self):
+        from agent_context_headroom.observability import record_compression
+        class Span:
+            def __init__(self): self.values = {}
+            def set_attribute(self, key, value): self.values[key] = value
+            def set_status(self, status): self.status = status
+        for outcome, error in [('timeout', True), ('no_gain', False), ('request_budget', False)]:
+            span = Span()
+            with patch('opentelemetry.trace.get_current_span', return_value=span): record_compression(outcome, 100, 100, 1)
+            self.assertEqual(span.values.get('langfuse.observation.level') == 'ERROR', error)
+
     def test_langfuse_reuses_only_this_profiles_existing_source(self):
         from agent_context_headroom.observability import configure_environment
         with tempfile.TemporaryDirectory() as directory:
