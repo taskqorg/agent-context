@@ -1,11 +1,11 @@
 {
-  "version": "0.2.0",
+  "version": "0.2.1",
   "files": {
     "bin/agent-context.js": "95c1f89830196924441c25d6173e675b1cd30ccf4a4f60c24290fa5353380620",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "871a4fdd98acb689835af32df4e5a7909a9fb0ddf5cc2f04da3386d1da6a91b3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "bfe24c3cd4cd17af801156c2f715cb89355d1f2f3ca552b3d39cbb8d783d495f",
+    "src/core.js": "f58900a8b23fda7dcdbeb0a5912fae5c8dd4ebcf1cec9c751fd2cf1c80afdf88",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "bac902d9e07567e4d43109eaf808d96b7b5883f9629b3c25aa12443e8737909d",
     "src/enrollment.js": "744b84eb892bc177553da933cdfc1e32598bd46d53a28fd43c82c98012284e48",
