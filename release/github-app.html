@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8"><title>Create relay GitHub App</title>
+<p>Click to create the <b>agent-context-incident-relay</b> GitHub App for taskqorg (Issues: read &amp; write only).</p>
+<form action="https://github.com/organizations/taskqorg/settings/apps/new" method="post">
+<input type="hidden" name="manifest" id="m">
+<button type="submit">Create GitHub App</button>
+</form>
+<p>After creating, GitHub redirects to example.com with <code>?code=...</code> in the URL. Copy that code and run:<br>
+<code>./release/setup-github-app.sh &lt;code&gt;</code></p>
+<script>
+document.getElementById('m').value = JSON.stringify({
+  name: 'agent-context-incident-relay',
+  url: 'https://github.com/taskqorg/agent-context',
+  redirect_url: 'https://example.com/',
+  public: false,
+  default_permissions: { issues: 'write' },
+  default_events: []
+});
+</script>
