@@ -53,3 +53,9 @@ test('overview distinguishes selected package, monitor and old proxy, and saniti
   assert.equal(h.services.find(s => s.service === 'contextq').proxyVersion, '0.1.20');
   assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });
+test('Langfuse boolean updater flags and legacy strings agree; absent flags remain unknown', () => {
+  for (const [flag, expected] of [[true, true], ['true', true], [false, false], ['false', false], [undefined, null]]) {
+    const result = overview({ health: [row({ service: 'updater', agent: 'none', metadata: meta({ 'update.enabled': flag }) })] }, now);
+    assert.equal(result.hosts.find(h => h.id === 'windows/native').update.enabled, expected);
+  }
+});
