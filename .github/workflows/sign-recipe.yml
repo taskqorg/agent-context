@@ -10,9 +10,16 @@ permissions:
   contents: write
 jobs:
   sign:
+    # Only the reviewed main workflow can sign, and only after an environment reviewer approves the run.
+    # The key must be an environment secret of `release` (not a repository secret), so other branches cannot read it.
+    if: github.ref == 'refs/heads/main'
+    environment: release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22

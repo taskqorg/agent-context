@@ -1,11 +1,11 @@
 {
-  "version": "0.1.12",
+  "version": "0.1.13",
   "files": {
     "bin/agent-context.js": "febac56f4800bd19242cc9a317ff91a7d82194194991d5ae7d5af20a74a9c522",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "3978ebd68a3d83a52a503230bee7ee1ca6782a5d1f4281c3b58cf9bd70a67695",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "727d3b1ac85c54d3292cdce1220e7f4eca064bcef133a5cb134d38d80d0f11dc",
+    "src/core.js": "e7673d484f4cc6434514a28f2644e8b5d807717e0b1e19aeea1a70d9d4d629a1",
     "src/diagnostics.js": "83e1a879bd8857345d6a353d7bd6f16570125a301ca6dcebb1b58453f8549d42",
     "src/executable.js": "d5dab0048128f53b65c9d418241f7d5a184c27804c95b3ae9e0175bc9a497e6a",
     "src/headroom.js": "f1775007e673aa1366584f3eea202b00f108ff66cb77834f63227a760d4ecbe9",
