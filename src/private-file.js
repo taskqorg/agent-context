@@ -28,8 +28,11 @@ export function atomicSecretWrite(file, data, { platform = process.platform, exe
   const temporary = file + '.' + crypto.randomUUID() + '.tmp';
   try {
     fs.writeFileSync(temporary, '', { flag: 'wx' });
+    const environment = { ...process.env, AGENT_CONTEXT_PRIVATE_FILE: temporary, AGENT_CONTEXT_PROFILE_DIR: home() };
+    // Codex can inherit PS7 modules; Windows PowerShell must build its compatible default path.
+    for (const key of Object.keys(environment)) if (key.toUpperCase() === 'PSMODULEPATH') delete environment[key];
     execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(protect, 'utf16le').toString('base64')], {
-      env: { ...process.env, AGENT_CONTEXT_PRIVATE_FILE: temporary, AGENT_CONTEXT_PROFILE_DIR: home() }, stdio: 'ignore', windowsHide: true, timeout: 10000
+      env: environment, stdio: 'ignore', windowsHide: true, timeout: 10000
     });
     fs.writeFileSync(temporary, data);
     if (exclusive) fs.linkSync(temporary, file); else fs.renameSync(temporary, file);
