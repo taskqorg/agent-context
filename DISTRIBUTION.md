@@ -41,7 +41,7 @@ Use project bootstrap/readiness checks to diagnose installation, compatibility a
 
 ## Qualification asset
 
-Publish `recipe.json` only after CI on all three OS platforms and actual-client qualification. Candidate/prerelease assets never qualify as stable. Example schema (replace version, archive and digest with the reviewed release):
+Publish `recipe.json` only after CI on all three OS platforms and actual-client qualification. Then run the `Sign release recipe` workflow for the tag: it attaches `recipe.json.sig` (Ed25519, key in the `AGENT_CONTEXT_RELEASE_SIGNING_KEY` secret). Clients from 0.1.13 refuse unsigned recipes. The recipe may set `paused: true` (kill switch) or `rolloutPercent` (staged rollout). Candidate/prerelease assets never qualify as stable. Example schema (replace version, archive and digest with the reviewed release):
 
 ```json
 {"schema":1,"version":"0.1.5","launcherSchema":1,"adapterContract":1,"platforms":["win32","darwin","linux"],"clients":["codex","claude","hermes"],"archive":"alexkirs-agent-context-0.1.5.tgz","sha256":"<archive-sha256>"}
