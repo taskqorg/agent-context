@@ -9,6 +9,7 @@ import { keyStatus } from '../src/core.js';
 import { compressSupercompress } from '../src/supercompress.js';
 import { langfuseConfig } from '../src/telemetry.js';
 import { automaticPlan } from '../src/automatic.js';
+import { servicePort } from '../src/service.js';
 import { serveGateway } from '../src/gateway-server.js';
 import { install } from '../src/install.js';
 
@@ -107,7 +108,7 @@ test('installed native exporters route through local outboxes without service ma
   fs.writeFileSync(path.join(home, '.codex/config.toml'), '[mcp_servers.supercompress]\ncommand="fixture"\n');
   const plan = automaticPlan({ changes: [], installed: ['codex'], moves: [] });
   const value = JSON.parse(plan.changes.find(item => path.basename(item.file) === 'langfuse.json').after);
-  assert.equal(value.base_url, 'http://127.0.0.1:18787');
+  assert.equal(value.base_url, 'http://127.0.0.1:' + servicePort('codex'));
   assert.equal(value.secret_key, deviceCredentials().secret_key);
   assert.equal(JSON.stringify(plan).includes(config.langfuse.secret_key), false);
   fs.writeFileSync(path.join(home, '.codex/langfuse.json'), '{"enabled":false}');
