@@ -5,7 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { sha, root, version } from '../src/core.js';
-import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, enableUpdates } from '../src/update.js';
+import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, enableUpdates, verifyRecipeSignature } from '../src/update.js';
+import crypto from 'node:crypto';
 import { install, rollback } from '../src/install.js';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-update-'));
@@ -19,9 +20,9 @@ const restore = () => {
   fs.writeFileSync(path.join(root(), 'update-policy.json'), JSON.stringify({ enabled: true }));
 };
 const nextPatch = version.split('.').map((part, index) => index === 2 ? Number(part) + 1 : part).join('.');
-function fixture({ badDigest = false, qualified = true, next = nextPatch } = {}) {
+function fixture({ badDigest = false, qualified = true, next = nextPatch, extra = {} } = {}) {
   const bytes = Buffer.from('synthetic package archive');
-  const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes) }));
+  const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes), ...extra }));
   const asset = (name, data) => ({ name, state: 'uploaded', digest: `sha256:${sha(data)}`, size: data.length, browser_download_url: `https://github.com/taskqorg/agent-context/releases/download/v${next}/${name}` });
   const release = { tag_name: `v${next}`, draft: false, prerelease: false, assets: [asset('recipe.json', recipe), asset('candidate.tgz', bytes)] };
   if (badDigest) release.assets[1].digest = `sha256:${'0'.repeat(64)}`;
@@ -152,4 +153,27 @@ test('recovery CLI restores a valid previous runtime without loading corrupted a
   assert.equal(child.status, 0, child.stderr);
   assert.equal(JSON.parse(child.stdout).status, 'rolled_back'); assert.equal(pointer().version, version);
   assert.equal(updateStatus().enabled, false);
+});
+test('kill switch and staged rollout keep the active runtime; failures back off from 1h', async () => {
+  restore();
+  const before = pointer();
+  const paused = fixture({ extra: { paused: true } });
+  assert.equal((await update(paused)).status, 'paused'); assert.deepEqual(pointer(), before);
+  restore();
+  const staged = fixture({ extra: { rolloutPercent: 0 } });
+  assert.equal((await update(staged)).status, 'staged_wait'); assert.deepEqual(pointer(), before);
+  restore();
+  await update({ fetcher: async () => { throw new Error('offline'); } });
+  const state = JSON.parse(fs.readFileSync(path.join(root(), 'updates.json')));
+  assert.equal(state.failures, 1);
+  assert.ok(Math.abs(Date.now() - state.lastAttempt - (86400000 - 3600000)) < 60000, 'next automatic try in ~1h');
+});
+test('release signature verification accepts only the matching Ed25519 key', () => {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const pem = publicKey.export({ type: 'spki', format: 'pem' });
+  const bytes = Buffer.from('{"schema":1}');
+  const signature = crypto.sign(null, bytes, privateKey);
+  assert.equal(verifyRecipeSignature(bytes, signature, pem), true);
+  assert.equal(verifyRecipeSignature(Buffer.from('{"schema":2}'), signature, pem), false);
+  assert.equal(verifyRecipeSignature(bytes, Buffer.alloc(0), pem), false);
 });

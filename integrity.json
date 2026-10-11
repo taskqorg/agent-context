@@ -1,7 +1,7 @@
 {
   "version": "0.1.12",
   "files": {
-    "bin/agent-context.js": "2360d4ea46255a7751d0870d9d1bd040b1f5e214d0073199555314bed8c20bc5",
+    "bin/agent-context.js": "febac56f4800bd19242cc9a317ff91a7d82194194991d5ae7d5af20a74a9c522",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "3978ebd68a3d83a52a503230bee7ee1ca6782a5d1f4281c3b58cf9bd70a67695",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
@@ -17,7 +17,7 @@
     "src/service.js": "ae847e44a5480e591043d0243be6176dd104913e1ca5b2f8396e41a9281385eb",
     "src/supercompress.js": "a1dce6b9d43ab258b54dfd6294d3c77ea3ec1981fa1648fb292c4588981d9fe8",
     "src/uninstall.js": "a96a7d85510661e9c85fb4868a4516b57038fca7b6e214e09160cebe90775a31",
-    "src/update.js": "4f1737c71d4acb3ef9c06863e9e3ff839663a8b1f47ae266c4e32c6dbb4a3f19",
+    "src/update.js": "29aa41bab06eba4f0a24ae2c93342eca7748a618819599f6afd41c6aab35f1bd",
     "src/verify.js": "08cfdedddf687da531281b71b74e6a9fe2a1df3e1b37235d8c25c29200084cd0",
     "integrations/hermes/agent-context/plugin.yaml": "7ceea299e14c6e213038a9603a2afe19dc34f5339905d351fc68febbed554a58",
     "integrations/hermes/agent-context/__init__.py": "0f2b335f11a9705b67d20c308e6893628d39c1ae2ce2055fb6d9b74b17fd6a49",

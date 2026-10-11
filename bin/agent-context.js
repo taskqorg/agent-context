@@ -104,7 +104,10 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (fs.existsSync(file)) {
       const before = fs.readFileSync(file);
       config = JSON.parse(before.toString());
-      atomicWrite(path.join(root(), 'backups', `key-${Date.now()}.before`), before);
+      // One previous key copy is enough for recovery; older plaintext copies are removed.
+      const backups = path.join(root(), 'backups');
+      try { for (const name of fs.readdirSync(backups)) if (/^key-\d+\.before$/.test(name)) fs.rmSync(path.join(backups, name), { force: true }); } catch {}
+      atomicWrite(path.join(backups, `key-${Date.now()}.before`), before);
     }
     config.api_key = key;
     atomicWrite(file, `${JSON.stringify(config, null, 2)}\n`);
