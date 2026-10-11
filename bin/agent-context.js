@@ -52,8 +52,11 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     else throw new Error('Usage: agent-context proxy ensure|serve <agent>');
   } else if (command === 'lifecycle') {
     const result = await lifecycle(args[0]);
-    if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); tool results are not compressed. Use the claude CLI for compression.',
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings.' } });
+    // The launcher's own requests stay direct, but commands this session runs (claude -p, TaskQ workers) can use the proxy.
+    // Drop the launcher's short-lived token so children refresh their own login.
+    if (result.bypassed && process.env.CLAUDE_ENV_FILE) fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ANTHROPIC_BASE_URL='${result.url}'\nunset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH\n`);
+    if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); its own requests are not compressed. Claude processes it starts (claude -p, TaskQ workers) use the proxy.',
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: its own tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings for this session. Claude processes started from Bash here are routed through the proxy.' } });
   } else if (command === 'retrieval') {
     // Do not block the MCP handshake on proxy startup. Owner identity is checked (1s); if the port is not
     // our proxy, start ours in the background. Same loopback trust boundary as the agent's base URL.
