@@ -86,7 +86,9 @@
     },
     "compression_independently_read_back": true,
     "native_exporter": "official Codex 0.4.2 installed in both profiles; trust review required",
-    "claude_native_exporter": "missing"
+    "claude_native_exporter": "missing",
+    "credential_file_acl": "protected owner + SYSTEM + Administrators only; parent ACL unchanged",
+    "credential_acl_receipt": "C:\\Users\\alexk\\.agent-context\\020-langfuse-acl-receipt.json"
   },
   "limits": [
     "Native and compression spans correlate by native session/turn, not always by one parent trace tree.",

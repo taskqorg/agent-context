@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "package_version": "0.2.0",
+  "frozen_code_commit": "75b11dd2532e898c0a39e9616d267e95c8c39565",
+  "artifact_sha256": "f4dd7b549f4f8000bc98552996f06b9db8abb51a21ae2657242f0f1935665b25",
+  "branch": "codex/github-onboarding",
+  "gates": {
+    "nodeTests": 95,
+    "nodeResult": "pass",
+    "pythonCollectorTests": 3,
+    "pythonResult": "pass",
+    "npmPack": "pass",
+    "diffCheck": "pass"
+  },
+  "windowsPrivateWriter": {
+    "commit": "75b11dd2532e898c0a39e9616d267e95c8c39565",
+    "status": "PASS",
+    "invokingNodeInheritedCodexPSModulePath": true,
+    "parentEnvironmentUnchanged": true,
+    "emptyTempProtectedBeforeBytes": true,
+    "protectedDACL": true,
+    "explicitRules": 3,
+    "parentACLUnchanged": true,
+    "aclRefusalPreservesOriginal": true,
+    "exclusiveCollisionPreservesOriginal": true,
+    "collectorEnqueue": "PASS",
+    "collectorPayloadSHA256": "57bc3a530fb2531e27616aa44e504e044b9d41aea1c0f16b843d1fddb58a1cb9",
+    "networkRequests": 0,
+    "workingServicesInstalled": false,
+    "realCredentialsUsed": false,
+    "evidenceZipSHA256": "70d0c85005c9d8eaecbec04199a453ed949e4ff21f1718e13f2077ebafb880c0"
+  },
+  "fra": {
+    "version": "0.2.0",
+    "listener": "127.0.0.1",
+    "info": "pass",
+    "anonymousTelemetry": "denied_401",
+    "releaseDirectory": "/home/hermes/.local/share/agent-context-gateway/releases/75b11dd2532e898c0a39e9616d267e95c8c39565",
+    "publicGatewayActivated": false,
+    "productionProfilesChanged": false
+  },
+  "blockedOn": [
+    "GitHub OAuth App registration with Device Flow and public Client ID",
+    "Real browser onboarding",
+    "Public FRA HTTPS route and gateway activation",
+    "New native agent model/tool turns through gateway on Mac Windows WSL and FRA"
+  ],
+  "stableReleasePublished": false,
+  "completion": "candidate implemented and component-qualified; public onboarding not activated",
+  "liveGatewayComponents": {
+    "githubMembership": "verified_live",
+    "oauthBrowserFlow": "not_verified_client_registration_pending",
+    "compression": "compressed",
+    "inputChars": 12836,
+    "outputChars": 1317,
+    "criticalRetained": true,
+    "traceId": "38cbbe67dea05fec6a43b464ed71f187",
+    "nativeTraceId": "0532f6fb496e59ca3c77f2f6dcb79caa",
+    "sessionId": "agent-context-gateway-qualification-0532f6fb496e59ca3c77f2f6dcb79caa",
+    "user": "alexkirs",
+    "device": "2fca38d6d2758838085ead16b05b3b47",
+    "langfuse": "verified_readback",
+    "collector": "protobuf_sdk_to_durable_outbox_to_gateway",
+    "proof": "candidate_gateway_with_existing_github_login_not_native_agent_turn",
+    "independentLangfuseCliReadback": "pass"
+  }
+}
