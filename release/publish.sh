@@ -21,9 +21,9 @@ npm pack --pack-destination release/out >/dev/null
 node -e "
 const fs=require('fs'),c=require('crypto');
 const sha=c.createHash('sha256').update(fs.readFileSync('release/out/$ARCHIVE')).digest('hex');
-fs.writeFileSync('release/out/recipe.json',JSON.stringify({schema:1,version:'$VERSION',launcherSchema:1,adapterContract:1,platforms:['darwin'],clients:['codex','claude','hermes'],archive:'$ARCHIVE',sha256:sha}));"
+fs.writeFileSync('release/out/recipe.json',JSON.stringify({schema:1,version:'$VERSION',launcherSchema:1,adapterContract:1,platforms:['darwin','win32','linux'],clients:['codex','claude','hermes'],archive:'$ARCHIVE',sha256:sha}));"
 
-echo "3/4 Publish $TAG (macOS rollout only)"
+echo "3/4 Publish $TAG (macOS, Windows, Linux)"
 gh release create "$TAG" --repo "$REPO" --target "$BUILT" --title "Agent Context $VERSION" --generate-notes \
   "release/out/$ARCHIVE" release/out/recipe.json
 
