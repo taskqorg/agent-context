@@ -128,7 +128,7 @@ export async function verifyTelemetry(agent = 'codex', request = fetch, pause = 
     for (let attempt = 0; attempt < 10; attempt++) {
       if (attempt) await pause(1000);
       const result = await request(url + '/v2/observations?traceId=' + id + '&fields=core,basic,trace_context&limit=10', { headers, signal: AbortSignal.timeout(3000) });
-      if (!result.ok) { if (result.status === 404) continue; return save({ status: 'readback_failed', httpStatus: result.status }); }
+      if (!result.ok) { if (result.status === 404 || config.gateway && result.status === 403) continue; return save({ status: 'readback_failed', httpStatus: result.status }); }
       const observations = await result.json();
       if (observations.data?.some(span => span.traceId === id && span.sessionId === sessionId && span.environment === 'qualification' && tags.every(tag => span.tags?.includes(tag)))) return save({ status: 'delivered', traceId: id, host, runtime, proof: 'synthetic_otlp_ingestion_only_not_native_exporter' });
     }

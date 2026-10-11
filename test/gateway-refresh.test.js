@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createGateway } from '../src/gateway.js';
 import { connectGateway } from '../src/enrollment.js';
+import { verifyTelemetry } from '../src/telemetry.js';
 
 test('Device Flow transfers refresh credentials only to private gateway state', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-refresh-client-'));
@@ -86,4 +87,27 @@ test('gateway rotates once concurrently, persists across restart and fails close
   const count = rotations;
   assert.equal((await call('/unused', device.token)).status, 503);
   assert.equal(rotations, count);
+});
+
+
+test('gateway delivery verification waits for queued trace registration but rejects authentication failure', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-readback-'));
+  const before = process.env.AGENT_CONTEXT_HOME;
+  process.env.AGENT_CONTEXT_HOME = dir;
+  t.after(() => { if (before === undefined) delete process.env.AGENT_CONTEXT_HOME; else process.env.AGENT_CONTEXT_HOME = before; fs.rmSync(dir, { recursive: true, force: true }); });
+  fs.mkdirSync(path.join(dir, '.agent-context'));
+  fs.writeFileSync(path.join(dir, '.agent-context/enrollment.json'), JSON.stringify({ gateway: 'https://gateway.invalid', device: 'a'.repeat(32), token: 'acd_' + 'b'.repeat(64), user: 'employee' }));
+  let reads = 0, trace;
+  const send = async (config, probe) => { trace = probe; return 'accepted'; };
+  const report = await verifyTelemetry('codex', async () => {
+    if (++reads < 3) return Response.json({ error: 'trace_access_denied' }, { status: 403 });
+    return Response.json({ data: [{ traceId: trace.id, sessionId: trace.sessionId, environment: 'qualification', tags: trace.tags }] });
+  }, async () => {}, send);
+  assert.equal(report.status, 'delivered');
+  assert.equal(reads, 3);
+  const denied = await verifyTelemetry('codex', async () => Response.json({}, { status: 401 }), async () => {}, send);
+  assert.equal(denied.status, 'readback_failed');
+  assert.equal(denied.httpStatus, 401);
+  const missing = await verifyTelemetry('codex', async () => Response.json({}, { status: 403 }), async () => {}, send);
+  assert.equal(missing.status, 'accepted_not_observed');
 });

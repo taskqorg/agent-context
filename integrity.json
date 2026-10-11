@@ -21,7 +21,7 @@
     "src/run.js": "5c704f75eeefc32833cbd6f0929cd5bf40f574f0b157d52e966b198a66fe8924",
     "src/service.js": "669d3a37e10d65aade95649d47289975d1313f3f606e393c868836bd57f647fe",
     "src/supercompress.js": "93099cf3822d247735b057c98f346263b595e9ba04403f7df14b65710fde907c",
-    "src/telemetry.js": "7f89af2fe9cd6ba3e17064b3fc842533563fb32add98da538e6123aac0423638",
+    "src/telemetry.js": "cfcb9f7a0f6885150156a3dfcdaa7f94b50d8759b1608d10d7554fb8cfbd888e",
     "src/uninstall.js": "e6c1d6b429b024623e4f5ee82f0923451ad4e19a11289966ae13a5d904a84c1a",
     "src/update.js": "0bbbd3929dff990c5759e8452ef6b551458ef81b6bec33679f78ae4d1ca450ad",
     "src/verify.js": "08cfdedddf687da531281b71b74e6a9fe2a1df3e1b37235d8c25c29200084cd0",
