@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "checkedAt": "2026-10-11T12:02:12.768790+00:00",
+  "checkedAt": "2026-10-11T12:08:02.191606+00:00",
   "version": "0.2.1",
   "frozenCodeCommit": "bfc1cb24dda2c7b384e80914075d13b013782ca7",
   "artifactSHA256": "74c280fa5e4c755f7e219803c3da57dc0cf1377f06ea772d38a283dda007e602",
@@ -67,6 +67,30 @@
       "device": "2458d05043112f77a7d9cb80f733e806",
       "expiresWithinHours": 8,
       "privateStateMode": 384
+    },
+    "hermesGatewayReload": {
+      "before": {
+        "gateway_state": "running",
+        "active_agents": 0,
+        "active_work": null,
+        "answering_pid": 2913876
+      },
+      "ack": {
+        "pausing": true,
+        "already_stopping": false,
+        "pid": 2913876,
+        "drain_timeout": 0.0
+      },
+      "after": {
+        "gateway_state": "running",
+        "active_agents": 0,
+        "active_work": null,
+        "answering_pid": 3605010
+      },
+      "pidChanged": true,
+      "collectorConfigured": true,
+      "deviceCredentialsPresent": true,
+      "nativeTelegramTurn": "NOT_VERIFIED"
     }
   },
   "mac": {
@@ -74,7 +98,7 @@
     "candidateCompression": "compressed",
     "productionMigration": "BLOCKED_ACTIVE_OLD_CODEX_PROXY",
     "productionCodexProxyVersion": "0.1.16",
-    "activeConnections": 2,
+    "activeConnections": 4,
     "otherProductionProxyVersion": "0.1.20",
     "qualificationProfile": "/tmp/agent-context-020-mac-live"
   },
@@ -409,7 +433,7 @@
   "limitations": [
     "No model-token cost-savings claim from character reduction",
     "Mac qualification uses separate proxy and environment; existing normal login and hook trust preserved",
-    "FRA Hermes fresh CLI qualifies native delivery; existing long-running Telegram gateway process was not restarted or qualified for new device routing",
+    "FRA Hermes fresh CLI qualifies native delivery; Telegram gateway was reloaded through supported idle drain and now runs with collector configuration; a native Telegram turn remains unverified",
     "Windows native and WSL remain unqualified for this release",
     "No stable tag or automatic-update promotion"
   ],
