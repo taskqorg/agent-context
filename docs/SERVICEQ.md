@@ -1,4 +1,4 @@
-# ServiceQ v1 — 0.2.4
+# ServiceQ v1 — 0.2.5
 
 Shared Langfuse project `Agents` (`tight-hermes`), dashboard `ServiceQ`.
 
@@ -51,3 +51,7 @@ Windows qualification remains required before broad stable promotion.
 0.2.4: Windows updater now survives launcher exit (`detached: true`),
 proved by an isolated native Windows reproduction. Portable gates check actual
 Windows ACLs, path separators and WSL runtime rather than POSIX-only assumptions.
+
+0.2.5: Windows private files belong to the current user SID, not the profile
+directory owner. Administrator-owned homes no longer require elevation. Existing
+profile ACLs are preserved; new secret files grant only user/SYSTEM/admin access.

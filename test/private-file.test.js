@@ -25,6 +25,8 @@ test('Windows protects the empty temp file before writing secrets and preserves 
       const script = Buffer.from(args.at(-1), 'base64').toString('utf16le');
       assert.equal('PSModulePath' in options.env, false);
       assert.equal(process.env.PSModulePath, 'synthetic-modern-module');
+      assert.ok(script.includes('[System.Security.Principal.WindowsIdentity]::GetCurrent().User'));
+      assert.equal(script.includes('AGENT_CONTEXT_PROFILE_DIR'), false);
       assert.ok(script.includes('$acl.SetAccessRuleProtection($true,$false)'));
       assert.ok(script.includes('S-1-5-18'));
       assert.ok(script.includes('S-1-5-32-544'));
@@ -45,6 +47,7 @@ test('real Windows secret file grants only owner, SYSTEM and administrators acce
     const script = `$ErrorActionPreference='Stop'
 $acl=Get-Acl -LiteralPath $env:AGENT_CONTEXT_TEST_FILE
 $owner=$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+if($owner -ne [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value){throw 'Wrong owner'}
 $rules=$acl.GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])
 $allowed=@($owner,'S-1-5-18','S-1-5-32-544')
 if(-not $acl.AreAccessRulesProtected){throw 'Inherited access'}

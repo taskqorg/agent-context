@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { atomicWrite, home } from './core.js';
 
 const protect = `$ErrorActionPreference='Stop'
-$owner=(Get-Acl -LiteralPath $env:AGENT_CONTEXT_PROFILE_DIR).GetOwner([System.Security.Principal.SecurityIdentifier])
+$owner=[System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl=New-Object System.Security.AccessControl.FileSecurity
 $acl.SetOwner($owner)
 $acl.SetAccessRuleProtection($true,$false)
@@ -28,7 +28,7 @@ export function atomicSecretWrite(file, data, { platform = process.platform, exe
   const temporary = file + '.' + crypto.randomUUID() + '.tmp';
   try {
     fs.writeFileSync(temporary, '', { flag: 'wx' });
-    const environment = { ...process.env, AGENT_CONTEXT_PRIVATE_FILE: temporary, AGENT_CONTEXT_PROFILE_DIR: home() };
+    const environment = { ...process.env, AGENT_CONTEXT_PRIVATE_FILE: temporary };
     // Codex can inherit PS7 modules; Windows PowerShell must build its compatible default path.
     for (const key of Object.keys(environment)) if (key.toUpperCase() === 'PSMODULEPATH') delete environment[key];
     execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(protect, 'utf16le').toString('base64')], {
