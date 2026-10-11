@@ -1,4 +1,4 @@
-# ServiceQ v1 — 0.2.3
+# ServiceQ v1 — 0.2.4
 
 Shared Langfuse project `Agents` (`tight-hermes`), dashboard `ServiceQ`.
 
@@ -47,3 +47,7 @@ monitor version is the exporter version, not a claim that every proxy upgraded.
 Pilot deployment: immutable package on FRA, gateway rollback by restoring its
 previous unit, independent monitor service; Mac uses a separate launch agent.
 Windows qualification remains required before broad stable promotion.
+
+0.2.4: Windows updater now survives launcher exit (`detached: true`),
+proved by an isolated native Windows reproduction. Portable gates check actual
+Windows ACLs, path separators and WSL runtime rather than POSIX-only assumptions.

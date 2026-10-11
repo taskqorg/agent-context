@@ -49,7 +49,7 @@ test('enrollment rejects nonmembers and returns only scoped device access to mem
   assert.ok(/^acd_[a-f0-9]{64}$/.test(device.token));
   const stored = fs.readFileSync(path.join(config.stateDir, 'devices.json'), 'utf8');
   assert.equal(stored.includes(device.token), false);
-  assert.equal(fs.statSync(path.join(config.stateDir, 'devices.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(config.stateDir, 'devices.json')).mode & 0o777, 0o600);
   assert.equal(JSON.stringify(device).includes(config.langfuse.secret_key), false);
 });
 
@@ -66,7 +66,7 @@ test('chat onboarding emits only the public browser code and stores device token
   assert.equal(report.status, 'connected');
   assert.equal(announcements.join('').includes('private-code'), false);
   assert.equal(JSON.stringify(report).includes(enrollment().token), false);
-  assert.equal(fs.statSync(path.join(process.env.AGENT_CONTEXT_HOME, '.agent-context/enrollment.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(process.env.AGENT_CONTEXT_HOME, '.agent-context/enrollment.json')).mode & 0o777, 0o600);
   assert.equal(keyStatus().gateway, 'https://gateway.invalid');
   assert.equal(langfuseConfig().gateway, true);
   assert.throws(() => gatewayURL('http://gateway.invalid'));
@@ -106,7 +106,7 @@ test('installed native exporters route through local outboxes without service ma
   fs.mkdirSync(path.join(home, '.codex'), { recursive: true });
   fs.writeFileSync(path.join(home, '.codex/config.toml'), '[mcp_servers.supercompress]\ncommand="fixture"\n');
   const plan = automaticPlan({ changes: [], installed: ['codex'], moves: [] });
-  const value = JSON.parse(plan.changes.find(item => item.file.endsWith('/langfuse.json')).after);
+  const value = JSON.parse(plan.changes.find(item => path.basename(item.file) === 'langfuse.json').after);
   assert.equal(value.base_url, 'http://127.0.0.1:18787');
   assert.equal(value.secret_key, deviceCredentials().secret_key);
   assert.equal(JSON.stringify(plan).includes(config.langfuse.secret_key), false);

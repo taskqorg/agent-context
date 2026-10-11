@@ -85,7 +85,7 @@ if (['mcp', 'hook', 'lifecycle', 'run', 'retrieval'].includes(process.argv[2])) 
   try { state = { ...state, ...JSON.parse(fs.readFileSync(path.join(base, 'update-policy.json'), 'utf8')) }; } catch {}
   if (state.enabled && Date.now() - (state.lastAttempt || 0) >= ${UPDATE_CHECK_INTERVAL_MS}) {
     try {
-      const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32' });
+      const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: true });
       child.on('error', () => {}); child.unref();
     } catch {}
   }

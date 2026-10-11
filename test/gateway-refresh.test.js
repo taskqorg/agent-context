@@ -61,7 +61,7 @@ test('gateway rotates once concurrently, persists across restart and fails close
   const record = Object.values(stored)[0];
   assert.equal(record.githubToken, 'gh_new');
   assert.equal(record.githubRefreshToken, 'gh_next');
-  assert.equal(fs.statSync(path.join(dir, 'devices.json')).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal(fs.statSync(path.join(dir, 'devices.json')).mode & 0o777, 0o600);
   gateway = make();
   assert.equal((await call('/unused', device.token)).status, 404);
   assert.equal(rotations, 1);

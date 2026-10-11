@@ -68,7 +68,7 @@ test('automatic plan preserves owner tags, keys and native approval while adding
   const updated = JSON.parse(plan.changes.find(item => item.file === file).after);
   assert.ok(updated.tags.includes('owner:keep'));
   assert.ok(updated.tags.includes('agent:codex'));
-  assert.ok(updated.tags.includes('runtime:native'));
+  assert.ok(updated.tags.includes('runtime:' + executionIdentity(process.env).runtime));
   assert.equal(updated.tags.includes('host:old'), false);
   assert.equal(updated.custom, 'keep');
   assert.equal(updated.secret_key, config.secret_key);

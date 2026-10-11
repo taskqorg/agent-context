@@ -18,7 +18,7 @@
           "field": "name"
         },
         {
-          "field": "level"
+          "field": "tags"
         }
       ],
       "filters": [
@@ -46,7 +46,7 @@
           "field": "name"
         },
         {
-          "field": "level"
+          "field": "tags"
         }
       ],
       "filters": [
@@ -90,7 +90,7 @@
       "name": "ServiceQ / Compression observations",
       "description": "Observed compression calls only. Does not establish total Codex WebSocket coverage or model-token savings.",
       "view": "observations",
-      "chartType": "HORIZONTAL_BAR",
+      "chartType": "PIVOT_TABLE",
       "metrics": [
         {
           "measure": "count",
@@ -100,6 +100,9 @@
       "dimensions": [
         {
           "field": "level"
+        },
+        {
+          "field": "tags"
         }
       ],
       "filters": [
@@ -115,7 +118,7 @@
       "name": "ServiceQ / Queue age",
       "description": "Maximum telemetry outbox age in seconds in the selected period, grouped by service/agent score name.",
       "view": "scores-numeric",
-      "chartType": "HORIZONTAL_BAR",
+      "chartType": "PIVOT_TABLE",
       "metrics": [
         {
           "measure": "value",
@@ -125,6 +128,9 @@
       "dimensions": [
         {
           "field": "name"
+        },
+        {
+          "field": "tags"
         }
       ],
       "filters": [
@@ -153,6 +159,44 @@
         }
       ],
       "filters": []
+    },
+    {
+      "name": "ServiceQ / Compression process counters",
+      "description": "Maximum cumulative counters per proxy process in selected period. Reset on restart; adapter calls only, not all Codex WS frames or model-token savings. passthrough includes failures (failed subset shown separately).",
+      "view": "scores-numeric",
+      "chartType": "PIVOT_TABLE",
+      "metrics": [
+        {
+          "measure": "value",
+          "agg": "max"
+        }
+      ],
+      "dimensions": [
+        {
+          "field": "name"
+        },
+        {
+          "field": "tags"
+        }
+      ],
+      "filters": [
+        {
+          "type": "stringOptions",
+          "column": "name",
+          "operator": "any of",
+          "value": [
+            "contextq.codex.compressed",
+            "contextq.codex.passthrough",
+            "contextq.codex.compression_failed",
+            "contextq.hermes.compressed",
+            "contextq.hermes.passthrough",
+            "contextq.hermes.compression_failed",
+            "contextq.claude-code.compressed",
+            "contextq.claude-code.passthrough",
+            "contextq.claude-code.compression_failed"
+          ]
+        }
+      ]
     }
   ]
 }

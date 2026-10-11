@@ -1,11 +1,11 @@
 {
-  "version": "0.2.3",
+  "version": "0.2.4",
   "files": {
     "bin/agent-context.js": "7beecf1ffbbc7a596218ea3f96d61e36b97a44cdae26318842aafe543fe714d5",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "871a4fdd98acb689835af32df4e5a7909a9fb0ddf5cc2f04da3386d1da6a91b3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "603ae5142ec9ab9975fa724df1098a65129e1f83620f2faf57b0fb1dcd964463",
+    "src/core.js": "61142b1abbd4cb4b5fb6c830153a674f4f95224c9f809d6e9f8c60d600292fb1",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "bac902d9e07567e4d43109eaf808d96b7b5883f9629b3c25aa12443e8737909d",
     "src/enrollment.js": "744b84eb892bc177553da933cdfc1e32598bd46d53a28fd43c82c98012284e48",
@@ -25,7 +25,7 @@
     "src/supercompress.js": "93099cf3822d247735b057c98f346263b595e9ba04403f7df14b65710fde907c",
     "src/telemetry.js": "cfcb9f7a0f6885150156a3dfcdaa7f94b50d8759b1608d10d7554fb8cfbd888e",
     "src/uninstall.js": "e6c1d6b429b024623e4f5ee82f0923451ad4e19a11289966ae13a5d904a84c1a",
-    "src/update.js": "1f9c90b6f8205586b53c993f116af6eca5220da09f33019bb17798a0b3702b87",
+    "src/update.js": "0726a5e588d014c76f57d99e25426a8b01332ea241d60960ea0307f2f70aaae9",
     "src/verify.js": "08cfdedddf687da531281b71b74e6a9fe2a1df3e1b37235d8c25c29200084cd0",
     "integrations/hermes/agent-context/plugin.yaml": "7ceea299e14c6e213038a9603a2afe19dc34f5339905d351fc68febbed554a58",
     "integrations/hermes/agent-context/__init__.py": "0f2b335f11a9705b67d20c308e6893628d39c1ae2ce2055fb6d9b74b17fd6a49",
