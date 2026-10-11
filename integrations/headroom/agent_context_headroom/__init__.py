@@ -43,6 +43,12 @@ class Supercompress:
         if is_retrieval(inp.content):
             logger.info("SC skipped status=retrieval input_chars=%s", len(inp.content))
             return original()
+        # Source code passes through by default: A/B 2026-10-11 showed code compression saves ~4% input
+        # but triggers retrieval in about half the runs (+40% net). Override with AGENT_CONTEXT_SKIP_TYPES.
+        skip_types = [t for t in os.environ.get("AGENT_CONTEXT_SKIP_TYPES", "text/x-code").split(",") if t]
+        if any(inp.content_type.startswith(t) for t in skip_types):
+            logger.info("SC skipped status=content_type type=%s input_chars=%s", inp.content_type, len(inp.content))
+            return original()
         if len(inp.content) < 2048:
             logger.info("SC skipped status=ineligible input_chars=%s query_chars=%s", len(inp.content), len(inp.query))
             return original()
