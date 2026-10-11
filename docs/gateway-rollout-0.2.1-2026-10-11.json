@@ -1,0 +1,417 @@
+{
+  "schema": 1,
+  "checkedAt": "2026-10-11T12:02:12.768790+00:00",
+  "version": "0.2.1",
+  "frozenCodeCommit": "bfc1cb24dda2c7b384e80914075d13b013782ca7",
+  "artifactSHA256": "74c280fa5e4c755f7e219803c3da57dc0cf1377f06ea772d38a283dda007e602",
+  "branch": "codex/github-onboarding",
+  "gates": {
+    "macNodeTests": 98,
+    "macNodeResult": "PASS",
+    "npmPack": "PASS",
+    "fraNodeTests": 96,
+    "fraPass": 95,
+    "fraSkip": 1,
+    "fraFail": 0
+  },
+  "gateway": {
+    "url": "https://langfuse.ufobe.com/api/public/agent-context",
+    "service": "agent-context-gateway.service",
+    "user": "hermes",
+    "listener": "127.0.0.1:18880",
+    "httpsInfo": 200,
+    "anonymousOTLP": 401,
+    "langfuseAnonymousAPI": 401,
+    "langfuseUIAuth": 302,
+    "clientId": "Ov23liYwGPWM2zPHBrqs",
+    "deviceFlowMac": "PASS",
+    "deviceFlowFra": "PASS",
+    "liveTokenRefresh": "PASS"
+  },
+  "fra": {
+    "services": [
+      {
+        "agent": "codex",
+        "version": "0.2.1",
+        "active": 0,
+        "compression": {
+          "supercompress_outcomes": {
+            "compressed": 1
+          },
+          "last_attempt_at": 1791719784.992181,
+          "proof": "adapter_outcomes_not_model_token_savings"
+        }
+      },
+      {
+        "agent": "hermes",
+        "version": "0.2.1",
+        "active": 0,
+        "compression": {
+          "supercompress_outcomes": {
+            "compressed": 1
+          },
+          "last_attempt_at": 1791719992.4723523,
+          "proof": "adapter_outcomes_not_model_token_savings"
+        }
+      }
+    ],
+    "doctor": {
+      "healthy": true,
+      "issues": []
+    },
+    "refresh": {
+      "status": "PASS",
+      "liveGitHubRotation": true,
+      "accessAndRefreshChanged": true,
+      "user": "alexkirs",
+      "device": "2458d05043112f77a7d9cb80f733e806",
+      "expiresWithinHours": 8,
+      "privateStateMode": 384
+    }
+  },
+  "mac": {
+    "candidateNativeModelToolTelemetry": "PASS",
+    "candidateCompression": "compressed",
+    "productionMigration": "BLOCKED_ACTIVE_OLD_CODEX_PROXY",
+    "productionCodexProxyVersion": "0.1.16",
+    "activeConnections": 2,
+    "otherProductionProxyVersion": "0.1.20",
+    "qualificationProfile": "/tmp/agent-context-020-mac-live"
+  },
+  "windows": {
+    "status": "NOT_DEPLOYED_NOT_VERIFIED",
+    "chat": "WIN_CDX",
+    "blocker": "send_message_to_thread returns An earlier turn submission is not yet confirmed; retrieved latest turn is unrelated TaskQ #600",
+    "requestedCommitInitially": "123d3b94908c060efa1b808dc84330d17ef62496",
+    "requiredCommitNow": "bfc1cb24dda2c7b384e80914075d13b013782ca7"
+  },
+  "nativeLangfuseReadback": [
+    {
+      "host": "mac",
+      "session": "01a12ad0-a0f0-7ba0-8294-41eef64ba8ab",
+      "rows": [
+        {
+          "traceId": "fd098b59db81be6a1202ff21069a9115",
+          "name": "LLM",
+          "type": "GENERATION",
+          "model": "gpt-6.1-sol",
+          "usage": {
+            "input": 874,
+            "output": 16,
+            "total": 20552,
+            "input_cached_tokens": 19584,
+            "output_reasoning_tokens": 78
+          },
+          "cost": 0.0046464,
+          "tags": [
+            "agent:codex",
+            "host:mac",
+            "runtime:native",
+            "user:alexkirs",
+            "device:ef86404f919d63f3ab9407b308a59243"
+          ]
+        },
+        {
+          "traceId": "fd098b59db81be6a1202ff21069a9115",
+          "name": "exec",
+          "type": "TOOL",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "agent:codex",
+            "host:mac",
+            "runtime:native",
+            "user:alexkirs",
+            "device:ef86404f919d63f3ab9407b308a59243"
+          ]
+        },
+        {
+          "traceId": "fd098b59db81be6a1202ff21069a9115",
+          "name": "LLM",
+          "type": "GENERATION",
+          "model": "gpt-6.1-sol",
+          "usage": {
+            "input": 14148,
+            "output": 98,
+            "total": 19878,
+            "input_cached_tokens": 5632,
+            "output_reasoning_tokens": 0
+          },
+          "cost": 0.0298392,
+          "tags": [
+            "agent:codex",
+            "host:mac",
+            "runtime:native",
+            "user:alexkirs",
+            "device:ef86404f919d63f3ab9407b308a59243"
+          ]
+        },
+        {
+          "traceId": "fd098b59db81be6a1202ff21069a9115",
+          "name": "Codex Turn",
+          "type": "AGENT",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "agent:codex",
+            "host:mac",
+            "runtime:native",
+            "user:alexkirs",
+            "device:ef86404f919d63f3ab9407b308a59243"
+          ]
+        }
+      ]
+    },
+    {
+      "host": "fra-codex",
+      "session": "01a12ad2-1cf6-73b1-ac87-bf883b23e345",
+      "rows": [
+        {
+          "traceId": "86d2415db65c0901fdcb2f64ba25ac9d",
+          "name": "LLM",
+          "type": "GENERATION",
+          "model": "gpt-6.1-sol",
+          "usage": {
+            "input": 805,
+            "output": 14,
+            "total": 13491,
+            "input_cached_tokens": 12672,
+            "output_reasoning_tokens": 0
+          },
+          "cost": 0.0030172,
+          "tags": [
+            "agent:codex",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "a31081085b26e2d5e0e702247b9b9f8a",
+          "name": "agent-context.compression",
+          "type": "SPAN",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "component:compression",
+            "agent:codex",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ],
+          "compression": {
+            "compressor": "supercompress",
+            "elapsed_ms": 2336,
+            "output_chars": 3102,
+            "input_chars": 7537,
+            "outcome": "compressed"
+          }
+        },
+        {
+          "traceId": "86d2415db65c0901fdcb2f64ba25ac9d",
+          "name": "exec",
+          "type": "TOOL",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "agent:codex",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "86d2415db65c0901fdcb2f64ba25ac9d",
+          "name": "LLM",
+          "type": "GENERATION",
+          "model": "gpt-6.1-sol",
+          "usage": {
+            "input": 2946,
+            "output": 95,
+            "total": 12897,
+            "input_cached_tokens": 9856,
+            "output_reasoning_tokens": 0
+          },
+          "cost": 0.0078276,
+          "tags": [
+            "agent:codex",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "86d2415db65c0901fdcb2f64ba25ac9d",
+          "name": "Codex Turn",
+          "type": "AGENT",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "agent:codex",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        }
+      ]
+    },
+    {
+      "host": "fra-hermes",
+      "session": "20261011_115933_5e52cc",
+      "rows": [
+        {
+          "traceId": "24b7056ffd9fe767b7bb49071835bf40",
+          "name": "LLM call 2",
+          "type": "GENERATION",
+          "model": "gpt-6.1-sol",
+          "usage": {
+            "input": 17120,
+            "output": 13,
+            "cache_read_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_reasoning_tokens": 0,
+            "total": 17133
+          },
+          "cost": 0.03437,
+          "tags": [
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "04f6d2e3887a03e0514f1eead13613f5",
+          "name": "agent-context.compression",
+          "type": "SPAN",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "component:compression",
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ],
+          "compression": {
+            "compressor": "supercompress",
+            "elapsed_ms": 2144,
+            "output_chars": 2568,
+            "input_chars": 8271,
+            "outcome": "compressed"
+          }
+        },
+        {
+          "traceId": "04f6d2e3887a03e0514f1eead13613f5",
+          "name": "headroom.compression.pipeline",
+          "type": "SPAN",
+          "model": "gpt-6.1-sol",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "component:compression",
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "04f6d2e3887a03e0514f1eead13613f5",
+          "name": "headroom.compression.transform",
+          "type": "SPAN",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "component:compression",
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "24b7056ffd9fe767b7bb49071835bf40",
+          "name": "Tool: terminal",
+          "type": "TOOL",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "24b7056ffd9fe767b7bb49071835bf40",
+          "name": "LLM call 1",
+          "type": "GENERATION",
+          "model": "gpt-6.1-sol",
+          "usage": {
+            "input": 16571,
+            "output": 63,
+            "cache_read_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_reasoning_tokens": 0,
+            "total": 16634
+          },
+          "cost": 0.033771999999,
+          "tags": [
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        },
+        {
+          "traceId": "24b7056ffd9fe767b7bb49071835bf40",
+          "name": "Hermes turn",
+          "type": "CHAIN",
+          "model": "",
+          "usage": {},
+          "cost": null,
+          "tags": [
+            "agent:hermes",
+            "host:fra",
+            "runtime:native",
+            "user:alexkirs",
+            "device:2458d05043112f77a7d9cb80f733e806"
+          ]
+        }
+      ]
+    }
+  ],
+  "hermesErrorFixture": {
+    "compressionSkippedByErrorProtection": true,
+    "exactCriticalLinePreserved": true,
+    "benignFixtureCompression": "compressed"
+  },
+  "limitations": [
+    "No model-token cost-savings claim from character reduction",
+    "Mac qualification uses separate proxy and environment; existing normal login and hook trust preserved",
+    "FRA Hermes fresh CLI qualifies native delivery; existing long-running Telegram gateway process was not restarted or qualified for new device routing",
+    "Windows native and WSL remain unqualified for this release",
+    "No stable tag or automatic-update promotion"
+  ],
+  "completion": "PARTIAL - FRA deployed; Mac isolated live proof passed; Mac working migration and Windows rollout pending"
+}

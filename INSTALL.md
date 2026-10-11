@@ -2,7 +2,7 @@
 
 ## Подключение команды без сервисных ключей
 
-Кандидат 0.2.0 добавляет GitHub Device Flow и общий gateway. Процедура владельца и статус квалификации: [TEAM-ONBOARDING.md](docs/TEAM-ONBOARDING.md). Пока приложение GitHub и публичный endpoint не активированы, не обещайте готовый массовый онбординг.
+Кандидат 0.2.1 добавляет GitHub Device Flow и общий gateway. Публичный адрес команды: `https://langfuse.ufobe.com/api/public/agent-context`. OAuth App зарегистрирован; на FRA проверены реальный вход, обновление токенов и доставка. Процедура владельца и статус квалификации: [TEAM-ONBOARDING.md](docs/TEAM-ONBOARDING.md). Рабочая миграция Mac и квалификация Windows ещё не завершены; не обещайте готовый массовый онбординг. Кандидат закреплён commit `bfc1cb24dda2c7b384e80914075d13b013782ca7`, не moving main.
 
 Если команда предоставила адрес готового gateway, агент объясняет передачу выбранного tool context в SuperCompress и native conversation/tool telemetry в Langfuse. Затем запускает `agent-context connect <HTTPS gateway URL>` в локальном терминале и показывает пользователю только ссылку `https://github.com/login/device` и временный публичный код. Пользователь подтверждает доступ на GitHub. OAuth token, device token и сервисные ключи в чат не передаются. После успешного подключения агент выполняет `setup`, `doctor --fix --live`, `telemetry verify` и настоящий ход для каждого установленного агента; обычные login/model/approval и native hook trust сохраняются.
 

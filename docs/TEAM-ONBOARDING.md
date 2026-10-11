@@ -1,6 +1,6 @@
 # Подключение команды без сервисных ключей
 
-Статус: кандидат 0.2.0; не стабильный релиз и не активный публичный сервис. Портал не требуется. Управление членством — GitHub, версии — GitHub Releases, просмотр телеметрии — Langfuse. Рабочие профили 0.1.20 не переводятся на gateway автоматически.
+Статус: кандидат 0.2.1; не стабильный релиз. Публичный gateway `https://langfuse.ufobe.com/api/public/agent-context` активен на FRA. Текущая квитанция: [gateway-rollout-0.2.1-2026-10-11.json](gateway-rollout-0.2.1-2026-10-11.json); рабочая миграция Mac и проверка Windows остаются незавершёнными. Портал не требуется. Управление членством — GitHub, версии — GitHub Releases, просмотр телеметрии — Langfuse. Рабочие профили 0.1.20 не переводятся на gateway автоматически.
 
 ## Что делает сотрудник
 
@@ -47,4 +47,6 @@ Package rollback на версию без gateway/collector отказывает
 
 Unit tests покрывают device enrollment, отсутствие master keys на клиенте, отказ nonmember, membership revocation, scoped readback, исходный query/fallback, credential routing и uninstall. Python collector tests проверяют protobuf/gzip/ID/usage, отказ чужому local token, закрытую очередь, restart и повторную доставку после 503.
 
-Живое доказательство с существующим GitHub login: [gateway-qualification-0.2.0.json](gateway-qualification-0.2.0.json). Это live membership/SuperCompress/OTLP/readback в изолированном candidate harness. Оно не квалифицирует browser Device Flow, публичный FRA endpoint или новый native agent turn. Эти три проверки остаются обязательными перед rollout.
+Историческое доказательство компонентов до публичного развёртывания с существующим GitHub login: [gateway-qualification-0.2.0.json](gateway-qualification-0.2.0.json). Это live membership/SuperCompress/OTLP/readback в изолированном candidate harness. Оно не квалифицирует browser Device Flow, публичный FRA endpoint или новый native agent turn. Эти три проверки остаются обязательными перед rollout.
+
+Публичный gateway, реальный Device Flow, обновление expiring tokens и native Codex/Hermes проверены в текущей [квитанции 0.2.1](gateway-rollout-0.2.1-2026-10-11.json). Native model/tool/compression связаны исходной сессией в Langfuse; model usage приходит от native exporter. Измерение уменьшения текста не доказывает экономию model tokens или стоимости.
