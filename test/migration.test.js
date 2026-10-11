@@ -21,7 +21,8 @@ test('migration from a verified legacy bootstrap upgrades code and restores matc
   const before = fs.readFileSync(config);
   const legacyVersion = JSON.parse(fs.readFileSync(path.join(old, 'package.json'))).version;
   if (legacyVersion === version) return; // A release checkout already includes the new bootstrap.
-  install(['codex'], { automatic: true });
+  if (legacyVersion.split('.').slice(0, 2).join('.') !== version.split('.').slice(0, 2).join('.')) assert.throws(() => install(['codex'], { automatic: true }), /requires migration/);
+  install(['codex'], { automatic: true, migrate: true });
   const pointer = JSON.parse(fs.readFileSync(path.join(root(), 'active.json')));
   assert.equal(pointer.version, version); assert.equal(pointer.previous.version, legacyVersion);
   assert.match(fs.readFileSync(config, 'utf8'), /model_provider = "agent_context"/);

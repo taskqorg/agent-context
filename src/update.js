@@ -6,9 +6,9 @@ import { spawn, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { atomicWrite, root, home, sha, version, acquireTransaction } from './core.js';
 
-export const extraRuntimeFiles = ['integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/headroom-fixture.js'];
+export const extraRuntimeFiles = ['integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'integrations/headroom/agent_context_headroom/collector.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/headroom-fixture.js'];
 const source = fileURLToPath(new URL('../', import.meta.url));
-const repository = 'taskqorg/agent-context';
+export const repository = 'taskqorg/agent-context';
 // Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
 const hardenedLegacyLauncher = '58010bbde95c55e4c04f3c11ebe26497ef5b024f0d09193625203ce66125d51c';
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
@@ -26,6 +26,7 @@ export function rolloutBucket() {
   try { id = JSON.parse(fs.readFileSync(path.join(root(), 'machine-id.json'), 'utf8')).id || ''; } catch {}
   return parseInt(sha(`rollout\0${id}`).slice(0, 8), 16) % 100;
 }
+export const UPDATE_CHECK_INTERVAL_MS = 3600000;
 const RETRY_BACKOFF_MS = [3600000, 6 * 3600000, 86400000];
 function prune(keep) {
   // Keep active + previous runtime; staging leftovers and older versions only consume disk.
@@ -82,16 +83,27 @@ if (['mcp', 'hook', 'lifecycle', 'run', 'retrieval'].includes(process.argv[2])) 
   const stateFile = path.join(base, 'updates.json');
   let state = {}; try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
   try { state = { ...state, ...JSON.parse(fs.readFileSync(path.join(base, 'update-policy.json'), 'utf8')) }; } catch {}
-  if (state.enabled && Date.now() - (state.lastAttempt || 0) >= 86400000) {
+  if (state.enabled && Date.now() - (state.lastAttempt || 0) >= ${UPDATE_CHECK_INTERVAL_MS}) {
     try {
-      const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: process.platform !== 'win32' });
+      const child = spawn(process.execPath, [bin, 'update', '--automatic'], { stdio: 'ignore', windowsHide: true, detached: true });
       child.on('error', () => {}); child.unref();
     } catch {}
   }
 }
-await import(pathToFileURL(bin).href);
+if (process.argv[2] === 'monitor' && process.argv[3] === 'serve') {
+  let stopped = false, child;
+  const stop = () => { stopped = true; child?.kill(); };
+  process.once('SIGTERM', stop); process.once('SIGINT', stop);
+  do {
+    const code = await new Promise((resolve, reject) => {
+      child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'monitor', 'worker'], { stdio: 'inherit', windowsHide: true });
+      child.once('error', reject); child.once('exit', resolve);
+    });
+    if (code !== 75 || stopped) { process.exitCode = code || 0; break; }
+  } while (!stopped);
+} else await import(pathToFileURL(bin).href);
 `;
-export function seedRuntime() {
+export function seedRuntime({ migrate = false } = {}) {
   const existing = read(pointerFile());
   if (existing) {
     checkedPointer(existing);
@@ -99,7 +111,7 @@ export function seedRuntime() {
       if (fs.readFileSync(launcher(), 'utf8') !== launcherCode) fail('launcher drift');
       return existing;
     }
-    if (!compatibleUpdate(existing.version, version)) fail('local installation requires migration');
+    if (!compatibleUpdate(existing.version, version) && !(migrate === true && version.localeCompare(existing.version, 'en', { numeric: true }) > 0)) fail('local installation requires migration; use reviewed setup --migrate');
     // The verified previous installer knows its own exact bootstrap, including older schemas.
     const module = pathToFileURL(path.join(existing.dir, 'src/update.js')).href;
     if (sha(fs.readFileSync(launcher())) !== hardenedLegacyLauncher) {
@@ -149,6 +161,23 @@ async function assetBytes(asset, fetcher) {
   if (`sha256:${sha(bytes)}` !== asset.digest || bytes.length !== asset.size) fail('archive digest');
   return bytes;
 }
+export async function approvedRecipe(release, fetcher = fetch, publicKey = releasePublicKey) {
+  if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
+  const bytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
+  if (publicKey) {
+    const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
+    if (!verifyRecipeSignature(bytes, signature, publicKey)) fail('recipe signature');
+  }
+  const recipe = JSON.parse(bytes);
+  if (recipe.schema !== 1 || recipe.version !== release.tag_name.slice(1) || recipe.launcherSchema !== 1 || recipe.adapterContract !== 1 || !Array.isArray(recipe.platforms) || !['codex', 'claude', 'hermes'].every(agent => recipe.clients?.includes(agent))) fail('release not qualified');
+  if (recipe.sha256 !== releaseAsset(release, recipe.archive).digest.slice(7)) fail('qualification digest');
+  return recipe;
+}
+export async function approvedStableVersion(fetcher = fetch, publicKey = releasePublicKey) {
+  const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
+  const recipe = await approvedRecipe(release, fetcher, publicKey);
+  return recipe.paused === true ? null : recipe.version;
+}
 export function compatibleUpdate(current, next) {
   const a = /^(\d+)\.(\d+)\.(\d+)$/.exec(current), b = /^(\d+)\.(\d+)\.(\d+)$/.exec(next);
   return Boolean(a && b && a[1] === b[1] && a[2] === b[2] && Number(b[3]) > Number(a[3]));
@@ -166,7 +195,7 @@ export async function prepare(archive, stage, expected) {
   const candidates = [process.env.npm_execpath, path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'), path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'), ...(process.env.PATH || '').split(path.delimiter).map(dir => path.join(dir, 'npm'))].filter(Boolean);
   const npm = candidates.map(file => { try { return fs.realpathSync(file); } catch { return ''; } }).find(file => file.endsWith('npm-cli.js'));
   if (!npm) fail('npm entrypoint unavailable');
-  await run(process.execPath, [npm, 'install', '--prefix', stage, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', archive], stage);
+  await run(process.execPath, [npm, 'install', '--prefix', stage, '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', archive], stage, { environment: { npm_config_cache: path.join(stage, 'npm-cache') } });
   const dir = path.join(stage, 'node_modules', '@alexkirs', 'agent-context');
   for (const name of ['smol-toml', 'yaml']) fs.cpSync(path.join(stage, 'node_modules', name), path.join(dir, 'node_modules', name), { recursive: true });
   checkPackage(dir, expected);
@@ -178,33 +207,29 @@ export async function prepare(archive, stage, expected) {
   }
   return dir;
 }
-export async function update({ automatic = false, fetcher = fetch, preparer = prepare, publicKey = releasePublicKey } = {}) {
+export async function update({ automatic = false, notifiedVersion = null, fetcher = fetch, preparer = prepare, publicKey = releasePublicKey } = {}) {
   return lock(async () => {
     const active = checkedPointer(read(pointerFile()));
     const state = { ...read(stateFile()), ...read(policyFile()) };
-    if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < 86400000)) return { status: 'not_due' };
+    if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < UPDATE_CHECK_INTERVAL_MS && (!notifiedVersion || notifiedVersion === state.attemptedVersion))) return { status: 'not_due' };
     const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: 0, ...extra }));
-    // The fixed launcher retries 24h after lastAttempt; back-date it so failures retry after 1h, 6h, then 24h.
+    // Offset lastAttempt so the hourly launcher preserves 1h, 6h, then 24h failure backoff.
     const failed = (reason) => {
       const failures = (read(stateFile())?.failures || 0) + 1;
       const wait = RETRY_BACKOFF_MS[Math.min(failures, RETRY_BACKOFF_MS.length) - 1];
-      atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now() - 86400000 + wait, status: 'failed', reason, failures }));
+      atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now() - UPDATE_CHECK_INTERVAL_MS + wait, status: 'failed', reason, failures }));
     };
     const failures = read(stateFile())?.failures || 0;
-    record('checking', { failures });
+    record('checking', { failures, ...(notifiedVersion ? { attemptedVersion: notifiedVersion } : {}) });
     let stage;
     try {
       const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
       if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
       const next = release.tag_name.slice(1);
-      if (next === active.version) { record('current'); return { status: 'current', version: next }; }
-      if (!compatibleUpdate(active.version, next)) { record('migration_required'); return { status: 'migration_required', version: next }; }
-      const recipeBytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
-      if (publicKey) {
-        const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
-        if (!verifyRecipeSignature(recipeBytes, signature, publicKey)) fail('recipe signature');
-      }
-      const recipe = JSON.parse(recipeBytes);
+      if (next.localeCompare(active.version, 'en', { numeric: true }) <= 0) { record('current', { availableVersion: next }); return { status: 'current', version: next }; }
+      if (!compatibleUpdate(active.version, next)) { record('migration_required', { availableVersion: next }); return { status: 'migration_required', version: next }; }
+      const recipe = await approvedRecipe(release, fetcher, publicKey);
+      record('downloading', { availableVersion: next, attemptedVersion: next });
       // Kill switch and staged rollout are recipe fields, so they are covered by the same digest/signature.
       if (recipe.paused === true) { record('paused', { version: next }); return { status: 'paused', version: next }; }
       const percent = Number.isInteger(recipe.rolloutPercent) ? recipe.rolloutPercent : 100;
@@ -216,14 +241,16 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       stage = path.join(root(), 'versions', `stage-${crypto.randomUUID()}`);
       fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
       const archive = path.join(stage, 'candidate.tgz'); fs.writeFileSync(archive, bytes, { mode: 0o600 });
+      record('testing', { availableVersion: next });
       const prepared = await preparer(archive, stage, next);
+      record('downloaded', { availableVersion: next });
       checkPackage(prepared, next);
       const dir = path.join(root(), 'versions', `${next}-${crypto.randomUUID()}`);
       fs.renameSync(prepared, dir);
       if (JSON.stringify(read(pointerFile())) !== JSON.stringify(active)) fail('runtime changed during update');
       if (read(policyFile())?.enabled === false) { record('disabled_before_activation'); return { status: 'disabled_before_activation', activeVersion: active.version }; }
       atomicWrite(pointerFile(), json({ version: next, dir, previous: { version: active.version, dir: active.dir } }));
-      record('updated', { activeVersion: next });
+      record('updated', { activeVersion: next, availableVersion: next });
       prune([dir, active.dir]);
       return { status: 'updated', version: next, previous: active.version, reloadRequired: true };
     } catch (error) {
@@ -242,6 +269,7 @@ export async function rollbackUpdate() {
     const previous = checkedPointer(active.previous);
     const integration = read(path.join(root(), 'integration.json'));
     const oldManifest = read(path.join(previous.dir, 'integrity.json'));
+    if (fs.existsSync(path.join(root(), 'enrollment.json')) && !oldManifest?.files?.['src/enrollment.js']) fail('gateway migration rollback requires reviewed credential routing restoration before selecting the previous package');
     if (integration?.mode === 'automatic' && !oldManifest?.files?.['src/automatic.js']) {
       const install = read(path.join(root(), 'latest-install.json'));
       const journal = install && read(path.join(install.dir, 'journal.json'));

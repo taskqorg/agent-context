@@ -90,6 +90,8 @@ else:
                 ("This is real update.js source. Report its GitHub repository constant, the automatic update interval in milliseconds, and whether package integrity is checked before loading runtime code." if args.fixture == 'code' else "Report the important release name, port and retry limit.") +
                 " Do not alter files. If compressed data omits needed details, use the headroom retrieval MCP tool."]
 events_file = work / f"events-{args.protocol}.jsonl"
+import time
+started = time.monotonic()
 with events_file.open("w", encoding="utf-8") as out, work.joinpath(f"stderr-{args.protocol}.log").open("w", encoding="utf-8") as err:
     result = subprocess.run(command, stdout=out, stderr=err, timeout=90)
 events = [json.loads(line) for line in events_file.read_text(encoding="utf-8").splitlines()]
@@ -97,7 +99,7 @@ completed = [event for event in events if event.get("type") == "turn.completed"]
 answers = [event["item"]["text"] for event in events if event.get("item", {}).get("type") == "agent_message"]
 tools = [event for event in events if event.get("type") == "item.completed" and event.get("item", {}).get("type") in ["command_execution", "mcp_tool_call"]]
 answer = answers[-1] if answers else ''
-facts = ['taskqorg/agent-context', '86400000'] if args.fixture == 'code' else ['amber-47', '6543', '2']
+facts = ['taskqorg/agent-context', '3600000'] if args.fixture == 'code' else ['amber-47', '6543', '2']
 normalized = answer.replace(',', '').replace('_', '').replace(' ', '')
 passed = result.returncode == 0 and bool(completed) and bool(tools) and all(value in normalized for value in facts)
 if args.fixture == 'code':
@@ -105,6 +107,8 @@ if args.fixture == 'code':
 summary = {"protocol": args.protocol, "passed": passed, "exit_code": result.returncode,
            "source": args.source, "fixture": args.fixture, "seed": seed,
            "tool_calls": len(tools), "usage": completed[-1].get("usage") if completed else None,
+           "elapsed_ms": int((time.monotonic() - started) * 1000),
+           "retrieval_calls": sum(event.get('item', {}).get('tool') == 'headroom_retrieve' for event in tools),
            "evidence_dir": str(work)}
 work.joinpath(f"summary-{args.protocol}.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 print(json.dumps(summary))

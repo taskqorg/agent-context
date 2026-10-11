@@ -12,6 +12,28 @@ from headroom.transforms.compressor_registry import CompressInput, CompressorReg
 
 
 class AdapterTest(unittest.TestCase):
+    def test_accounting_excludes_user_prompt_and_counts_protected_unchanged_tool_text(self):
+        from agent_context_headroom.observability import account_tool_context, compression_status
+        before = [{'role': 'user', 'content': 'private user query'}, {'role': 'tool', 'content': 'long tool context'}, {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ERROR retain'}, {'type': 'text', 'text': 'user words'}]}]
+        after = [{'role': 'user', 'content': 'private user query'}, {'role': 'tool', 'content': 'short'}, {'role': 'user', 'content': [{'type': 'tool_result', 'content': 'ERROR retain'}]}]
+        prior = compression_status()['tool_context']
+        account_tool_context(before, after)
+        current = compression_status()['tool_context']
+        self.assertEqual(current.get('input_chars', 0) - prior.get('input_chars', 0), len('long tool context') + len('ERROR retain'))
+        self.assertEqual(current.get('compressed', 0) - prior.get('compressed', 0), 1)
+        self.assertEqual(current.get('passthrough', 0) - prior.get('passthrough', 0), 1)
+
+    def test_compression_failures_have_error_level_while_normal_skip_does_not(self):
+        from agent_context_headroom.observability import record_compression
+        class Span:
+            def __init__(self): self.values = {}
+            def set_attribute(self, key, value): self.values[key] = value
+            def set_status(self, status): self.status = status
+        for outcome, error in [('timeout', True), ('no_gain', False), ('request_budget', False)]:
+            span = Span()
+            with patch('opentelemetry.trace.get_current_span', return_value=span): record_compression(outcome, 100, 100, 1)
+            self.assertEqual(span.values.get('langfuse.observation.level') == 'ERROR', error)
+
     def test_langfuse_reuses_only_this_profiles_existing_source(self):
         from agent_context_headroom.observability import configure_environment
         with tempfile.TemporaryDirectory() as directory:
@@ -93,6 +115,22 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(values['langfuse.observation.type'], 'span')
         self.assertFalse(any(key.startswith('gen_ai.usage') for key in values))
 
+    def test_compression_span_has_native_session_host_runtime_and_no_raw_content(self):
+        from agent_context_headroom.observability import CorrelatedTracer, identity
+        class Delegate:
+            def start_as_current_span(self, name, *, attributes): return attributes
+        token = identity.set({'session.id': 'native-session', 'agent_context.turn_id': 'native-turn'})
+        try:
+            with patch.dict(os.environ, {'AGENT_CONTEXT_HOST': 'fra', 'AGENT_CONTEXT_RUNTIME': 'native', 'AGENT_CONTEXT_AGENT': 'hermes'}):
+                values = CorrelatedTracer(Delegate()).start_as_current_span('compress')
+                self.assertEqual(values['langfuse.session.id'], 'native-session')
+                self.assertEqual(values['agent_context.turn_id'], 'native-turn')
+                self.assertIn('host:fra', values['langfuse.trace.tags'])
+                self.assertIn('runtime:native', values['langfuse.trace.tags'])
+                self.assertEqual(values['agent_context.compressor'], 'supercompress')
+        finally:
+            identity.reset(token)
+
     def test_entrypoint(self):
         registry = CompressorRegistry()
         registry.discover()
@@ -113,8 +151,16 @@ class AdapterTest(unittest.TestCase):
             with patch.dict(os.environ, {"AGENT_CONTEXT_BRIDGE": str(bridge), "AGENT_CONTEXT_NODE": "node"}):
                 response = subprocess.CompletedProcess([], 0, json.dumps({"compressed_text": "retained result", "skipped": None}), "")
                 with patch("subprocess.run", return_value=response) as run:
-                    result = Supercompress().compress(inp)
+                    from agent_context_headroom.observability import identity
+                    token = identity.set({'session.id': 'native-session'})
+                    try:
+                        with patch.dict(os.environ, {'AGENT_CONTEXT_AGENT': 'codex'}):
+                            result = Supercompress().compress(inp)
+                    finally:
+                        identity.reset(token)
                     self.assertEqual(json.loads(run.call_args.kwargs["input"])["query"], inp.query)
+                    self.assertEqual(json.loads(run.call_args.kwargs["input"])["session"], 'native-session')
+                    self.assertEqual(json.loads(run.call_args.kwargs["input"])["agent"], 'codex')
                     self.assertLess(len(result.content), len(inp.content))
                     digest = next(iter(result.recoverable))
                     from headroom.cache.compression_store import get_compression_store

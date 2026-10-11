@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { sha, root, version } from '../src/core.js';
-import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, enableUpdates, verifyRecipeSignature } from '../src/update.js';
+import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, UPDATE_CHECK_INTERVAL_MS, enableUpdates, verifyRecipeSignature } from '../src/update.js';
 import crypto from 'node:crypto';
 import { install, rollback } from '../src/install.js';
 
@@ -79,14 +79,26 @@ test('migration accepts the reviewed hardened legacy bootstrap but refuses unkno
   const originalBootstrap = fs.readFileSync(launcher());
   try {
     select(Buffer.concat([bootstrap, Buffer.from('// unknown edit\n')]));
-    assert.throws(seedRuntime); assert.equal(pointer().version, '0.1.3');
+    assert.throws(() => seedRuntime({ migrate: true })); assert.equal(pointer().version, '0.1.3');
     select(bootstrap); fs.appendFileSync(path.join(dir, 'bin/agent-context.js'), '// damaged');
-    assert.throws(seedRuntime, /package integrity/); assert.equal(pointer().version, '0.1.3');
+    assert.throws(() => seedRuntime({ migrate: true }), /package integrity/); assert.equal(pointer().version, '0.1.3');
     fs.writeFileSync(path.join(dir, 'bin/agent-context.js'), files['bin/agent-context.js']);
-    const migrated = seedRuntime();
+    if (version.split('.')[1] !== '1') assert.throws(() => seedRuntime(), /requires migration/);
+    const migrated = seedRuntime({ migrate: true });
     assert.equal(migrated.version, version); assert.equal(migrated.previous.version, '0.1.3');
     assert.notEqual(fs.readFileSync(launcher(), 'utf8'), bootstrap.toString());
   } finally { restore(); fs.writeFileSync(launcher(), originalBootstrap); }
+});
+test('gateway rollback cannot select a previous package without a collector while device routing remains', async () => {
+  restore();
+  const previous = { version: '0.1.3', dir: path.join(root(), 'versions', 'legacy-bootstrap') };
+  fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ ...initial, previous }));
+  fs.writeFileSync(path.join(root(), 'enrollment.json'), '{}');
+  const before = pointer();
+  try {
+    await assert.rejects(rollbackUpdate(), /credential routing restoration/);
+    assert.deepEqual(pointer(), before);
+  } finally { fs.rmSync(path.join(root(), 'enrollment.json')); restore(); }
 });
 test('tampered archive/qualification never reaches installation or switches active runtime', async () => {
   for (const options of [{ badDigest: true }, { qualified: false }]) {
@@ -134,7 +146,8 @@ test('runtime drift detected before final switch; incompatible minor requires mi
   restore(); const f = fixture();
   const result = await update({ ...f, preparer: async (...args) => { const dir = await f.preparer(...args); fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ ...initial, marker: 'external-change' })); return dir; } });
   assert.equal(result.status, 'failed'); assert.equal(pointer().marker, 'external-change');
-  restore(); const before = pointer(); assert.equal((await update(fixture({ next: '0.2.0' }))).status, 'migration_required'); assert.deepEqual(pointer(), before);
+  const nextMinor = version.split('.').map((part, index) => index === 1 ? Number(part) + 1 : index === 2 ? 0 : part).join('.');
+  restore(); const before = pointer(); assert.equal((await update(fixture({ next: nextMinor }))).status, 'migration_required'); assert.deepEqual(pointer(), before);
   assert.equal(compatibleUpdate('0.1.3', '0.1.4'), true);
   for (const next of ['0.1.2', '0.2.0', '1.1.4', '0.1.4-rc.1']) assert.equal(compatibleUpdate('0.1.3', next), false);
 });
@@ -170,7 +183,50 @@ test('kill switch and staged rollout keep the active runtime; failures back off 
   await update({ fetcher: async () => { throw new Error('offline'); } });
   const state = JSON.parse(fs.readFileSync(path.join(root(), 'updates.json')));
   assert.equal(state.failures, 1);
-  assert.ok(Math.abs(Date.now() - state.lastAttempt - (86400000 - 3600000)) < 60000, 'next automatic try in ~1h');
+  assert.ok(Math.abs(Date.now() - state.lastAttempt - (UPDATE_CHECK_INTERVAL_MS - 3600000)) < 60000, 'next automatic try in ~1h');
+});
+test('automatic checks wait one hour and preserve escalating network retry backoff', async () => {
+  restore();
+  try {
+    fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now() - 59 * 60000 }));
+    const early = fixture();
+    assert.equal((await update({ ...early, automatic: true })).status, 'not_due');
+    assert.equal(early.calls(), 0);
+    fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now() - 61 * 60000 }));
+    assert.equal((await update({ automatic: true, fetcher: async () => new Response('', { status: 404 }) })).status, 'no_stable_release');
+    restore();
+    for (const wait of [3600000, 6 * 3600000, 86400000]) {
+      assert.equal((await update({ fetcher: async () => { throw new Error('offline'); } })).status, 'failed');
+      const state = updateStatus();
+      assert.ok(Math.abs(state.lastAttempt + UPDATE_CHECK_INTERVAL_MS - Date.now() - wait) < 60000);
+      const blocked = fixture();
+      assert.equal((await update({ ...blocked, automatic: true })).status, 'not_due');
+      assert.equal(blocked.calls(), 0);
+    }
+  } finally { restore(); }
+});
+test('installed launcher starts an hourly updater only after it is due', async () => {
+  restore();
+  const dir = path.join(root(), 'versions', 'hourly-launcher-fixture');
+  const marker = path.join(root(), 'hourly-updater-started');
+  fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+  const files = { 'bin/agent-context.js': `import fs from 'node:fs'; if(process.argv[2]==='update')fs.writeFileSync(${JSON.stringify(marker)},'started');`, 'src/update.js': 'export {};\n' };
+  for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), content);
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@alexkirs/agent-context', version, type: 'module' }));
+  fs.writeFileSync(path.join(dir, 'integrity.json'), JSON.stringify({ version, files: Object.fromEntries(Object.entries(files).map(([name, content]) => [name, sha(content)])) }));
+  try {
+    fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ version, dir }));
+    for (const minutes of [59, 61]) {
+      fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now() - minutes * 60000 }));
+      const child = spawnSync(process.execPath, [launcher(), 'mcp'], { env: process.env, windowsHide: true, encoding: 'utf8' });
+      assert.equal(child.status, 0, child.stderr);
+      if (minutes === 59) assert.equal(fs.existsSync(marker), false);
+      else {
+        for (let i = 0; i < 40 && !fs.existsSync(marker); i++) await new Promise(resolve => setTimeout(resolve, 50));
+        assert.equal(fs.readFileSync(marker, 'utf8'), 'started');
+      }
+    }
+  } finally { restore(); }
 });
 test('release signature verification accepts only the matching Ed25519 key', () => {
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
@@ -187,4 +243,41 @@ test('release signed with a different key is refused before download', async () 
   const other = crypto.generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' });
   const result = await update({ ...fixture(), publicKey: other });
   assert.equal(result.status, 'failed'); assert.equal(result.reason, 'Update refused: recipe signature'); assert.deepEqual(pointer(), before);
+});
+test('new release notification bypasses hourly wait once, but failed retries retain backoff and disable wins', async () => {
+  restore();
+  fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now(), status: 'current' }));
+  const f = fixture();
+  assert.equal((await update({ ...f, automatic: true, notifiedVersion: nextPatch })).status, 'updated');
+  restore();
+  const offline = { automatic: true, notifiedVersion: nextPatch, fetcher: async () => { throw new Error('offline'); } };
+  assert.equal((await update(offline)).status, 'failed');
+  assert.equal((await update(offline)).status, 'not_due');
+  enableUpdates(false);
+  assert.equal((await update({ ...fixture(), automatic: true, notifiedVersion: '9.9.9' })).status, 'not_due');
+  restore();
+});
+test('an older latest stable release never requests a downgrade or migration', async () => {
+  restore(); const before = pointer();
+  assert.equal((await update(fixture({ next: '0.1.18' }))).status, 'current');
+  assert.deepEqual(pointer(), before); assert.equal(updateStatus().availableVersion, '0.1.18');
+});
+test('monitor supervisor reloads a verified new runtime without restarting agent processes', () => {
+  restore();
+  const marker = path.join(root(), 'monitor-reloaded');
+  const make = (name, code) => {
+    const dir = path.join(root(), 'versions', name); fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'));
+    const files = { 'bin/agent-context.js': code, 'src/update.js': 'export {};\n' };
+    for (const [file, contents] of Object.entries(files)) fs.writeFileSync(path.join(dir, file), contents);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@alexkirs/agent-context', version, type: 'module' }));
+    fs.writeFileSync(path.join(dir, 'integrity.json'), JSON.stringify({ version, files: Object.fromEntries(Object.entries(files).map(([file, contents]) => [file, sha(contents)])) }));
+    return { dir, version };
+  };
+  const next = make('monitor-next', `import fs from 'node:fs';if(process.argv[3]!=='worker')process.exit(9);fs.writeFileSync(${JSON.stringify(marker)},'reloaded');`);
+  const old = make('monitor-old', `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(path.join(root(), 'active.json'))},${JSON.stringify(JSON.stringify(next))});process.exit(75);`);
+  try {
+    fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify(old));
+    const child = spawnSync(process.execPath, [launcher(), 'monitor', 'serve'], { env: process.env, windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr); assert.equal(fs.readFileSync(marker, 'utf8'), 'reloaded');
+  } finally { restore(); }
 });

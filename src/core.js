@@ -3,8 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { compressSupercompress } from './supercompress.js';
+import { enrollment } from './enrollment.js';
 
-export const version = '0.1.18';
+export const version = '0.2.6';
 export const home = () => process.env.AGENT_CONTEXT_HOME || os.homedir();
 export const root = () => path.join(home(), '.agent-context');
 export const sha = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -48,6 +49,9 @@ export function acquireTransaction() {
   return release;
 }
 export function keyStatus() {
+  const device = enrollment();
+  if (device) return { present: true, conflict: false, key: device.token, gateway: device.gateway };
+  if (fs.existsSync(path.join(root(), 'enrollment.json'))) return { present: false, conflict: false, error: 'invalid_device_config' };
   let fileKey = '';
   try { fileKey = JSON.parse(fs.readFileSync(path.join(home(), '.supercompress', 'config.json'), 'utf8')).api_key || ''; }
   catch (error) { if (error.code !== 'ENOENT') return { present: false, conflict: false, error: 'invalid_key_config' }; }

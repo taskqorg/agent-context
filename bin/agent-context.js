@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compress, version, atomicWrite, home, root } from '../src/core.js';
+import { compress, version, atomicWrite, home, root, acquireTransaction } from '../src/core.js';
 import { claudeHook } from '../src/hooks.js';
 import { serve } from '../src/mcp.js';
 import { install, rollback, doctor } from '../src/install.js';
@@ -11,38 +11,101 @@ import { verify } from '../src/verify.js';
 import { update, rollbackUpdate, enableUpdates, updateStatus, launcher } from '../src/update.js';
 import { pythonEnvironment, prepareHeadroom, qualifyHeadroom } from '../src/headroom.js';
 import { runAgent } from '../src/run.js';
-import { servicePort, serviceHealth, ensureService, serveService, lifecycle } from '../src/service.js';
+import { servicePort, serviceHealth, ensureService, stopService, serveService, lifecycle } from '../src/service.js';
 import { diagnose } from '../src/diagnostics.js';
 import { compressionWarnings } from '../src/conflicts.js';
 import { incidents, recordIncident, reportIncidents, incidentPolicy, pendingPackets } from '../src/incidents.js';
 import { spawn } from 'node:child_process';
 import { uninstall } from '../src/uninstall.js';
+import { telemetryStatus, verifyTelemetry, prepareCodexExporter } from '../src/telemetry.js';
+import { credentialInput, saveLangfuse } from '../src/credentials.js';
+import { connectGateway, enrollment } from '../src/enrollment.js';
+import { serveGateway } from '../src/gateway-server.js';
+import { monitorTick, MONITOR_INTERVAL_MS } from '../src/monitor.js';
+import { installMonitorService } from '../src/monitor-service.js';
+import { atomicSecretWrite } from '../src/private-file.js';
 
 const [command, ...args] = process.argv.slice(2);
 const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 const versionsDir = path.join(root(), 'versions');
 const inManagedRuntime = fs.existsSync(versionsDir) && fs.realpathSync(fileURLToPath(import.meta.url)).startsWith(fs.realpathSync(versionsDir) + path.sep);
-const recovery = command === 'update' && ['rollback', 'disable'].includes(args[0]) || command === 'doctor' && args.includes('--fix');
-if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
+const recovery = command === 'update' && args[0] === 'bootstrap' || command === 'update' && ['rollback', 'disable'].includes(args[0]) || command === 'doctor' && args.includes('--fix');
+if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway', 'monitor'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
   await import(pathToFileURL(launcher()).href);
 } else try {
-  if (command === 'setup') {
-    const selected = args.filter(value => value !== '--no-report');
+  if (command === 'monitor') {
+    if (args[0] === 'install' && args.slice(1).every(a => a === '--migrate')) output(installMonitorService({ migrate: args.includes('--migrate') }));
+    else if (args[0] === 'tick' && args.length === 1) output(await monitorTick({ force: true }));
+    else if (['serve', 'worker'].includes(args[0]) && args.length === 1) {
+      let stopped = false;
+      const controller = new AbortController();
+      const { subscribeUpdates } = await import('../src/update-subscription.js');
+      const subscription = subscribeUpdates({ signal: controller.signal });
+      const stop = () => { stopped = true; controller.abort(); };
+      process.once('SIGINT', stop); process.once('SIGTERM', stop);
+      while (!stopped && fs.existsSync(root()) && !fs.existsSync(path.join(root(), 'uninstalling.json'))) {
+        if (updateStatus().activeVersion && updateStatus().activeVersion !== version) { stop(); process.exitCode = 75; break; }
+        try { await monitorTick(); } catch { /* Retry without logging raw errors or credentials. */ }
+        await new Promise(resolve => { const done = () => { clearTimeout(timer); process.off('SIGTERM', done); process.off('SIGINT', done); resolve(); }; const timer = setTimeout(done, Math.min(MONITOR_INTERVAL_MS, 5000)); process.once('SIGTERM', done); process.once('SIGINT', done); });
+      }
+      controller.abort(); await subscription;
+    } else throw new Error('Usage: agent-context monitor tick|serve');
+  } else if (command === 'connect') {
+    if (args.length !== 1) throw new Error('Usage: agent-context connect <https://gateway-origin>');
+    output(await connectGateway(args[0]));
+  } else if (command === 'gateway' && args[0] === 'serve' && args.length === 2) {
+    await serveGateway(args[1]);
+  } else if (command === 'setup') {
+    const selected = args.filter(value => !['--no-report', '--migrate'].includes(value));
     if (selected.some(value => !names[value])) throw new Error('Choose codex, claude or hermes');
     if (!(selected.length ? selected : Object.keys(names)).some(agent => fs.existsSync(path.join(home(), agent === 'claude' ? '.claude' : `.${agent}`)))) throw new Error('Setup requires an installed Codex, Claude Code or Hermes profile');
+    const agents = selected.length ? selected : Object.keys(names);
+    if (enrollment()) {
+      // No native exporter may send device credentials to an older proxy's upstream catch-all.
+      for (const agent of agents) {
+        const state = await serviceHealth(agent);
+        if (state && state.version !== version && state.active) throw new Error('Setup requires closing active old proxy sessions before gateway migration');
+      }
+      for (const agent of agents) {
+        const file = path.join(root(), 'services', agent + '.json');
+        if (fs.existsSync(file) && JSON.parse(fs.readFileSync(file)).version !== version) await stopService(agent);
+      }
+    }
     const runtime = await prepareHeadroom();
-    const report = install(selected.length ? selected : Object.keys(names), { automatic: true });
+    const exporters = await prepareCodexExporter(selected.length ? selected : Object.keys(names));
+    const report = install(selected.length ? selected : Object.keys(names), { automatic: true, migrate: args.includes('--migrate') });
+    if (enrollment()) for (const agent of report.installed) await ensureService(agent);
+    let monitor; try { monitor = installMonitorService({ migrate: args.includes('--migrate') }); } catch { monitor = { status: 'needs_attention', reason: 'Persistent monitor registration failed; run monitor install after reviewing the existing service.' }; }
     const reporting = incidentPolicy(!args.includes('--no-report'));
     report.warnings = compressionWarnings();
-    const checks = doctor();
+    const checks = await diagnose();
     const nextSteps = [];
     if (!checks.keyPresent) nextSteps.push('Set the SuperCompress key through private stdin: agent-context set-key. Never paste a key into command arguments.');
     if (checks.keyConflict) nextSteps.push('Reconcile the conflicting inherited SuperCompress environment privately.');
     if (report.warnings.length) nextSteps.push('Review the listed compression integrations; remove confirmed conflicts before enabling both.');
+    if (checks.telemetry.credentials !== 'configured') nextSteps.push('Provision this profile privately with its Langfuse project credentials. A file without valid credentials does not enable telemetry.');
+    if (Object.values(checks.telemetry.nativeExporters).includes('missing')) nextSteps.push('Install/configure the official native Langfuse exporter for each listed agent; compression spans do not replace model/tool telemetry. Preserve native hook trust review.');
+    nextSteps.push('Run agent-context telemetry verify to check OTLP delivery and readback. This synthetic check does not qualify a native exporter.');
     nextSteps.push('Run doctor --fix --live, then reload agent connections and verify a real tool result. Health checks alone are not compression proof.');
-    output({ ...report, runtime, reporting, onboarding: { status: checks.healthy && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged.' });
-    if (!checks.healthy) process.exitCode = 1;
+    output({ ...report, runtime, exporters, monitor, reporting, onboarding: { status: checks.healthy && monitor.status === 'installed' && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged. Official native telemetry plugins remain owned by the agent and are preserved by package uninstall.' });
+    if (!checks.healthy || monitor.status !== 'installed') process.exitCode = 1;
+  } else if (command === 'telemetry') {
+    if (args[0] === 'enqueue' && args.length === 2) {
+      const device = enrollment();
+      const relative = path.relative(path.join(root(), 'telemetry-outbox'), path.resolve(args[1])).split(path.sep).join('/');
+      if (!device || !new RegExp('^' + device.device + '/(codex|claude-code|hermes)/[a-f0-9]{32}\\.json$').test(relative)) throw new Error('Unsupported private outbox target');
+      const data = fs.readFileSync(0);
+      if (data.length > 4 * 1024 * 1024) throw new Error('Unsupported outbox batch size');
+      atomicSecretWrite(path.resolve(args[1]), data);
+      output({ status: 'queued' });
+    } else if (args[0] === 'verify' && args.length <= 2) {
+      if (enrollment()) await ensureService(args[1] || 'codex');
+      const report = await verifyTelemetry(args[1]); output(report); if (report.status !== 'delivered') process.exitCode = 1;
+    } else if (args[0] === 'status' && args.length === 1) {
+      let agents = []; try { agents = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).agents || []; } catch {}
+      output(telemetryStatus(agents));
+    } else throw new Error('Usage: agent-context telemetry status|verify [codex|claude|hermes]');
   } else if (command === 'uninstall') {
     if (args.some(value => value !== '--dry-run')) throw new Error('Usage: agent-context uninstall [--dry-run]');
     output(await uninstall({ dryRun: args.includes('--dry-run') }));
@@ -97,12 +160,18 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
   else if (command === 'update') {
     if (args[0] === 'rollback') output(await rollbackUpdate());
     else if (args[0] === 'enable' || args[0] === 'disable') output(enableUpdates(args[0] === 'enable'));
+    else if (args[0] === 'bootstrap' && args.slice(1).every(a => a === '--migrate')) { const { seedRuntime } = await import('../src/update.js'); const release = acquireTransaction(); try { output(seedRuntime({ migrate: args.includes('--migrate') })); } finally { release(); } }
     else if (args[0] === 'status') output(updateStatus());
     else if (!args.length || args[0] === '--automatic') { const report = await update({ automatic: args[0] === '--automatic' }); output(report); if (report.status === 'failed') process.exitCode = 1; }
     else throw new Error('Usage: agent-context update [status|enable|disable|rollback]');
   }
+  else if (command === 'set-langfuse') {
+    if (args.length) throw new Error('Usage: agent-context set-langfuse (interactive hidden input or private JSON stdin)');
+    output(saveLangfuse(await credentialInput('langfuse')));
+  }
   else if (command === 'set-key') {
-    const key = fs.readFileSync(0, 'utf8').trim();
+    if (args.length) throw new Error('Usage: agent-context set-key (interactive hidden input or private stdin)');
+    const key = (await credentialInput('supercompress')).trim();
     if (!/^sc_[A-Za-z0-9_]{20,}$/.test(key)) throw new Error('Invalid key');
     const file = path.join(home(), '.supercompress', 'config.json');
     let config = {};
@@ -112,10 +181,10 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
       // One previous key copy is enough for recovery; older plaintext copies are removed.
       const backups = path.join(root(), 'backups');
       try { for (const name of fs.readdirSync(backups)) if (/^key-\d+\.before$/.test(name)) fs.rmSync(path.join(backups, name), { force: true }); } catch {}
-      atomicWrite(path.join(backups, `key-${Date.now()}.before`), before);
+      atomicSecretWrite(path.join(backups, `key-${Date.now()}.before`), before);
     }
     config.api_key = key;
-    atomicWrite(file, `${JSON.stringify(config, null, 2)}\n`);
+    atomicSecretWrite(file, `${JSON.stringify(config, null, 2)}\n`);
     output({ keySaved: true, environmentNotModified: true });
   }
   else if (command === 'rollback') output(rollback());
@@ -136,7 +205,7 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
 } catch (error) {
   if (!['incidents', '--version', 'uninstall'].includes(command)) recordIncident({ component: command === 'update' ? 'updater' : command === 'proxy' || command === 'lifecycle' ? 'proxy' : 'installer', operation: 'command', category: command === 'update' ? 'update_failed' : 'configuration_drift' });
   // Configuration parser errors may contain private values; report only known safe messages.
-  const safe = /^(Setup requires|Headroom requires|Headroom preparation already running|Unknown agent|Choose |Usage:|Update refused|Rollback refused|Uninstall refused|Unsupported |Hermes legacy|Configuration (changed|transaction)|Native verification)/.test(error.message);
+  const safe = /^(Setup requires|Headroom requires|Headroom preparation already running|Unknown agent|Choose |Usage:|Update refused|Rollback refused|Uninstall refused|Unsupported |Hermes legacy|Configuration (changed|transaction)|Native verification|GitHub sign-in|Gateway enrollment refused)/.test(error.message);
   process.stderr.write(`${safe ? error.message : 'Agent Context operation failed; inspect local configuration privately'}\n`);
   process.exitCode = 1;
 }

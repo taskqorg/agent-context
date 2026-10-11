@@ -1,5 +1,7 @@
 # Agent Context
 
+Кандидат подключения команды без сервисных ключей: [TEAM-ONBOARDING.md](docs/TEAM-ONBOARDING.md). GitHub-вход выдаёт отдельный доступ устройству; общий gateway хранит Langfuse/SuperCompress keys. Публичный endpoint и browser onboarding пока не квалифицированы; работающие профили автоматически не мигрируют.
+
 Автоматическое сжатие результатов инструментов для **Codex, Claude Code и Hermes**. Один пакет: контролируемый SuperCompress, локальный Headroom, необязательная телеметрия Langfuse, диагностика и совместимые автообновления. Обычный вход агента сохраняется.
 
 ## Установить через агента
@@ -16,7 +18,7 @@
 npm exec --yes --ignore-scripts --package=github:taskqorg/agent-context -- agent-context setup
 ```
 
-Нужны Node.js 22+, npm, Git, Python 3.11–3.13 с `venv`/`ensurepip` и ключ SuperCompress. [Релиз 0.1.14](https://github.com/taskqorg/agent-context/releases/tag/v0.1.14) квалифицирован на macOS (Codex, Claude Code); автообновление пока раскатывается только на macOS. 0.1.12 проверен на macOS, Windows, WSL и Linux. Автообновления принимают совместимые стабильные patch-релизы: проверка не чаще раза в сутки при запуске launcher, без прерывания активных клиентов. Подробная процедура: [INSTALL.md](INSTALL.md).
+Нужны Node.js 22+, npm, Git, Python 3.11–3.13 с `venv`/`ensurepip` и ключ SuperCompress. [Релиз 0.1.14](https://github.com/taskqorg/agent-context/releases/tag/v0.1.14) квалифицирован на macOS (Codex, Claude Code); автообновление пока раскатывается только на macOS. 0.1.12 проверен на macOS, Windows, WSL и Linux. Автообновления принимают совместимые стабильные patch-релизы: проверка не чаще раза в час при запуске launcher, без прерывания активных клиентов. Подробная процедура: [INSTALL.md](INSTALL.md).
 
 ## Удалить через агента
 

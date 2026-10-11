@@ -34,6 +34,22 @@ test('uninstall reverses all installs, preserves original bytes/credentials and 
   assert.equal((await uninstall({ removeGlobal: noGlobal })).status, 'already_removed');
 });
 
+test('enrolled uninstall restores native credential routing while preserving later unrelated env edits', async () => {
+  const { home } = fixture();
+  fs.mkdirSync(root(), { recursive: true });
+  fs.writeFileSync(path.join(root(), 'enrollment.json'), JSON.stringify({ gateway: 'https://gateway.invalid', device: 'a'.repeat(32), token: 'acd_' + 'b'.repeat(64), user: 'employee' }));
+  const envFile = path.join(home, '.hermes/.env');
+  fs.writeFileSync(envFile, 'OWNER=before\nHERMES_LANGFUSE_BASE_URL=https://original.invalid\n');
+  install(['codex', 'claude', 'hermes'], { automatic: true });
+  fs.appendFileSync(envFile, 'LATER=keep\n');
+  await uninstall({ removeGlobal: noGlobal });
+  const restored = fs.readFileSync(envFile, 'utf8');
+  assert.ok(restored.includes('LATER=keep'));
+  assert.ok(restored.includes('HERMES_LANGFUSE_BASE_URL=https://original.invalid'));
+  assert.equal(restored.includes('sk-lf-device-'), false);
+  assert.equal(fs.existsSync(path.join(home, '.codex/langfuse.json')), false);
+});
+
 test('owner changes to other config values, hooks and instructions survive removal', async () => {
   const { home, file } = fixture(); install(['codex', 'claude'], { automatic: true });
   const config = parse(fs.readFileSync(file, 'utf8')); config.model = 'owner_new_model';

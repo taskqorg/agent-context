@@ -1,6 +1,6 @@
 {
   "name": "@alexkirs/agent-context",
-  "version": "0.1.18",
+  "version": "0.2.6",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -29,15 +29,23 @@
     "integrations/headroom/pyproject.toml",
     "integrations/headroom/agent_context_headroom/*.py",
     "integrations/headroom/test_adapter.py",
+    "integrations/headroom/test_collector.py",
     "docs/HEADROOM-QUALIFICATION.md",
     "docs/INCIDENTS.md",
+    "docs/TELEMETRY-DELIVERY.md",
+    "docs/TEAM-ONBOARDING.md",
+    "docs/gateway-qualification-0.2.0.json",
+    "docs/telemetry-compressor-benchmark.json",
+    "docs/FRA-TELEMETRY-CANDIDATE.patch",
     "docs/benchmark-prefix-results.json",
     "docs/benchmark-code-results.json",
     "integrations/hermes/agent-context/*.py",
     "integrations/hermes/agent-context/plugin.yaml",
     "integrations/hermes/test_plugin.py",
     "INSTALL.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "dashboards/serviceq.json",
+    "docs/SERVICEQ.md"
   ],
   "scripts": {
     "test": "node scripts/integrity.js && node --test",

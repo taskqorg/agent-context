@@ -1,0 +1,135 @@
+{
+  "stage": "qualification",
+  "host": "mac",
+  "agent": "codex",
+  "repeats": 1,
+  "note": "Actual model usage; warm cache differs across arms. Not a billing or stable savings claim. Native login and production profiles unchanged.",
+  "rows": [
+    {
+      "protocol": "ws",
+      "passed": true,
+      "exit_code": 0,
+      "source": "shell",
+      "fixture": "error",
+      "seed": null,
+      "tool_calls": 1,
+      "usage": {
+        "input_tokens": 31360,
+        "cached_input_tokens": 24192,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 84,
+        "reasoning_output_tokens": 0
+      },
+      "elapsed_ms": 9931,
+      "retrieval_calls": 0,
+      "evidence_dir": "/var/folders/sw/55r1dvwn2g30l77zs5nwp3_80000gn/T/agent-context-benchmark-wzj0203d/error-0-baseline",
+      "arm": "baseline",
+      "repeat": 0
+    },
+    {
+      "protocol": "ws",
+      "passed": true,
+      "exit_code": 0,
+      "source": "shell",
+      "fixture": "error",
+      "seed": null,
+      "tool_calls": 1,
+      "usage": {
+        "input_tokens": 29815,
+        "cached_input_tokens": 24192,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 89,
+        "reasoning_output_tokens": 0
+      },
+      "elapsed_ms": 13289,
+      "retrieval_calls": 0,
+      "evidence_dir": "/var/folders/sw/55r1dvwn2g30l77zs5nwp3_80000gn/T/agent-context-benchmark-wzj0203d/error-0-compressed",
+      "arm": "compressed",
+      "repeat": 0
+    },
+    {
+      "protocol": "ws",
+      "passed": true,
+      "exit_code": 0,
+      "source": "shell",
+      "fixture": "error",
+      "seed": null,
+      "tool_calls": 2,
+      "usage": {
+        "input_tokens": 52749,
+        "cached_input_tokens": 44160,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 164,
+        "reasoning_output_tokens": 0
+      },
+      "elapsed_ms": 16818,
+      "retrieval_calls": 1,
+      "evidence_dir": "/var/folders/sw/55r1dvwn2g30l77zs5nwp3_80000gn/T/agent-context-benchmark-wzj0203d/error-0-native",
+      "arm": "native",
+      "repeat": 0
+    },
+    {
+      "protocol": "ws",
+      "passed": true,
+      "exit_code": 0,
+      "source": "shell",
+      "fixture": "routine",
+      "seed": null,
+      "tool_calls": 1,
+      "usage": {
+        "input_tokens": 27072,
+        "cached_input_tokens": 22016,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 79,
+        "reasoning_output_tokens": 0
+      },
+      "elapsed_ms": 7634,
+      "retrieval_calls": 0,
+      "evidence_dir": "/var/folders/sw/55r1dvwn2g30l77zs5nwp3_80000gn/T/agent-context-benchmark-wzj0203d/routine-0-baseline",
+      "arm": "baseline",
+      "repeat": 0
+    },
+    {
+      "protocol": "ws",
+      "passed": true,
+      "exit_code": 0,
+      "source": "shell",
+      "fixture": "routine",
+      "seed": null,
+      "tool_calls": 1,
+      "usage": {
+        "input_tokens": 25405,
+        "cached_input_tokens": 19712,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 89,
+        "reasoning_output_tokens": 0
+      },
+      "elapsed_ms": 11433,
+      "retrieval_calls": 0,
+      "evidence_dir": "/var/folders/sw/55r1dvwn2g30l77zs5nwp3_80000gn/T/agent-context-benchmark-wzj0203d/routine-0-compressed",
+      "arm": "compressed",
+      "repeat": 0
+    },
+    {
+      "protocol": "ws",
+      "passed": true,
+      "exit_code": 0,
+      "source": "shell",
+      "fixture": "routine",
+      "seed": null,
+      "tool_calls": 2,
+      "usage": {
+        "input_tokens": 52729,
+        "cached_input_tokens": 46848,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 157,
+        "reasoning_output_tokens": 0
+      },
+      "elapsed_ms": 15226,
+      "retrieval_calls": 1,
+      "evidence_dir": "/var/folders/sw/55r1dvwn2g30l77zs5nwp3_80000gn/T/agent-context-benchmark-wzj0203d/routine-0-native",
+      "arm": "native",
+      "repeat": 0
+    }
+  ]
+}

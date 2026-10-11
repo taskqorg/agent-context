@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "package_version": "0.1.20",
+  "package_commit": "e8862121e13ac512195af475d0c830184a617ea8",
+  "branch": "codex/telemetry-delivery",
+  "stable_release_published": false,
+  "checked_at": "2026-10-11T07:46:56.186097+00:00",
+  "gates": {
+    "node_tests": 84,
+    "npm_pack": "pass",
+    "diff_check": "pass"
+  },
+  "mac": {
+    "installed": "0.1.20",
+    "codex_service": "0.1.16",
+    "active_connections": 2,
+    "update_deferred": true,
+    "idle_claude_hermes_services": "0.1.20",
+    "delivery_probe": "5a3d41795094da2534cc53c3a56d38a5",
+    "native_codex_session": "01a129e1-639e-7210-900d-9346da147d92",
+    "native_codex_trace": "702d714280e9d156474a181ebe47651c",
+    "live_readback": "native model/tool usage and tags confirmed",
+    "new_codex_proxy_live_proof": false,
+    "unused_mac_hermes_native_exporter": "missing"
+  },
+  "fra": {
+    "installed": "0.1.20",
+    "codex_service": "0.1.20",
+    "hermes_service": "0.1.20",
+    "delivery_probe": "7f3d604e99acb286bc039b3613cf954a",
+    "codex": {
+      "facts_pass": true,
+      "session": "01a129ea-777a-73f3-9a87-cfc63dfe0cfc",
+      "native_trace": "6728f3fbcccf005c2f3f92315d9ee6b5",
+      "compression_trace": "34d5f705c9c08a4e9f50fd335f2a91eb",
+      "compression_outcome": "compressed",
+      "native_and_compression_readback": true
+    },
+    "hermes": {
+      "facts_pass": true,
+      "session": "20261011_074428_929666",
+      "native_trace": "88448d3cb24d70503845d9216191569f",
+      "compression_trace": "04c14ddfaa9e1e87c6efd5c5597606aa",
+      "compression_outcome": "compressed",
+      "native_and_compression_readback": true
+    },
+    "identity_tags": [
+      "agent:codex or agent:hermes",
+      "host:fra",
+      "runtime:native"
+    ],
+    "environment": "production",
+    "observer_patch": "docs/FRA-019-DEPLOYED.patch",
+    "observer_backup": "/home/hermes/.hermes/plugins/tight-langfuse/rollout-backup-019-1791704113",
+    "gateway_plugin_reload": true,
+    "gateway_pid_preserved": 2913876,
+    "gateway_synthetic_or_real_message_sent": false,
+    "gateway_new_turn_proof": false,
+    "codex_hook_trust": "reviewed and approved through native /hooks UI; no bypass"
+  },
+  "windows": {
+    "thread": "WIN_CDX",
+    "thread_id": "01a12297-b215-7120-89b1-5004ff78c27a",
+    "reported_installed": "0.1.20",
+    "reported_codex_claude_services": "0.1.20 in native Windows and WSL",
+    "reported_live_facts_and_compression": "4 passed on final 0.1.20: Codex and Claude in native Windows and WSL",
+    "langfuse_credentials": "privately provisioned in both profiles under explicit owner authorization",
+    "langfuse_delivery": "synthetic OTLP/readback passed in both profiles",
+    "status": "compression and delivery verified; native generation/tool exporter awaits normal hook review",
+    "receipt": "C:\\Users\\alexk\\Documents\\Codex\\scratch\\agent-context-019-df6289a\\WINDOWS-WSL-020-RESULT.md",
+    "hermes": "absent in both profiles",
+    "key_transfer": "RSA4096 OAEP-SHA256/MGF1-SHA256 ciphertext only through existing SSH; transfer files and ephemeral key cleaned",
+    "delivery_probes": {
+      "native": "b3e8fe630be636623a2a193adb23b32c",
+      "wsl": "f631d55024cb37c589ced35dfe6a3716"
+    },
+    "compression_readback": {
+      "native": {
+        "session": "01a12a2c-2a39-71c1-96f3-ac9d5450b688",
+        "trace": "7bddac434c9ed956a4659f1e6899a584"
+      },
+      "wsl": {
+        "session": "01a12a2c-658b-7761-866d-6f38375af78e",
+        "trace": "c98539995fe79566c34c442137937bd8"
+      }
+    },
+    "compression_independently_read_back": true,
+    "native_exporter": "official Codex 0.4.2 installed in both profiles; trust review required",
+    "claude_native_exporter": "missing",
+    "credential_file_acl": "protected owner + SYSTEM + Administrators only; parent ACL unchanged",
+    "credential_acl_receipt": "C:\\Users\\alexk\\.agent-context\\020-langfuse-acl-receipt.json"
+  },
+  "limits": [
+    "Native and compression spans correlate by native session/turn, not always by one parent trace tree.",
+    "Compression outcomes and preserved fixture facts are not verified billing savings.",
+    "Mac busy Codex proxy preserved; package installation is not current production proxy upgrade.",
+    "FRA Hermes CLI proof uses same profile/plugins; no new Telegram gateway turn was sent.",
+    "Signed stable auto-update channel was not promoted or qualified by this candidate rollout.",
+    "Owner explicitly authorized Mac credential reuse on Windows/WSL; future keyless onboarding is a separate 0.2.0 candidate, not this deployed package."
+  ],
+  "completion": "incomplete: native Windows/WSL Codex hook review and model/tool exporter proof, Claude native exporter, Mac busy Codex proxy drain remain"
+}

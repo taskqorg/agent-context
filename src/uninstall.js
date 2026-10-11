@@ -1,4 +1,6 @@
 import fs from 'node:fs';
+import { removeMonitorService } from './monitor-service.js';
+import { writeConfig } from './private-file.js';
 import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import YAML from 'yaml';
@@ -97,11 +99,24 @@ function reverseFile(file, before, after, current) {
       return Buffer.from(text.replace(installed, original));
     }
   }
+  if (file === path.join(home(), '.hermes/.env')) {
+    const key = line => /^\s*(?:export\s+)?(HERMES_LANGFUSE_(?:PUBLIC_KEY|SECRET_KEY|BASE_URL))\s*=/.exec(line)?.[1];
+    const original = (before?.toString() || '').split('\n');
+    const installed = after.toString().split('\n');
+    const restored = [];
+    for (const line of text.split('\n')) {
+      const name = key(line);
+      if (!name) { restored.push(line); continue; }
+      if (!installed.includes(line) && !original.includes(line)) fail('installed credential routing was edited; reconcile it before removal');
+      restored.push(...original.filter(item => key(item) === name));
+    }
+    return Buffer.from(restored.join('\n'));
+  }
   fail('installed file was edited; reconcile it before removal');
 }
 
 export function removalPlan() {
-  const allowed = new Set(['.codex/config.toml', '.codex/hooks.json', '.codex/AGENTS.md', '.claude.json', '.claude/settings.json', '.claude/CLAUDE.md', '.hermes/config.yaml', '.hermes/AGENTS.md', '.hermes/plugins/agent-context/plugin.yaml', '.hermes/plugins/agent-context/__init__.py'].map(file => path.resolve(home(), file)));
+  const allowed = new Set(['.codex/config.toml', '.codex/hooks.json', '.codex/AGENTS.md', '.codex/langfuse.json', '.claude.json', '.claude/settings.json', '.claude/CLAUDE.md', '.hermes/config.yaml', '.hermes/.env', '.hermes/AGENTS.md', '.hermes/plugins/agent-context/plugin.yaml', '.hermes/plugins/agent-context/__init__.py'].map(file => path.resolve(home(), file)));
   allowed.add(path.join(root(), 'integration.json'));
   safePath(root(), new Set([path.resolve(root())]));
   const base = path.join(root(), 'backups');
@@ -174,7 +189,7 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
       for (const item of changes) {
         const current = fs.existsSync(item.file) ? fs.readFileSync(item.file) : null;
         if (!equal(current, item.initial)) fail('configuration changed during removal');
-        if (item.after === null) fs.rmSync(item.file, { force: true }); else atomicWrite(item.file, item.after);
+        if (item.after === null) fs.rmSync(item.file, { force: true }); else writeConfig(item.file, item.after);
         written.push(item);
       }
       for (const move of moves) {
@@ -183,12 +198,13 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
         moved.push(move);
       }
       globalPackage = await removeGlobal();
+      removeMonitorService();
     } catch (error) {
       for (const move of moved.reverse()) fs.renameSync(move.from, move.to);
       for (const item of written.reverse()) {
         const current = fs.existsSync(item.file) ? fs.readFileSync(item.file) : null;
         if (!equal(current, item.after)) continue;
-        if (item.initial === null) fs.rmSync(item.file, { force: true }); else atomicWrite(item.file, item.initial);
+        if (item.initial === null) fs.rmSync(item.file, { force: true }); else writeConfig(item.file, item.initial);
       }
       throw error;
     }

@@ -6,6 +6,8 @@ import { checkPackage, rollbackUpdate, updateStatus } from './update.js';
 import { ensureService, serviceHealth } from './service.js';
 import { incidents, recordIncident } from './incidents.js';
 import { compressionWarnings } from './conflicts.js';
+import { telemetryStatus } from './telemetry.js';
+import { writeConfig } from './private-file.js';
 
 export async function diagnose({ fix = false, live = false } = {}) {
   const actions = [];
@@ -48,7 +50,8 @@ export async function diagnose({ fix = false, live = false } = {}) {
         for (const { file, bytes } of pending) {
           fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
           // Exclusive creation preserves a file the owner may have recreated after diagnosis.
-          fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 });
+          if (fs.existsSync(file)) continue;
+          writeConfig(file, bytes, { exclusive: true });
           actions.push({ status: 'restored_missing_owned_file' });
         }
       }
@@ -67,6 +70,13 @@ export async function diagnose({ fix = false, live = false } = {}) {
   let installed = [];
   try { installed = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).agents; } catch {}
   const services = {};
+  const serviceDetails = {};
+  const telemetry = telemetryStatus(installed || []);
+  const telemetryIssues = [];
+  if (installed?.length && telemetry.credentials !== 'configured') telemetryIssues.push('telemetry:credentials_missing_or_invalid');
+  if (installed?.length && telemetry.delivery.status !== 'delivered') telemetryIssues.push('telemetry:delivery_unverified');
+  for (const [agent, status] of Object.entries(telemetry.nativeExporters)) if (status === 'missing') telemetryIssues.push(`${agent}:native_exporter_missing`);
+  for (const [agent, status] of Object.entries(telemetry.nativeExporters)) if (status === 'installed_hooks_disabled_or_unconfigured') telemetryIssues.push(`${agent}:native_hooks_disabled_or_unconfigured`);
   const warnings = compressionWarnings();
   for (const agent of installed || []) {
     if (fix) {
@@ -76,10 +86,12 @@ export async function diagnose({ fix = false, live = false } = {}) {
     if (live || fix) {
       const state = await serviceHealth(agent);
       services[agent] = state ? 'ready' : 'unavailable';
-      if (state?.telemetry === false) warnings.push({ code: 'compression_telemetry_disabled', agent });
+      if (state) serviceDetails[agent] = { version: state.version, recipe: state.recipe, telemetry: state.telemetry,
+        host: state.host, runtime: state.runtime, compressor: state.compressor, compression: state.compression };
+      if (state?.telemetry === false) { warnings.push({ code: 'compression_telemetry_disabled', agent }); telemetryIssues.push(`${agent}:compression_telemetry_disabled`); }
     }
   }
-  return { ...config, warnings, services, incidents: incidents(), repairs: actions,
-    healthy: config.healthy && Object.values(services).every(value => value === 'ready'),
+  return { ...config, issues: [...config.issues, ...telemetryIssues], warnings, services, serviceDetails, telemetry, incidents: incidents(), repairs: actions,
+    healthy: config.healthy && !telemetryIssues.length && Object.values(services).every(value => value === 'ready'),
     runtimeProof: live || fix ? 'owned_health_only_not_model_proof' : 'not_run' };
 }

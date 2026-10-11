@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ServiceQ · Обстановка</title><link rel="stylesheet" href="/serviceq/style.css"><script src="/serviceq/app.js" defer></script></head>
+<body>
+<header><a class="brand" href="/serviceq"><span class="logo">Q</span>ServiceQ<span class="workspace">Tight / Agents</span></a><a href="/project/tight-hermes/traces">Открыть Langfuse ↗</a></header>
+<main>
+  <div class="page-heading"><div><p class="eyebrow">ЕДИНЫЙ ОБЗОР</p><h1>Что происходит с агентами</h1><p class="muted">Состояние сервисов сейчас. Активность и компрессия за выбранный период.</p></div><div class="controls"><label>Период<select id="period"><option value="1800">30 минут</option><option value="7200">2 часа</option><option value="86400">24 часа</option></select></label><button id="refresh">Обновить</button></div></div>
+  <p id="update" class="muted small" role="status">Получаем данные из Langfuse…</p>
+  <div id="error" class="notice error" role="alert" hidden></div>
+  <div id="content" aria-busy="true"><div class="loading">Загружаем последние проверки, активность и результаты компрессии…</div></div>
+</main>
+<footer>Источник: Langfuse · проверки каждые 5 минут · страница обновляется каждую минуту<span><a href="/project/tight-hermes/dashboards/cmv3thggv0009o423fo72klho?dateRange=30m">Технические метрики ↗</a></span></footer>
+</body></html>
