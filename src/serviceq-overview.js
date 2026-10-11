@@ -103,7 +103,8 @@ export function overview({ health = [], compression = [], activity = [], inciden
   const history = [...new Map(incidents.map(row => [row.traceId || row.id, row])).values()].filter(r => Date.parse(r.startTime) >= now - 86400000 && Date.parse(r.startTime) <= now + 60000).map(row => {
     const { host, runtime, agent } = identity(row);
     const category = /^http_[45]\d\d$/.test(row.statusMessage || '') ? 'Ответ сервиса ' + row.statusMessage.slice(5) : { timeout: 'Сервис не ответил вовремя', startup_failed: 'Не удалось запустить сервис', configuration_drift: 'Настройки изменились', invalid_response: 'Некорректный ответ', request_failed: 'Ошибка запроса', missing_key: 'Не настроен доступ', delivery_failed: 'Не удалось отправить телеметрию', runtime_integrity: 'Проверка целостности не прошла' }[row.statusMessage] || 'Локальный инцидент ContextQ';
-    return { host: host + '/' + runtime, agent: agentNames[agent] || 'ContextQ', title: category, at: Date.parse(row.startTime), occurrences: number(attribute(row, 'incident.occurrences')), traceId: safeTrace(row) };
+    const fingerprint = attribute(row, 'incident.fingerprint');
+    return { host: host + '/' + runtime, agent: agentNames[agent] || 'ContextQ', title: category, at: Date.parse(row.startTime), fingerprint: /^[a-f0-9]{24}$/.test(fingerprint || '') ? fingerprint : safeTrace(row), occurrences: number(attribute(row, 'incident.occurrences')), traceId: safeTrace(row) };
   }).sort((a, b) => b.at - a.at);
   return { checkedAt: now, period, hosts: [...hosts.values()], issues, gaps, incidents: history, truncated, unattributed };
 }
