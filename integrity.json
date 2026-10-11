@@ -1,11 +1,11 @@
 {
-  "version": "0.1.16",
+  "version": "0.1.17",
   "files": {
-    "bin/agent-context.js": "4f31d5bc7833596337606161241172a5af21fdc73409f3df2842d4049bf9832b",
+    "bin/agent-context.js": "df204b1bfd4336c1a9a87a45b8b319790b9a961f02cdefc4c516782bd55811af",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "4b84edf4fe23d60b377dddd3f095c10a5f871e415504fc048296f27ad31cd5e3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "40f9c9a332ed7055beae7668d6f1727a3dbf1b2d0ac77a8174f39752e8ed88e9",
+    "src/core.js": "d7f37ae3e669ce4f04c5a5f47d2743b400c5fc21e39018847c5176f513d5853b",
     "src/diagnostics.js": "83e1a879bd8857345d6a353d7bd6f16570125a301ca6dcebb1b58453f8549d42",
     "src/executable.js": "d5dab0048128f53b65c9d418241f7d5a184c27804c95b3ae9e0175bc9a497e6a",
     "src/headroom.js": "d0f0d96d680d4670858dbc637becbf67d6762d6700b027a76a2c77880b3dff6d",
