@@ -1,11 +1,11 @@
 {
-  "version": "0.2.9",
+  "version": "0.2.10",
   "files": {
     "bin/agent-context.js": "ab734f5ad5f63abc5b3e85b295f61ce3fb70c9f0f7d9456dd7559cf9f70e0a17",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "871a4fdd98acb689835af32df4e5a7909a9fb0ddf5cc2f04da3386d1da6a91b3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "a33b92fc0785240998ed2f3babb0dc4352b191ccbbadc91e8da04335b242fee3",
+    "src/core.js": "81c7daed150b170ca183c30fe1186ca21c0992345be44836a9a0cb2507a6e280",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "bac902d9e07567e4d43109eaf808d96b7b5883f9629b3c25aa12443e8737909d",
     "src/enrollment.js": "744b84eb892bc177553da933cdfc1e32598bd46d53a28fd43c82c98012284e48",
@@ -32,7 +32,7 @@
     "src/telemetry.js": "cfcb9f7a0f6885150156a3dfcdaa7f94b50d8759b1608d10d7554fb8cfbd888e",
     "src/uninstall.js": "b6e50b542c9b016d48c6b5c947def32ded56db9936db1de784c793774dcbc3ec",
     "src/update-subscription.js": "73eb9b55dc1c94ce56e8c2a6648c04c642e71c9aec294cbf5dabfdbf14999afc",
-    "src/update.js": "008c0bd5a542e840aa2002cd00fa3216702632f7e3192968e7b84e8423acf303",
+    "src/update.js": "dc11ea7df92be6320794806f8fdcaa05b40e8aeedeafa9d1d51ad00fa3dd09d9",
     "src/verify.js": "08cfdedddf687da531281b71b74e6a9fe2a1df3e1b37235d8c25c29200084cd0",
     "integrations/hermes/agent-context/plugin.yaml": "7ceea299e14c6e213038a9603a2afe19dc34f5339905d351fc68febbed554a58",
     "integrations/hermes/agent-context/__init__.py": "0f2b335f11a9705b67d20c308e6893628d39c1ae2ce2055fb6d9b74b17fd6a49",

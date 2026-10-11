@@ -60,6 +60,18 @@ test('stable launcher follows atomic upgrade and rollback without changing agent
   assert.equal(updateStatus().enabled, false);
   const f = fixture(); assert.equal((await update({ ...f, automatic: true })).status, 'not_due'); assert.equal(f.calls(), 0);
 });
+test('updates retain older runtime bridges across multiple selections for live proxies', async () => {
+  restore();
+  const bridge = path.join(initial.dir, 'bin/headroom-compress.js');
+  const original = fs.readFileSync(bridge);
+  for (const offset of [1, 2, 3]) {
+    const next = version.split('.').map((part, index) => index === 2 ? Number(part) + offset : part).join('.');
+    assert.equal((await update(fixture({ next }))).status, 'updated');
+    assert.deepEqual(fs.readFileSync(bridge), original, 'a live proxy can still invoke its original bridge');
+  }
+  assert.notEqual(pointer().previous.dir, initial.dir);
+  restore();
+});
 test('launcher resolves home aliases; no stable release is an idle state', async () => {
   restore();
   const alias = `${home}-alias`; fs.symlinkSync(home, alias, process.platform === 'win32' ? 'junction' : 'dir');

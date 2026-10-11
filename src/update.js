@@ -28,12 +28,6 @@ export function rolloutBucket() {
 }
 export const UPDATE_CHECK_INTERVAL_MS = 3600000;
 const RETRY_BACKOFF_MS = [3600000, 6 * 3600000, 86400000];
-function prune(keep) {
-  // Keep active + previous runtime; staging leftovers and older versions only consume disk.
-  const versions = path.join(root(), 'versions');
-  const kept = new Set(keep.filter(Boolean).map(dir => path.resolve(dir)));
-  try { for (const name of fs.readdirSync(versions)) { const dir = path.resolve(versions, name); if (!kept.has(dir)) fs.rmSync(dir, { recursive: true, force: true }); } } catch {}
-}
 export const launcher = () => path.join(root(), 'launcher.mjs');
 const pointerFile = () => path.join(root(), 'active.json');
 const stateFile = () => path.join(root(), 'updates.json');
@@ -236,7 +230,7 @@ export async function update({ automatic = false, notifiedVersion = null, fetche
       if (read(policyFile())?.enabled === false) { record('disabled_before_activation'); return { status: 'disabled_before_activation', activeVersion: active.version }; }
       atomicWrite(pointerFile(), json({ version: next, dir, previous: { version: active.version, dir: active.dir } }));
       record('updated', { activeVersion: next, availableVersion: next });
-      prune([dir, active.dir]);
+      // Busy proxies may still invoke bridges from any older runtime directory.
       return { status: 'updated', version: next, previous: active.version, reloadRequired: true };
     } catch (error) {
       if (error.message === 'Update refused: HTTP 404') { record('no_stable_release'); return { status: 'no_stable_release', activeVersion: active.version }; }
