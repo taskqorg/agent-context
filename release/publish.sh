@@ -27,13 +27,18 @@ gh release create "$TAG" --repo "$REPO" --target main --title "Agent Context $VE
   "release/out/$ARCHIVE" release/out/recipe.json
 
 echo "4/4 Sign recipe"
+STARTED=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 gh workflow run sign-recipe.yml --repo "$REPO" --ref main -f tag="$TAG"
 # The 'release' environment keeps its owner-reviewer gate; this owner script approves it with the owner's own gh login.
+# Approve only the run this script started: main, dispatched after STARTED, titled with this tag, and exactly one such run.
 for _ in $(seq 30); do
-  RUN=$(gh run list --repo "$REPO" --workflow sign-recipe.yml --event workflow_dispatch --limit 1 --json databaseId,status -q '.[] | select(.status=="waiting") | .databaseId')
-  [[ -n "$RUN" ]] && break; sleep 5
+  RUNS=$(gh run list --repo "$REPO" --workflow sign-recipe.yml --event workflow_dispatch --branch main --limit 20 \
+    --json databaseId,status,displayTitle,createdAt \
+    -q ".[] | select(.status==\"waiting\" and .displayTitle==\"Sign $TAG\" and .createdAt>=\"$STARTED\") | .databaseId")
+  [[ -n "$RUNS" ]] && break; sleep 5
 done
-[[ -n "${RUN:-}" ]] || { echo "signing run not waiting for approval; check https://github.com/$REPO/actions/workflows/sign-recipe.yml"; exit 1; }
+[[ -n "${RUNS:-}" && $(wc -l <<<"$RUNS") -eq 1 ]] || { echo "no single signing run for $TAG awaiting approval; check https://github.com/$REPO/actions/workflows/sign-recipe.yml"; exit 1; }
+RUN=$RUNS
 ENV_ID=$(gh api "repos/$REPO/environments/release" -q .id)
 gh api -X POST "repos/$REPO/actions/runs/$RUN/pending_deployments" -F "environment_ids[]=$ENV_ID" -f state=approved -f comment="Owner release $VERSION via publish.sh" >/dev/null
 gh run watch "$RUN" --repo "$REPO" --exit-status >/dev/null

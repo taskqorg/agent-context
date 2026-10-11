@@ -1,4 +1,6 @@
 name: Sign release recipe
+# publish.sh matches its own run by this title before approving it.
+run-name: Sign ${{ inputs.tag }}
 # Run after recipe.json is attached to a qualified release; clients refuse unsigned recipes.
 on:
   workflow_dispatch:
