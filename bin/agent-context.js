@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compress, version, atomicWrite, home, root } from '../src/core.js';
+import { compress, version, atomicWrite, home, root, acquireTransaction } from '../src/core.js';
 import { claudeHook } from '../src/hooks.js';
 import { serve } from '../src/mcp.js';
 import { install, rollback, doctor } from '../src/install.js';
@@ -22,6 +22,7 @@ import { credentialInput, saveLangfuse } from '../src/credentials.js';
 import { connectGateway, enrollment } from '../src/enrollment.js';
 import { serveGateway } from '../src/gateway-server.js';
 import { monitorTick, MONITOR_INTERVAL_MS } from '../src/monitor.js';
+import { installMonitorService } from '../src/monitor-service.js';
 import { atomicSecretWrite } from '../src/private-file.js';
 
 const [command, ...args] = process.argv.slice(2);
@@ -29,20 +30,26 @@ const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 const versionsDir = path.join(root(), 'versions');
 const inManagedRuntime = fs.existsSync(versionsDir) && fs.realpathSync(fileURLToPath(import.meta.url)).startsWith(fs.realpathSync(versionsDir) + path.sep);
-const recovery = command === 'update' && ['rollback', 'disable'].includes(args[0]) || command === 'doctor' && args.includes('--fix');
+const recovery = command === 'update' && args[0] === 'bootstrap' || command === 'update' && ['rollback', 'disable'].includes(args[0]) || command === 'doctor' && args.includes('--fix');
 if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway', 'monitor'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
   await import(pathToFileURL(launcher()).href);
 } else try {
   if (command === 'monitor') {
-    if (args[0] === 'tick' && args.length === 1) output(await monitorTick({ force: true }));
-    else if (args[0] === 'serve' && args.length === 1) {
+    if (args[0] === 'install' && args.slice(1).every(a => a === '--migrate')) output(installMonitorService({ migrate: args.includes('--migrate') }));
+    else if (args[0] === 'tick' && args.length === 1) output(await monitorTick({ force: true }));
+    else if (['serve', 'worker'].includes(args[0]) && args.length === 1) {
       let stopped = false;
-      const stop = () => { stopped = true; };
+      const controller = new AbortController();
+      const { subscribeUpdates } = await import('../src/update-subscription.js');
+      const subscription = subscribeUpdates({ signal: controller.signal });
+      const stop = () => { stopped = true; controller.abort(); };
       process.once('SIGINT', stop); process.once('SIGTERM', stop);
       while (!stopped && fs.existsSync(root()) && !fs.existsSync(path.join(root(), 'uninstalling.json'))) {
+        if (updateStatus().activeVersion && updateStatus().activeVersion !== version) { stop(); process.exitCode = 75; break; }
         try { await monitorTick(); } catch { /* Retry without logging raw errors or credentials. */ }
-        await new Promise(resolve => { const done = () => { clearTimeout(timer); process.off('SIGTERM', done); process.off('SIGINT', done); resolve(); }; const timer = setTimeout(done, MONITOR_INTERVAL_MS); process.once('SIGTERM', done); process.once('SIGINT', done); });
+        await new Promise(resolve => { const done = () => { clearTimeout(timer); process.off('SIGTERM', done); process.off('SIGINT', done); resolve(); }; const timer = setTimeout(done, Math.min(MONITOR_INTERVAL_MS, 5000)); process.once('SIGTERM', done); process.once('SIGINT', done); });
       }
+      controller.abort(); await subscription;
     } else throw new Error('Usage: agent-context monitor tick|serve');
   } else if (command === 'connect') {
     if (args.length !== 1) throw new Error('Usage: agent-context connect <https://gateway-origin>');
@@ -69,6 +76,7 @@ if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway', 'monito
     const exporters = await prepareCodexExporter(selected.length ? selected : Object.keys(names));
     const report = install(selected.length ? selected : Object.keys(names), { automatic: true, migrate: args.includes('--migrate') });
     if (enrollment()) for (const agent of report.installed) await ensureService(agent);
+    let monitor; try { monitor = installMonitorService({ migrate: args.includes('--migrate') }); } catch { monitor = { status: 'needs_attention', reason: 'Persistent monitor registration failed; run monitor install after reviewing the existing service.' }; }
     const reporting = incidentPolicy(!args.includes('--no-report'));
     report.warnings = compressionWarnings();
     const checks = await diagnose();
@@ -80,8 +88,8 @@ if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway', 'monito
     if (Object.values(checks.telemetry.nativeExporters).includes('missing')) nextSteps.push('Install/configure the official native Langfuse exporter for each listed agent; compression spans do not replace model/tool telemetry. Preserve native hook trust review.');
     nextSteps.push('Run agent-context telemetry verify to check OTLP delivery and readback. This synthetic check does not qualify a native exporter.');
     nextSteps.push('Run doctor --fix --live, then reload agent connections and verify a real tool result. Health checks alone are not compression proof.');
-    output({ ...report, runtime, exporters, reporting, onboarding: { status: checks.healthy && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged. Official native telemetry plugins remain owned by the agent and are preserved by package uninstall.' });
-    if (!checks.healthy) process.exitCode = 1;
+    output({ ...report, runtime, exporters, monitor, reporting, onboarding: { status: checks.healthy && monitor.status === 'installed' && !report.warnings.length ? 'configured' : 'needs_attention', issues: checks.issues, nextSteps }, notice: 'Sanitized incident reporting uses existing GitHub auth; no raw logs. Use incidents disable to opt out. Native hooks may require review/trust; tool approval is unchanged. Official native telemetry plugins remain owned by the agent and are preserved by package uninstall.' });
+    if (!checks.healthy || monitor.status !== 'installed') process.exitCode = 1;
   } else if (command === 'telemetry') {
     if (args[0] === 'enqueue' && args.length === 2) {
       const device = enrollment();
@@ -152,6 +160,7 @@ if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway', 'monito
   else if (command === 'update') {
     if (args[0] === 'rollback') output(await rollbackUpdate());
     else if (args[0] === 'enable' || args[0] === 'disable') output(enableUpdates(args[0] === 'enable'));
+    else if (args[0] === 'bootstrap' && args.slice(1).every(a => a === '--migrate')) { const { seedRuntime } = await import('../src/update.js'); const release = acquireTransaction(); try { output(seedRuntime({ migrate: args.includes('--migrate') })); } finally { release(); } }
     else if (args[0] === 'status') output(updateStatus());
     else if (!args.length || args[0] === '--automatic') { const report = await update({ automatic: args[0] === '--automatic' }); output(report); if (report.status === 'failed') process.exitCode = 1; }
     else throw new Error('Usage: agent-context update [status|enable|disable|rollback]');

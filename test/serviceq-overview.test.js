@@ -46,3 +46,10 @@ test('synthetic root observations and replayed incident IDs do not inflate count
   assert.equal(result.incidents.length, 1);
   assert.equal(result.hosts.find(h => h.id === 'windows/native').agents[0].compression.compressed, 1);
 });
+test('overview distinguishes selected package, monitor and old proxy, and sanitizes updater status', () => {
+  const result = overview({ health: [row({ service: 'updater', agent: 'none', reason: 'release_subscription_connected', metadata: meta({ 'update.installed': '0.2.6', 'update.available': '0.2.7', 'update.monitor': '0.2.6', 'update.status': 'downloaded', 'update.subscription': 'connected', 'update.enabled': 'true', 'update.reason': 'SECRET' }) }), row({ metadata: meta({ 'proxy.version': '0.1.20' }) })] }, now);
+  const h = result.hosts.find(h => h.id === 'windows/native');
+  assert.equal(h.update.installed, '0.2.6'); assert.equal(h.update.status, 'downloaded');
+  assert.equal(h.services.find(s => s.service === 'contextq').proxyVersion, '0.1.20');
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
+});

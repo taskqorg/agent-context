@@ -8,7 +8,7 @@ import { atomicWrite, root, home, sha, version, acquireTransaction } from './cor
 
 export const extraRuntimeFiles = ['integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'integrations/headroom/agent_context_headroom/collector.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/headroom-fixture.js'];
 const source = fileURLToPath(new URL('../', import.meta.url));
-const repository = 'taskqorg/agent-context';
+export const repository = 'taskqorg/agent-context';
 // Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
 const hardenedLegacyLauncher = '58010bbde95c55e4c04f3c11ebe26497ef5b024f0d09193625203ce66125d51c';
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
@@ -90,7 +90,18 @@ if (['mcp', 'hook', 'lifecycle', 'run', 'retrieval'].includes(process.argv[2])) 
     } catch {}
   }
 }
-await import(pathToFileURL(bin).href);
+if (process.argv[2] === 'monitor' && process.argv[3] === 'serve') {
+  let stopped = false, child;
+  const stop = () => { stopped = true; child?.kill(); };
+  process.once('SIGTERM', stop); process.once('SIGINT', stop);
+  do {
+    const code = await new Promise((resolve, reject) => {
+      child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'monitor', 'worker'], { stdio: 'inherit', windowsHide: true });
+      child.once('error', reject); child.once('exit', resolve);
+    });
+    if (code !== 75 || stopped) { process.exitCode = code || 0; break; }
+  } while (!stopped);
+} else await import(pathToFileURL(bin).href);
 `;
 export function seedRuntime({ migrate = false } = {}) {
   const existing = read(pointerFile());
@@ -150,6 +161,23 @@ async function assetBytes(asset, fetcher) {
   if (`sha256:${sha(bytes)}` !== asset.digest || bytes.length !== asset.size) fail('archive digest');
   return bytes;
 }
+export async function approvedRecipe(release, fetcher = fetch, publicKey = releasePublicKey) {
+  if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
+  const bytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
+  if (publicKey) {
+    const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
+    if (!verifyRecipeSignature(bytes, signature, publicKey)) fail('recipe signature');
+  }
+  const recipe = JSON.parse(bytes);
+  if (recipe.schema !== 1 || recipe.version !== release.tag_name.slice(1) || recipe.launcherSchema !== 1 || recipe.adapterContract !== 1 || !Array.isArray(recipe.platforms) || !['codex', 'claude', 'hermes'].every(agent => recipe.clients?.includes(agent))) fail('release not qualified');
+  if (recipe.sha256 !== releaseAsset(release, recipe.archive).digest.slice(7)) fail('qualification digest');
+  return recipe;
+}
+export async function approvedStableVersion(fetcher = fetch, publicKey = releasePublicKey) {
+  const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
+  const recipe = await approvedRecipe(release, fetcher, publicKey);
+  return recipe.paused === true ? null : recipe.version;
+}
 export function compatibleUpdate(current, next) {
   const a = /^(\d+)\.(\d+)\.(\d+)$/.exec(current), b = /^(\d+)\.(\d+)\.(\d+)$/.exec(next);
   return Boolean(a && b && a[1] === b[1] && a[2] === b[2] && Number(b[3]) > Number(a[3]));
@@ -179,11 +207,11 @@ export async function prepare(archive, stage, expected) {
   }
   return dir;
 }
-export async function update({ automatic = false, fetcher = fetch, preparer = prepare, publicKey = releasePublicKey } = {}) {
+export async function update({ automatic = false, notifiedVersion = null, fetcher = fetch, preparer = prepare, publicKey = releasePublicKey } = {}) {
   return lock(async () => {
     const active = checkedPointer(read(pointerFile()));
     const state = { ...read(stateFile()), ...read(policyFile()) };
-    if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < UPDATE_CHECK_INTERVAL_MS)) return { status: 'not_due' };
+    if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < UPDATE_CHECK_INTERVAL_MS && (!notifiedVersion || notifiedVersion === state.attemptedVersion))) return { status: 'not_due' };
     const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: 0, ...extra }));
     // Offset lastAttempt so the hourly launcher preserves 1h, 6h, then 24h failure backoff.
     const failed = (reason) => {
@@ -192,20 +220,16 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now() - UPDATE_CHECK_INTERVAL_MS + wait, status: 'failed', reason, failures }));
     };
     const failures = read(stateFile())?.failures || 0;
-    record('checking', { failures });
+    record('checking', { failures, ...(notifiedVersion ? { attemptedVersion: notifiedVersion } : {}) });
     let stage;
     try {
       const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
       if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
       const next = release.tag_name.slice(1);
-      if (next === active.version) { record('current'); return { status: 'current', version: next }; }
-      if (!compatibleUpdate(active.version, next)) { record('migration_required'); return { status: 'migration_required', version: next }; }
-      const recipeBytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
-      if (publicKey) {
-        const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
-        if (!verifyRecipeSignature(recipeBytes, signature, publicKey)) fail('recipe signature');
-      }
-      const recipe = JSON.parse(recipeBytes);
+      if (next.localeCompare(active.version, 'en', { numeric: true }) <= 0) { record('current', { availableVersion: next }); return { status: 'current', version: next }; }
+      if (!compatibleUpdate(active.version, next)) { record('migration_required', { availableVersion: next }); return { status: 'migration_required', version: next }; }
+      const recipe = await approvedRecipe(release, fetcher, publicKey);
+      record('downloading', { availableVersion: next, attemptedVersion: next });
       // Kill switch and staged rollout are recipe fields, so they are covered by the same digest/signature.
       if (recipe.paused === true) { record('paused', { version: next }); return { status: 'paused', version: next }; }
       const percent = Number.isInteger(recipe.rolloutPercent) ? recipe.rolloutPercent : 100;
@@ -217,14 +241,16 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       stage = path.join(root(), 'versions', `stage-${crypto.randomUUID()}`);
       fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
       const archive = path.join(stage, 'candidate.tgz'); fs.writeFileSync(archive, bytes, { mode: 0o600 });
+      record('testing', { availableVersion: next });
       const prepared = await preparer(archive, stage, next);
+      record('downloaded', { availableVersion: next });
       checkPackage(prepared, next);
       const dir = path.join(root(), 'versions', `${next}-${crypto.randomUUID()}`);
       fs.renameSync(prepared, dir);
       if (JSON.stringify(read(pointerFile())) !== JSON.stringify(active)) fail('runtime changed during update');
       if (read(policyFile())?.enabled === false) { record('disabled_before_activation'); return { status: 'disabled_before_activation', activeVersion: active.version }; }
       atomicWrite(pointerFile(), json({ version: next, dir, previous: { version: active.version, dir: active.dir } }));
-      record('updated', { activeVersion: next });
+      record('updated', { activeVersion: next, availableVersion: next });
       prune([dir, active.dir]);
       return { status: 'updated', version: next, previous: active.version, reloadRequired: true };
     } catch (error) {

@@ -5,6 +5,7 @@ import { atomicSecretWrite } from './private-file.js';
 import { langfuseConfig, profileIdentity } from './telemetry.js';
 import { serviceHealth } from './service.js';
 import { incidents } from './incidents.js';
+import { updateSummary } from './update-subscription.js';
 import { enrollment } from './enrollment.js';
 import { monitorExport, validateMonitor, newMonitorId } from './monitor-protocol.js';
 
@@ -55,7 +56,7 @@ export async function collectMonitor({ health = serviceHealth, now = Date.now() 
       metrics.compression_failed = Object.entries(outcomes).filter(([key]) => !normal.has(key)).reduce((n, [, v]) => n + v, 0);
     }
     if (state) metrics.active_connections = state.active || 0;
-    services.push({ service: 'contextq', agent: agent === 'claude' ? 'claude-code' : agent, state: !state ? 'error' : !queueReadable || state.telemetry === false || metrics.queue_oldest_seconds > 600 ? 'warning' : 'ok', reason: !state ? 'proxy_unavailable' : !queueReadable ? 'queue_unreadable' : state.telemetry === false ? 'compression_telemetry_disabled' : metrics.queue_oldest_seconds > 600 ? 'delivery_backlog' : 'proxy_health_not_agent_liveness', metrics });
+    services.push({ service: 'contextq', agent: agent === 'claude' ? 'claude-code' : agent, state: !state ? 'error' : !queueReadable || state.telemetry === false || metrics.queue_oldest_seconds > 600 ? 'warning' : 'ok', reason: !state ? 'proxy_unavailable' : !queueReadable ? 'queue_unreadable' : state.telemetry === false ? 'compression_telemetry_disabled' : metrics.queue_oldest_seconds > 600 ? 'delivery_backlog' : 'proxy_health_not_agent_liveness', metrics, ...(state?.version ? { version: state.version } : {}) });
   }
   for (const service of ['serverq', 'taskq']) {
     const spec = settings[service];
@@ -83,8 +84,10 @@ export async function collectMonitor({ health = serviceHealth, now = Date.now() 
     let reachable = false; try { reachable = (await fetch(device.gateway + '/v1/info', { redirect: 'error', signal: AbortSignal.timeout(3000) })).ok; } catch {}
     services.push({ service: 'gateway', agent: 'none', state: reachable ? 'ok' : 'error', reason: reachable ? 'endpoint_reachable' : 'endpoint_unavailable', metrics: {} });
   }
+  const updater = updateSummary();
+  services.push({ service: 'updater', agent: 'none', state: !updater.enabled || updater.status === 'migration_required' ? 'warning' : updater.status === 'failed' ? 'error' : updater.subscription === 'connected' ? 'ok' : 'unknown', reason: !updater.enabled ? 'updates_disabled' : updater.status === 'migration_required' ? 'update_migration_required' : updater.status === 'failed' ? 'update_failed' : updater.subscription === 'connected' ? 'release_subscription_connected' : 'release_subscription_unavailable', metrics: {} });
   const recent = incidents().filter(i => Date.parse(i.last_seen) >= now - 7 * 86400000 && Date.parse(i.last_seen) <= now).slice(0, 100).map(i => ({ fingerprint: i.fingerprint, component: i.component, category: i.category, agent: i.agent, occurrences: i.occurrences, at: i.last_seen }));
-  return validateMonitor({ schema: 1, id: newMonitorId(), at: new Date(now).toISOString(), ...profileIdentity(), version, services, incidents: recent }, now);
+  return validateMonitor({ schema: 1, id: newMonitorId(), at: new Date(now).toISOString(), ...profileIdentity(), version, updater, services, incidents: recent }, now);
 }
 export async function sendMonitor(packet, config, request = fetch, identity = {}) {
   if (!config) return false;

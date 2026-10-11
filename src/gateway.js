@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { atomicWrite, sha } from './core.js';
 import { validateMonitor } from './monitor-protocol.js';
 import { sendMonitor } from './monitor.js';
+import { releaseNotifications } from './release-notifications.js';
 
 const label = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
 const failure = (status, error) => Response.json({ error }, { status });
@@ -11,7 +12,7 @@ const limitBytes = 4 * 1024 * 1024;
 export const gatewayTraceId = (device, nativeId) => sha(device + '\0' + nativeId.toLowerCase()).slice(0, 32);
 
 // One process owns this private state. GitHub membership is rechecked at most 60s after revocation.
-export function createGateway(config, { request = fetch, now = Date.now } = {}) {
+export function createGateway(config, { request = fetch, now = Date.now, releases = releaseNotifications() } = {}) {
   if (typeof config.stateDir !== 'string' || !path.isAbsolute(config.stateDir)) throw new Error('Unsupported gateway state directory');
   if (!/^[a-zA-Z0-9-]{1,39}$/.test(config.organization) || !/^[a-zA-Z0-9._-]{1,100}$/.test(config.clientId) || config.team && !/^[a-zA-Z0-9_-]{1,100}$/.test(config.team)) throw new Error('Unsupported gateway GitHub configuration');
   const destination = new URL(config.langfuse?.base_url);
@@ -108,10 +109,21 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
       } catch { /* Keep the private queue for the next bounded retry. */ }
       finally { monitorFlushing = false; }
     },
+    refreshReleases: releases.refresh,
     revoke(id) { const device = Object.values(devices).find(value => value.id === id); if (!device) return false; device.revoked = true; save(); return true; },
     async handle(req, peer = 'local') {
       try {
         const url = new URL(req.url);
+        if (req.method === 'GET' && url.pathname === '/v1/releases/watch') {
+          if (!rate('release-watch:' + peer, 1024)) return failure(429, 'rate_limited');
+          const since = url.searchParams.get('since');
+          if (since !== null && !/^\d+\.\d+\.\d+$/.test(since)) return failure(400, 'invalid_release_version');
+          return releases.watch(since, req.signal);
+        }
+        if (req.method === 'POST' && url.pathname === '/v1/releases/refresh') {
+          if (!rate('release-refresh:' + peer, 2)) return failure(429, 'rate_limited');
+          await releases.refresh(); return Response.json({ status: 'checked' });
+        }
         if (req.method === 'GET' && url.pathname === '/v1/info') return Response.json({ clientId: config.clientId, organization: config.organization, team: config.team || null });
         if (req.method === 'POST' && url.pathname === '/v1/enroll') {
           if (!rate('enroll:' + peer, 10)) return failure(429, 'rate_limited');

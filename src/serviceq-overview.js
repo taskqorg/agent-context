@@ -4,7 +4,7 @@ const attribute = (row, key) => row.metadata?.['attributes.agent_context.' + key
 const number = value => Number.isFinite(value) && value >= 0 ? value : null;
 export const hostNames = { 'mac/native': 'Mac', 'windows/native': 'Windows', 'windows/wsl': 'Windows · WSL', 'fra/native': 'FRA' };
 export const agentNames = { codex: 'Codex', hermes: 'Hermes', 'claude-code': 'Claude Code' };
-export const serviceNames = { contextq: 'ContextQ', serverq: 'ServerQ', taskq: 'TaskQ', gateway: 'Сборщик телеметрии', 'hermes-gateway': 'Hermes Gateway', langfuse: 'Langfuse' };
+export const serviceNames = { contextq: 'ContextQ', serverq: 'ServerQ', taskq: 'TaskQ', gateway: 'Сборщик телеметрии', 'hermes-gateway': 'Hermes Gateway', langfuse: 'Langfuse', updater: 'Обновления' };
 export const reasons = {
   proxy_health_not_agent_liveness: 'Прокси доступен. Активность агента показана отдельно.',
   proxy_unavailable: 'Прокси недоступен — проверить локальный сервис ContextQ.',
@@ -18,6 +18,11 @@ export const reasons = {
   report_unavailable: 'Нет отчёта о состоянии. Подключить источник данных.',
   stale_report: 'Отчёт устарел. Проверить источник данных.',
   invalid_report: 'Некорректный отчёт о состоянии.',
+  updates_disabled: 'Автообновления отключены.',
+  update_migration_required: 'Нужна одноразовая миграция пакета.',
+  update_failed: 'Обновление не прошло проверку. Рабочая версия сохранена.',
+  release_subscription_connected: 'Подписка на релизы работает; запасная проверка — раз в час.',
+  release_subscription_unavailable: 'Подписка не подтверждена. Проверить монитор и соединение.',
   invalid_report_policy: 'Некорректная настройка срока действия отчёта.'
 };
 const normal = new Set(['compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget']);
@@ -47,10 +52,15 @@ export function overview({ health = [], compression = [], activity = [], inciden
     if (at !== newest.get(device)) continue;
     const { host, runtime, agent } = identity(row), h = ensureHost(host, runtime), service = tag(row, 'service');
     if (!h || !serviceNames[service] || !['ok', 'warning', 'error', 'unknown'].includes(tag(row, 'state'))) continue;
+    if (service === 'updater') {
+      const semver = key => /^\d+\.\d+\.\d+$/.test(attribute(row, 'update.' + key) || '') ? attribute(row, 'update.' + key) : null;
+      const status = attribute(row, 'update.status'), subscription = attribute(row, 'update.subscription');
+      h.update = { installed: semver('installed'), available: semver('available'), monitor: semver('monitor'), enabled: attribute(row, 'update.enabled') === 'true', status: ['ready', 'checking', 'current', 'migration_required', 'paused', 'staged_wait', 'downloading', 'testing', 'downloaded', 'updated', 'failed', 'rolled_back', 'no_stable_release', 'disabled_before_activation'].includes(status) ? status : 'unknown', subscription: ['connected', 'reconnecting', 'disabled'].includes(subscription) ? subscription : 'unknown', checkedAt: number(attribute(row, 'update.checkedAt')) };
+    }
     h.at = Math.max(h.at || 0, at); h.fresh = now - h.at <= freshness;
     const metrics = {};
     for (const key of ['active_connections', 'queue_batches', 'queue_oldest_seconds', 'compressed', 'passthrough', 'compression_failed', 'input_chars', 'output_chars']) metrics[key] = number(attribute(row, 'monitor.' + key));
-    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : reasons[row.statusMessage] || 'Нет объяснения состояния.', metrics, at, traceId: safeTrace(row), monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
+    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : reasons[row.statusMessage] || 'Нет объяснения состояния.', metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
   }
   const measured = new Map(), since = now - period * 1000;
   let unattributed = 0;

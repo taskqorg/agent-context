@@ -18,7 +18,9 @@ export async function serveGateway(file) {
         if (size > 4 * 1024 * 1024) { res.writeHead(413); res.end(); return; }
         chunks.push(chunk);
       }
-      const request = new Request('http://127.0.0.1' + req.url, { method: req.method, headers: req.headers, ...(!['GET', 'HEAD'].includes(req.method) ? { body: Buffer.concat(chunks) } : {}) });
+      const disconnected = new AbortController();
+      res.once('close', () => disconnected.abort());
+      const request = new Request('http://127.0.0.1' + req.url, { method: req.method, headers: req.headers, signal: disconnected.signal, ...(!['GET', 'HEAD'].includes(req.method) ? { body: Buffer.concat(chunks) } : {}) });
       const response = await gateway.handle(request, req.socket.remoteAddress);
       res.writeHead(response.status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
       res.end(Buffer.from(await response.arrayBuffer()));
@@ -29,6 +31,8 @@ export async function serveGateway(file) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve); });
   const monitorTimer = setInterval(() => gateway.flushMonitor(), 15000);
   monitorTimer.unref(); gateway.flushMonitor();
-  server.once('close', () => clearInterval(monitorTimer));
+  const releasesTimer = setInterval(() => gateway.refreshReleases(), 60000);
+  releasesTimer.unref(); gateway.refreshReleases();
+  server.once('close', () => { clearInterval(monitorTimer); clearInterval(releasesTimer); });
   return server;
 }

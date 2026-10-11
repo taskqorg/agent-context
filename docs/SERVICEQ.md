@@ -87,3 +87,7 @@ Windows ACLs, path separators and WSL runtime rather than POSIX-only assumptions
 0.2.5: Windows private files belong to the current user SID, not the profile
 directory owner. Administrator-owned homes no longer require elevation. Existing
 profile ACLs are preserved; new secret files grant only user/SYSTEM/admin access.
+
+## Обновления хостов (0.2.6)
+
+Панель показывает выбранную версию пакета для новых сессий, последний стабильный релиз, реально работающие версии монитора и прокси, состояние подписки и updater. Старый активный proxy отмечается как ожидающий новых сессий; выбранный пакет не выдаётся за версию активного агента. Устаревший снимок не подтверждает ни подключение подписки, ни успешное применение.

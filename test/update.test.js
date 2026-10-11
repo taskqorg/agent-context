@@ -244,3 +244,40 @@ test('release signed with a different key is refused before download', async () 
   const result = await update({ ...fixture(), publicKey: other });
   assert.equal(result.status, 'failed'); assert.equal(result.reason, 'Update refused: recipe signature'); assert.deepEqual(pointer(), before);
 });
+test('new release notification bypasses hourly wait once, but failed retries retain backoff and disable wins', async () => {
+  restore();
+  fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now(), status: 'current' }));
+  const f = fixture();
+  assert.equal((await update({ ...f, automatic: true, notifiedVersion: nextPatch })).status, 'updated');
+  restore();
+  const offline = { automatic: true, notifiedVersion: nextPatch, fetcher: async () => { throw new Error('offline'); } };
+  assert.equal((await update(offline)).status, 'failed');
+  assert.equal((await update(offline)).status, 'not_due');
+  enableUpdates(false);
+  assert.equal((await update({ ...fixture(), automatic: true, notifiedVersion: '9.9.9' })).status, 'not_due');
+  restore();
+});
+test('an older latest stable release never requests a downgrade or migration', async () => {
+  restore(); const before = pointer();
+  assert.equal((await update(fixture({ next: '0.1.18' }))).status, 'current');
+  assert.deepEqual(pointer(), before); assert.equal(updateStatus().availableVersion, '0.1.18');
+});
+test('monitor supervisor reloads a verified new runtime without restarting agent processes', () => {
+  restore();
+  const marker = path.join(root(), 'monitor-reloaded');
+  const make = (name, code) => {
+    const dir = path.join(root(), 'versions', name); fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'));
+    const files = { 'bin/agent-context.js': code, 'src/update.js': 'export {};\n' };
+    for (const [file, contents] of Object.entries(files)) fs.writeFileSync(path.join(dir, file), contents);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@alexkirs/agent-context', version, type: 'module' }));
+    fs.writeFileSync(path.join(dir, 'integrity.json'), JSON.stringify({ version, files: Object.fromEntries(Object.entries(files).map(([file, contents]) => [file, sha(contents)])) }));
+    return { dir, version };
+  };
+  const next = make('monitor-next', `import fs from 'node:fs';if(process.argv[3]!=='worker')process.exit(9);fs.writeFileSync(${JSON.stringify(marker)},'reloaded');`);
+  const old = make('monitor-old', `import fs from 'node:fs';fs.writeFileSync(${JSON.stringify(path.join(root(), 'active.json'))},${JSON.stringify(JSON.stringify(next))});process.exit(75);`);
+  try {
+    fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify(old));
+    const child = spawnSync(process.execPath, [launcher(), 'monitor', 'serve'], { env: process.env, windowsHide: true, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr); assert.equal(fs.readFileSync(marker, 'utf8'), 'reloaded');
+  } finally { restore(); }
+});

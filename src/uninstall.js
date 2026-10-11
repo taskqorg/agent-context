@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { removeMonitorService } from './monitor-service.js';
 import { writeConfig } from './private-file.js';
 import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
@@ -197,6 +198,7 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
         moved.push(move);
       }
       globalPackage = await removeGlobal();
+      removeMonitorService();
     } catch (error) {
       for (const move of moved.reverse()) fs.renameSync(move.from, move.to);
       for (const item of written.reverse()) {
