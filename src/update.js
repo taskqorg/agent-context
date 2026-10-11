@@ -143,39 +143,27 @@ function lock(operation) {
   return Promise.resolve().then(operation).finally(release);
 }
 async function download(url, limit, fetcher) {
-  const response = await fetcher(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'agent-context' }, signal: AbortSignal.timeout(20000) });
+  const response = await fetcher(url, { headers: { Accept: 'application/octet-stream', 'User-Agent': 'agent-context' }, signal: AbortSignal.timeout(20000) });
   if (!response.ok) fail(`HTTP ${response.status}`);
   const chunks = []; let total = 0;
   for await (const chunk of response.body) { total += chunk.length; if (total > limit) fail('download limit'); chunks.push(chunk); }
   return Buffer.concat(chunks);
 }
-function releaseAsset(release, name) {
-  const asset = release.assets?.find(item => item.name === name && item.state === 'uploaded');
-  if (!asset || !/^sha256:[a-f0-9]{64}$/.test(asset.digest || '')) fail('missing asset digest');
-  const prefix = `https://github.com/${repository}/releases/download/${release.tag_name}/`;
-  if (!asset.browser_download_url.startsWith(prefix) || asset.size > 10000000) fail('asset origin or size');
-  return asset;
-}
-async function assetBytes(asset, fetcher) {
-  const bytes = await download(asset.browser_download_url, 10000000, fetcher);
-  if (`sha256:${sha(bytes)}` !== asset.digest || bytes.length !== asset.size) fail('archive digest');
-  return bytes;
-}
-export async function approvedRecipe(release, fetcher = fetch, publicKey = releasePublicKey) {
-  if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
-  const bytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
-  if (publicKey) {
-    const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
-    if (!verifyRecipeSignature(bytes, signature, publicKey)) fail('recipe signature');
-  }
+const releaseDownloads = `https://github.com/${repository}/releases`;
+const recipeAssetURL = (recipe, name) => `${releaseDownloads}/download/v${recipe.version}/${name}`;
+export async function approvedRecipe(fetcher = fetch, publicKey = releasePublicKey) {
+  const bytes = await download(`${releaseDownloads}/latest/download/recipe.json`, 64000, fetcher);
   const recipe = JSON.parse(bytes);
-  if (recipe.schema !== 1 || recipe.version !== release.tag_name.slice(1) || recipe.launcherSchema !== 1 || recipe.adapterContract !== 1 || !Array.isArray(recipe.platforms) || !['codex', 'claude', 'hermes'].every(agent => recipe.clients?.includes(agent))) fail('release not qualified');
-  if (recipe.sha256 !== releaseAsset(release, recipe.archive).digest.slice(7)) fail('qualification digest');
+  if (!/^\d+\.\d+\.\d+$/.test(recipe.version || '')) fail('unstable release');
+  // Pin the signature to the recipe version: latest may change between requests.
+  const signature = Buffer.from((await download(recipeAssetURL(recipe, 'recipe.json.sig'), 1024, fetcher)).toString('utf8').trim(), 'base64');
+  if (!publicKey || !verifyRecipeSignature(bytes, signature, publicKey)) fail('recipe signature');
+  if (recipe.schema !== 1 || recipe.launcherSchema !== 1 || recipe.adapterContract !== 1 || !Array.isArray(recipe.platforms) || !['codex', 'claude', 'hermes'].every(agent => recipe.clients?.includes(agent))) fail('release not qualified');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*\.tgz$/.test(recipe.archive || '') || !/^[a-f0-9]{64}$/.test(recipe.sha256 || '')) fail('archive identity');
   return recipe;
 }
 export async function approvedStableVersion(fetcher = fetch, publicKey = releasePublicKey) {
-  const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
-  const recipe = await approvedRecipe(release, fetcher, publicKey);
+  const recipe = await approvedRecipe(fetcher, publicKey);
   return recipe.paused === true ? null : recipe.version;
 }
 export function compatibleUpdate(current, next) {
@@ -213,7 +201,7 @@ export async function update({ automatic = false, notifiedVersion = null, fetche
     const state = { ...read(stateFile()), ...read(policyFile()) };
     if (automatic && (!state.enabled || Date.now() - (state.lastAttempt || 0) < UPDATE_CHECK_INTERVAL_MS && (!notifiedVersion || notifiedVersion === state.attemptedVersion))) return { status: 'not_due' };
     const record = (status, extra = {}) => atomicWrite(stateFile(), json({ ...read(stateFile()), lastAttempt: Date.now(), status, failures: ['checking', 'downloading', 'testing', 'downloaded'].includes(status) ? read(stateFile())?.failures || 0 : 0, ...extra }));
-    // Offset lastAttempt so the hourly launcher preserves 1h, 6h, then 24h failure backoff.
+    // Offset lastAttempt so the updater preserves 1h, 6h, then 24h failure backoff.
     const failed = (reason) => {
       const failures = (read(stateFile())?.failures || 0) + 1;
       const wait = RETRY_BACKOFF_MS[Math.min(failures, RETRY_BACKOFF_MS.length) - 1];
@@ -223,21 +211,18 @@ export async function update({ automatic = false, notifiedVersion = null, fetche
     record('checking', { failures, ...(notifiedVersion ? { attemptedVersion: notifiedVersion } : {}) });
     let stage;
     try {
-      const release = JSON.parse(await download(`https://api.github.com/repos/${repository}/releases/latest`, 1000000, fetcher));
-      if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) fail('unstable release');
-      const next = release.tag_name.slice(1);
+      const recipe = await approvedRecipe(fetcher, publicKey);
+      const next = recipe.version;
       if (next.localeCompare(active.version, 'en', { numeric: true }) <= 0) { record('current', { availableVersion: next }); return { status: 'current', version: next }; }
       if (!compatibleUpdate(active.version, next)) { record('migration_required', { availableVersion: next }); return { status: 'migration_required', version: next }; }
-      const recipe = await approvedRecipe(release, fetcher, publicKey);
       record('downloading', { availableVersion: next, attemptedVersion: next });
       // Kill switch and staged rollout are recipe fields, so they are covered by the same digest/signature.
       if (recipe.paused === true) { record('paused', { version: next }); return { status: 'paused', version: next }; }
       const percent = Number.isInteger(recipe.rolloutPercent) ? recipe.rolloutPercent : 100;
       if (rolloutBucket() >= percent) { record('staged_wait', { version: next }); return { status: 'staged_wait', version: next, rolloutPercent: percent }; }
       if (recipe.schema !== 1 || recipe.version !== next || recipe.launcherSchema !== 1 || recipe.adapterContract !== 1 || !recipe.platforms?.includes(process.platform) || !['codex', 'claude', 'hermes'].every(agent => recipe.clients?.includes(agent))) fail('release not qualified');
-      const asset = releaseAsset(release, recipe.archive);
-      if (recipe.sha256 !== asset.digest.slice(7)) fail('qualification digest');
-      const bytes = await assetBytes(asset, fetcher);
+      const bytes = await download(recipeAssetURL(recipe, recipe.archive), 10000000, fetcher);
+      if (sha(bytes) !== recipe.sha256) fail('archive digest');
       stage = path.join(root(), 'versions', `stage-${crypto.randomUUID()}`);
       fs.mkdirSync(stage, { recursive: true, mode: 0o700 });
       const archive = path.join(stage, 'candidate.tgz'); fs.writeFileSync(archive, bytes, { mode: 0o600 });

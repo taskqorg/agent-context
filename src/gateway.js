@@ -122,7 +122,7 @@ export function createGateway(config, { request = fetch, now = Date.now, release
         }
         if (req.method === 'POST' && url.pathname === '/v1/releases/refresh') {
           if (!rate('release-refresh:' + peer, 2)) return failure(429, 'rate_limited');
-          await releases.refresh(); return Response.json({ status: 'checked' });
+          await releases.refresh({ notified: true }); return Response.json({ status: 'checked' });
         }
         if (req.method === 'GET' && url.pathname === '/v1/info') return Response.json({ clientId: config.clientId, organization: config.organization, team: config.team || null });
         if (req.method === 'POST' && url.pathname === '/v1/enroll') {

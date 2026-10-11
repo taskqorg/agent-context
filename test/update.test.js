@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { sha, root, version } from '../src/core.js';
-import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, UPDATE_CHECK_INTERVAL_MS, enableUpdates, verifyRecipeSignature } from '../src/update.js';
+import { seedRuntime, launcher, update, rollbackUpdate, updateStatus, compatibleUpdate, UPDATE_CHECK_INTERVAL_MS, enableUpdates, verifyRecipeSignature, approvedRecipe } from '../src/update.js';
 import crypto from 'node:crypto';
 import { install, rollback } from '../src/install.js';
 
@@ -24,16 +24,18 @@ const testPublicKey = signing.publicKey.export({ type: 'spki', format: 'pem' });
 const nextPatch = version.split('.').map((part, index) => index === 2 ? Number(part) + 1 : part).join('.');
 function fixture({ badDigest = false, qualified = true, next = nextPatch, extra = {} } = {}) {
   const bytes = Buffer.from('synthetic package archive');
-  const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes), ...extra }));
-  const asset = (name, data) => ({ name, state: 'uploaded', digest: `sha256:${sha(data)}`, size: data.length, browser_download_url: `https://github.com/taskqorg/agent-context/releases/download/v${next}/${name}` });
+  const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: badDigest ? '0'.repeat(64) : sha(bytes), ...extra }));
   const signature = Buffer.from(crypto.sign(null, recipe, signing.privateKey).toString('base64'));
-  const release = { tag_name: `v${next}`, draft: false, prerelease: false, assets: [asset('recipe.json', recipe), asset('recipe.json.sig', signature), asset('candidate.tgz', bytes)] };
-  if (badDigest) release.assets[2].digest = `sha256:${'0'.repeat(64)}`;
   let calls = 0;
   return {
     calls: () => calls,
     publicKey: testPublicKey,
-    fetcher: async url => { calls++; return new Response(url.endsWith('latest') ? JSON.stringify(release) : url.endsWith('recipe.json') ? recipe : url.endsWith('recipe.json.sig') ? signature : bytes); },
+    fetcher: async url => {
+      calls++;
+      assert.equal(new URL(url).hostname, 'github.com', 'updates must never consume REST API quota');
+      if (url.endsWith('recipe.json.sig')) assert.equal(url, `https://github.com/taskqorg/agent-context/releases/download/v${next}/recipe.json.sig`);
+      return new Response(url.endsWith('recipe.json') ? recipe : url.endsWith('recipe.json.sig') ? signature : bytes);
+    },
     preparer: async (archive, stage, expected) => {
       assert.equal(fs.readFileSync(archive).toString(), bytes.toString());
       const dir = path.join(stage, 'package'); fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'));
@@ -244,7 +246,7 @@ test('release signed with a different key is refused before download', async () 
   const result = await update({ ...fixture(), publicKey: other });
   assert.equal(result.status, 'failed'); assert.equal(result.reason, 'Update refused: recipe signature'); assert.deepEqual(pointer(), before);
 });
-test('new release notification bypasses hourly wait once, but failed retries retain backoff and disable wins', async () => {
+test('new release notification bypasses scheduled wait once, but failed retries retain backoff and disable wins', async () => {
   restore();
   fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: Date.now(), status: 'current' }));
   const f = fixture();
@@ -291,4 +293,14 @@ test('package download and self-test failures preserve escalating backoff across
       assert.ok(Math.abs(updateStatus().lastAttempt + UPDATE_CHECK_INTERVAL_MS - Date.now() - wait) < 60000);
     }
   } finally { restore(); }
+});
+
+test('signed manifest rejects archive paths and malformed identity before installing', async () => {
+  for (const extra of [{ archive: '../evil.tgz' }, { archive: 'https://evil.invalid/payload.tgz' }, { sha256: 'bad' }]) {
+    restore(); const before = pointer(); let prepared = false;
+    const result = await update({ ...fixture({ extra }), preparer: async () => { prepared = true; } });
+    assert.equal(result.status, 'failed'); assert.equal(prepared, false); assert.deepEqual(pointer(), before);
+  }
+  const f = fixture();
+  await assert.rejects(approvedRecipe(f.fetcher, null), /recipe signature/);
 });
