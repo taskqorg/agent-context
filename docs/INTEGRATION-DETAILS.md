@@ -66,7 +66,11 @@ Global means one OS user and the default agent profile. Additional profiles/proj
 
 `doctor` checks configuration, installed recipe hashes, credential conflict, stale locks and compression references in common config files of the current project. It cannot inspect every plugin, live client process or remote API condition. Run it from the project being checked.
 
-`verify <agent>` uses the configured native MCP executable/args with synthetic context, checks an exact error and a duplicate. Claude also runs the configured equivalent hook command, preserving stderr and exit code. It does not run a paid model turn or prove that the GUI client has reloaded. Finish acceptance with a real hook/MCP call in each running client.
+In automatic mode `verify <agent>` checks the owned proxy service, a synthetic compression through the same bridge the proxy uses, and (Codex, Claude) a `headroom_retrieve` handshake with the configured retrieval MCP; it is not a model-session proof. In legacy mode it uses the configured native MCP executable/args with synthetic context, checks an exact error and a duplicate. Claude also runs the configured equivalent hook command, preserving stderr and exit code. It does not run a paid model turn or prove that the GUI client has reloaded. Finish acceptance with a real hook/MCP call in each running client.
+
+Claude Desktop and other launchers may set their own `ANTHROPIC_BASE_URL` over `settings.json` env. Such a session bypasses the proxy: the SessionStart hook then shows a warning and tells the model that tool results are not compressed. Use the `claude` CLI for compressed sessions.
+
+Headroom `/stats` and `headroom_stats` count model requests only: Hermes compresses through `/v1/compress`, and Codex WebSocket frames are not exported as Langfuse spans, so both can show near-zero there while compressing. Check `SC result` lines in the service `proxy.log` or Langfuse `headroom.compression.*` spans instead. The proxy raises Headroom's fixed 5s Codex WebSocket frame budget to 15s, the SuperCompress request timeout, so a completed paid call is not discarded.
 
 ```sh
 agent-context rollback

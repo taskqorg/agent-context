@@ -37,6 +37,18 @@ class PluginTest(unittest.TestCase):
         with patch('urllib.request.urlopen', side_effect=OSError):
             ctx.hooks['pre_llm_call']('Query', session_id='one', turn_id='turn')
             self.assertIsNone(ctx.hooks['transform_tool_result']('terminal', text, session_id='one', turn_id='turn'))
+    def test_lifecycle_runs_once_per_session_and_again_after_proxy_failure(self):
+        ctx = Context(); ctx.get_config = lambda key, default=None: {'proxy_url': ctx.url, 'node': 'node', 'launcher': 'launcher.mjs'}.get(key, default)
+        plugin.register(ctx)
+        with patch('subprocess.run') as run:
+            ctx.hooks['pre_llm_call']('Query', session_id='one', turn_id='a')
+            ctx.hooks['pre_llm_call']('Query', session_id='one', turn_id='b')
+            self.assertEqual(run.call_count, 1)
+            with patch('urllib.request.urlopen', side_effect=OSError):
+                self.assertIsNone(ctx.hooks['transform_tool_result']('terminal', 'x' * 4096, session_id='one', turn_id='b'))
+            ctx.hooks['pre_llm_call']('Query', session_id='one', turn_id='c')
+            ctx.hooks['pre_llm_call']('Query', session_id='two', turn_id='a')
+            self.assertEqual(run.call_count, 3)
     def test_nonlocal_proxy_is_rejected(self):
         for url in ['https://example.com', 'http://127.0.0.1:12/path', 'http://secret@127.0.0.1:12']:
             with self.assertRaises(ValueError): plugin.register(Context(url))

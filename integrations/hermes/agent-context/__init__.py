@@ -15,15 +15,21 @@ def register(ctx):
     if parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or not parsed.port or parsed.path or parsed.query or parsed.fragment or parsed.username:
         raise ValueError('Agent Context requires a configured loopback proxy URL')
     queries = {}
+    started = set()
     lock = threading.Lock()
 
     def remember(user_message, session_id='', turn_id='', **kwargs):
         node, launcher = ctx.get_config('node', ''), ctx.get_config('launcher', '')
-        if node and launcher:
+        # One lifecycle per session; a failed proxy call clears it so the next turn restarts the service.
+        if node and launcher and session_id not in started:
             try:
                 subprocess.run([node, launcher, 'lifecycle', 'hermes'], timeout=40, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError):
                 return None
+            with lock:
+                if len(started) >= 256:
+                    started.clear()
+                started.add(session_id)
         logger.info('remember session_present=%s turn_present=%s query_chars=%s', bool(session_id), bool(turn_id), len(user_message) if isinstance(user_message, str) else 0)
         if not session_id or not turn_id or not isinstance(user_message, str):
             return None
@@ -52,7 +58,10 @@ def register(ctx):
                 value = json.load(response)['messages'][-1]['content']
             if isinstance(value, str) and value and len(value) < len(result):
                 return value
-        except (OSError, ValueError, KeyError, IndexError):
+        except OSError:
+            with lock:
+                started.discard(session_id)
+        except (ValueError, KeyError, IndexError):
             pass
         return None
 

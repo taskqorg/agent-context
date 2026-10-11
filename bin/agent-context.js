@@ -51,7 +51,9 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     else if (args[0] === 'ensure') output(await ensureService(args[1]));
     else throw new Error('Usage: agent-context proxy ensure|serve <agent>');
   } else if (command === 'lifecycle') {
-    await lifecycle(args[0]);
+    const result = await lifecycle(args[0]);
+    if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); tool results are not compressed. Use the claude CLI for compression.',
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings.' } });
   } else if (command === 'retrieval') {
     const service = await ensureService(args[0]);
     const runtime = await prepareHeadroom();
@@ -121,7 +123,7 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
 } catch (error) {
   if (!['incidents', '--version', 'uninstall'].includes(command)) recordIncident({ component: command === 'update' ? 'updater' : command === 'proxy' || command === 'lifecycle' ? 'proxy' : 'installer', operation: 'command', category: command === 'update' ? 'update_failed' : 'configuration_drift' });
   // Configuration parser errors may contain private values; report only known safe messages.
-  const safe = /^(Setup requires|Headroom requires|Headroom preparation already running|Unknown agent|Choose |Usage:|Update refused|Rollback refused|Uninstall refused|Unsupported |Hermes legacy|Configuration (changed|transaction))/.test(error.message);
+  const safe = /^(Setup requires|Headroom requires|Headroom preparation already running|Unknown agent|Choose |Usage:|Update refused|Rollback refused|Uninstall refused|Unsupported |Hermes legacy|Configuration (changed|transaction)|Native verification)/.test(error.message);
   process.stderr.write(`${safe ? error.message : 'Agent Context operation failed; inspect local configuration privately'}\n`);
   process.exitCode = 1;
 }

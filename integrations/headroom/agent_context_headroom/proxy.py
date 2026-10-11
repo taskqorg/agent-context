@@ -31,6 +31,10 @@ def main():
     # This override is process-local and must be requalified on any Headroom update.
     from headroom.proxy import tool_schema_compaction
     tool_schema_compaction.compact_tools = lambda payload: (payload, False, 0, 0)
+    # shortcut: Headroom 0.40 hardcodes a 5s Codex WS frame budget; SuperCompress calls take up to 15s,
+    # so slower frames were forwarded uncompressed after a paid call. Match the bridge timeout; requalify on update.
+    from headroom.proxy.handlers import openai as openai_handler
+    openai_handler._CODEX_WS_COMPRESSION_TIMEOUT_SECONDS = 15.0
     app = create_app(config)
     logging.getLogger('headroom.proxy').setLevel(logging.WARNING)
     app.state.agent_context_active = 0

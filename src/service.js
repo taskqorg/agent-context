@@ -108,10 +108,12 @@ export async function serveService(agent) {
     process.off('SIGINT', stop); process.off('SIGTERM', stop);
   }
 }
-export async function lifecycle(agent) {
+export async function lifecycle(agent, env = process.env) {
   const result = await ensureService(agent);
   // Delivery is bounded and detached from the user's model request.
   const child = spawn(process.execPath, [launcher(), 'incidents', 'report'], { stdio: 'ignore', detached: true, windowsHide: true });
   child.on('error', () => {}); child.unref();
-  return result;
+  // Launchers such as Claude Desktop set their own ANTHROPIC_BASE_URL over settings.json env; that session bypasses the proxy.
+  return proxyBypassed(agent, result.url, env) ? { ...result, bypassed: true } : result;
 }
+export const proxyBypassed = (agent, url, env = process.env) => agent === 'claude' && env.ANTHROPIC_BASE_URL !== url;

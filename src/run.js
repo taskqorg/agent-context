@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { prepareHeadroom } from './headroom.js';
-import { root } from './core.js';
+import { root, version } from './core.js';
 import { agentExecutable } from './executable.js';
 
 const source = fileURLToPath(new URL('../', import.meta.url));
@@ -57,13 +57,17 @@ export async function startProxy(runtime, environment = {}) {
   runtime ||= await prepareHeadroom();
   const cache = path.join(root(), 'proxies');
   fs.mkdirSync(cache, { recursive: true, mode: 0o700 });
+  // ponytail: prune by log age; a live proxy idle for 7 days loses its log file, not its process.
+  for (const name of fs.readdirSync(cache)) {
+    try { if (Date.now() - fs.statSync(path.join(cache, name, 'proxy.log')).mtimeMs > 7 * 86400000) fs.rmSync(path.join(cache, name), { recursive: true, force: true }); } catch {}
+  }
   const dir = fs.mkdtempSync(path.join(cache, 'proxy-'));
   const ready = path.join(dir, 'ready.json');
   const owner = crypto.randomUUID();
   const controlKey = crypto.randomUUID();
   const log = fs.openSync(path.join(dir, 'proxy.log'), 'a', 0o600);
   const child = spawn(runtime.python, ['-m', 'agent_context_headroom.proxy'], {
-    env: { ...process.env, AGENT_CONTEXT_PROXY_PORT: '0', ...environment, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey },
+    env: { ...process.env, AGENT_CONTEXT_PROXY_PORT: '0', ...environment, AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey },
     windowsHide: true, stdio: ['ignore', log, log],
   });
   fs.closeSync(log);
