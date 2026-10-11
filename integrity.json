@@ -1,11 +1,11 @@
 {
-  "version": "0.2.10",
+  "version": "0.2.11",
   "files": {
     "bin/agent-context.js": "ab734f5ad5f63abc5b3e85b295f61ce3fb70c9f0f7d9456dd7559cf9f70e0a17",
     "bin/headroom-compress.js": "4148cc70ae376ffca7e0259bf21b0cbbad9b5fd6d5c025ebb73d44e1df6d1a03",
     "src/automatic.js": "871a4fdd98acb689835af32df4e5a7909a9fb0ddf5cc2f04da3386d1da6a91b3",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "81c7daed150b170ca183c30fe1186ca21c0992345be44836a9a0cb2507a6e280",
+    "src/core.js": "0020ec8766827719c503c4ac980437454dd659ddce99dc1c447826075baa44ac",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "bac902d9e07567e4d43109eaf808d96b7b5883f9629b3c25aa12443e8737909d",
     "src/enrollment.js": "744b84eb892bc177553da933cdfc1e32598bd46d53a28fd43c82c98012284e48",
@@ -24,7 +24,7 @@
     "src/release-notifications.js": "966b3f7d875fdfe50a1c32872b17fbd7ca89dd6376bc1ae19429ce2b8c6fd4e4",
     "src/run.js": "5c704f75eeefc32833cbd6f0929cd5bf40f574f0b157d52e966b198a66fe8924",
     "src/service.js": "a142f0e420b077304cb4ad7f9e715b6420ce341eda0773cd8492a5bf81ecd259",
-    "src/serviceq-overview.js": "b11d516625fc222a3b6631341a1eaa5c2f758d464b5e313d0d986ce2fac7a95b",
+    "src/serviceq-overview.js": "45ddbf87b15eb2cf3af4069d0013d3a0a6bca040768865af6e200addbe72220b",
     "src/serviceq-ui.js": "8b158b9bdc92b5be01491e928acc15484a9e03aa004976bec0f32259d5a7f065",
     "src/serviceq.css": "ca9d8aa2e71674906e334a3aa0d22ebbed52e8707a9b26cf5741a3ebf19681b1",
     "src/serviceq.html": "97c9ebc0efdfe12fdfc8b07c4ba7ad46dc72f1040b47831b16a24b4807988a80",

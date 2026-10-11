@@ -26,6 +26,14 @@ export const reasons = {
   invalid_report_policy: 'Некорректная настройка срока действия отчёта.'
 };
 const normal = new Set(['compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget']);
+const failures = {
+  bridge_unavailable: 'Файл компрессора недоступен', bridge_failed: 'Не удалось запустить компрессор',
+  missing_current_query: 'Не определён текущий запрос', timeout: 'Превышено время сжатия',
+  missing_key: 'Не настроен доступ к компрессору', key_conflict: 'Конфликт настроек доступа',
+  request_failed: 'Ошибка запроса к компрессору', invalid_response: 'Некорректный ответ компрессора',
+  fallback: 'Сбой обработки контекста', lost_critical_evidence: 'Компрессор потерял важные данные',
+  invalid_device_config: 'Некорректная регистрация устройства', invalid_key_config: 'Некорректные настройки доступа'
+};
 export const outcomeNames = { compressed: 'Сжато', retrieval: 'Чтение сохранённого оригинала', content_type: 'Тип данных не подходит', ineligible: 'Блок не требует сжатия', no_gain: 'Сжатие не дало выигрыша', empty: 'Пустой блок', too_large: 'Блок превышает лимит', request_budget: 'Лимит обработки запроса' };
 const identity = row => ({ host: tag(row, 'host') || attribute(row, 'host'), runtime: tag(row, 'runtime') || attribute(row, 'runtime') || 'native', agent: tag(row, 'agent') || attribute(row, 'agent') });
 const safeTrace = row => /^[a-zA-Z0-9_-]{1,128}$/.test(row.traceId || '') ? row.traceId : null;
@@ -70,11 +78,14 @@ export function overview({ health = [], compression = [], activity = [], inciden
     if (!h || !agentNames[agent]) { unattributed++; continue; }
     const key = h.id + '/' + agent;
     const outcome = attribute(row, 'compression.outcome');
-    if (!normal.has(outcome) && row.level !== 'ERROR') { unattributed++; continue; }
-    if (!measured.has(key)) measured.set(key, { compressed: 0, passthrough: 0, failed: 0, input: 0, output: 0, sizeSamples: 0, outcomes: {}, traceId: null, errorTraceId: null });
+    if (!measured.has(key)) measured.set(key, { compressed: 0, passthrough: 0, failed: 0, unknown: 0, input: 0, output: 0, sizeSamples: 0, outcomes: {}, traceId: null, errorTraceId: null, unknownTraceId: null });
     const item = measured.get(key);
-    const kind = row.level === 'ERROR' || !normal.has(outcome) ? 'failed' : outcome === 'compressed' ? 'compressed' : 'passthrough';
-    item[kind]++; const label = kind === 'failed' ? 'Ошибка компрессии' : outcomeNames[outcome]; item.outcomes[label] = (item.outcomes[label] || 0) + 1;
+    const failure = Object.hasOwn(failures, outcome) ? failures[outcome] : /^http_[45]\d\d$/.test(outcome || '') ? 'Ошибка ответа сервиса компрессии' : null;
+    if (!normal.has(outcome) && !failure && row.level !== 'ERROR') {
+      item.unknown++; item.unknownTraceId ||= safeTrace(row); continue;
+    }
+    const kind = row.level === 'ERROR' || failure ? 'failed' : outcome === 'compressed' ? 'compressed' : 'passthrough';
+    item[kind]++; const label = kind === 'failed' ? failure || 'Ошибка компрессии' : outcomeNames[outcome]; item.outcomes[label] = (item.outcomes[label] || 0) + 1;
     const before = number(attribute(row, 'compression.input_chars')), after = number(attribute(row, 'compression.output_chars'));
     if (before !== null && after !== null) { item.input += before; item.output += after; item.sizeSamples++; }
     item.traceId ||= safeTrace(row);
@@ -106,6 +117,7 @@ export function overview({ health = [], compression = [], activity = [], inciden
       if (s.state === 'unknown') gaps.push(item);
     }
     for (const a of h.agents) {
+      if (a.compression?.unknown) gaps.push({ host: h.id, title: h.name + ' · ' + a.name + ': неизвестный результат компрессии', detail: a.compression.unknown + ' записей с отсутствующим или неизвестным результатом. Они не считаются ни успехом, ни ошибкой; проверить запись и версию отправщика.', traceId: a.compression.unknownTraceId });
       if (a.compression?.failed) issues.push({ host: h.id, title: h.name + ' · ' + a.name + ': ошибки компрессии', detail: a.compression.failed + ' измеренных вызовов завершились ошибкой за выбранный период.', traceId: a.compression.errorTraceId });
       if (a.activity?.errors) issues.push({ host: h.id, title: h.name + ' · ' + a.name + ': ошибки вызовов модели', detail: a.activity.errors + ' записей с уровнем ERROR за выбранный период.', traceId: a.activity.traceId });
     }

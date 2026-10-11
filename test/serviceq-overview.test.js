@@ -28,8 +28,24 @@ test('compression skips and failures are disjoint; missing outcome never becomes
   ] }, now);
   const c = result.hosts.find(h => h.id === 'windows/native').agents[0].compression;
   assert.equal(c.compressed, 1); assert.equal(c.passthrough, 1); assert.equal(c.failed, 1); assert.equal(c.sizeSamples, 2);
-  assert.equal(result.unattributed, 1); assert.equal(result.issues.length, 1);
+  assert.equal(result.unattributed, 0); assert.equal(c.unknown, 1); assert.equal(result.issues.length, 1);
+  assert.ok(result.gaps.some(g => g.title.includes('результат компрессии')));
   assert.ok(!JSON.stringify(result).includes('SECRET'));
+});
+test('known compression failures at DEFAULT level are visible; unknown outcomes remain observation gaps', () => {
+  const failures = ['bridge_unavailable', 'bridge_failed', 'missing_current_query', 'timeout', 'missing_key', 'key_conflict', 'request_failed', 'invalid_response', 'fallback'];
+  const result = overview({ compression: [
+    ...failures.map(outcome => row({ metadata: meta({ 'compression.outcome': outcome }) })),
+    row({ metadata: meta({ 'compression.outcome': 'future_or_SECRET' }) }),
+    row({ metadata: meta({ 'compression.outcome': 'no_gain' }) })
+  ] }, now);
+  const c = result.hosts.find(h => h.id === 'windows/native').agents[0].compression;
+  assert.equal(c.failed, failures.length); assert.equal(c.passthrough, 1); assert.equal(c.unknown, 1);
+  assert.equal(result.issues.length, 1); assert.equal(result.issues[0].traceId, 'abcdef1234567890');
+  assert.equal(result.unattributed, 0);
+  assert.ok(c.outcomes['Файл компрессора недоступен']);
+  assert.ok(result.gaps.some(g => g.traceId === 'abcdef1234567890' && g.detail.includes('неизвестным')));
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });
 test('model activity needs explicit host and agent, counts sessions, and history is not a current issue', () => {
   const a = row(); a.sessionId = 'same';
