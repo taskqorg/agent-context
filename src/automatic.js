@@ -30,7 +30,7 @@ export function automaticPlan(plan) {
         const file = path.join(dir, 'langfuse.json');
         const config = JSON.parse(current(file) || '{}');
         const tags = [...(config.tags || []).filter(tag => !/^(agent|host|runtime):/.test(tag)), ...labels];
-        changes.set(file, json({ ...config, enabled: config.enabled ?? true, public_key: telemetry.public_key, secret_key: telemetry.secret_key, base_url: telemetry.base_url, environment: stage, tags }));
+        changes.set(file, json({ ...config, enabled: config.enabled ?? true, public_key: telemetry.public_key, secret_key: telemetry.secret_key, base_url: telemetry.gateway ? url : telemetry.base_url, environment: stage, tags }));
       }
       const file = path.join(dir, 'config.toml');
       const value = parse(current(file));
@@ -69,6 +69,12 @@ export function automaticPlan(plan) {
         const tags = (config.env.CC_LANGFUSE_TRACE_TAGS || '').split(',').map(tag => tag.trim()).filter(tag => tag && !/^(agent|host|runtime):/.test(tag));
         config.env.CC_LANGFUSE_TRACE_TAGS = [...tags, ...labels].join(',');
         config.env.LANGFUSE_TRACING_ENVIRONMENT = stage;
+        if (telemetry.gateway) {
+          config.env.LANGFUSE_PUBLIC_KEY = telemetry.public_key;
+          config.env.LANGFUSE_SECRET_KEY = telemetry.secret_key;
+          config.env.LANGFUSE_BASE_URL = url;
+          config.env.LANGFUSE_HOST = url;
+        }
       }
       config.permissions ||= {};
       config.permissions.allow = [...new Set([...(config.permissions.allow || []), 'mcp__headroom__headroom_retrieve'])];
@@ -94,6 +100,12 @@ export function automaticPlan(plan) {
         const tags = doc.getIn(['plugins', 'entries', 'observability/langfuse', 'settings', 'tags'])?.toJSON?.() || [];
         doc.setIn(['plugins', 'entries', 'observability/langfuse', 'settings', 'tags'], [...tags.filter(tag => !/^(agent|host|runtime):/.test(tag)), ...labels]);
         doc.setIn(['plugins', 'entries', 'observability/langfuse', 'settings', 'environment'], stage);
+      }
+      if (telemetry?.gateway) {
+        const envFile = path.join(dir, '.env');
+        const before = current(envFile);
+        const preserved = before.split('\n').filter(line => !/^\s*(?:export\s+)?HERMES_LANGFUSE_(PUBLIC_KEY|SECRET_KEY|BASE_URL)\s*=/.test(line)).join('\n').trimEnd();
+        changes.set(envFile, preserved + '\n' + `HERMES_LANGFUSE_PUBLIC_KEY=${telemetry.public_key}\nHERMES_LANGFUSE_SECRET_KEY=${telemetry.secret_key}\nHERMES_LANGFUSE_BASE_URL=${url}\n`);
       }
       doc.setIn(['mcp_servers', 'supercompress', 'enabled'], false);
       changes.set(file, doc.toString());

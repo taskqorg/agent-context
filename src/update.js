@@ -6,7 +6,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { atomicWrite, root, home, sha, version, acquireTransaction } from './core.js';
 
-export const extraRuntimeFiles = ['integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/headroom-fixture.js'];
+export const extraRuntimeFiles = ['integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'integrations/headroom/agent_context_headroom/collector.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/headroom-fixture.js'];
 const source = fileURLToPath(new URL('../', import.meta.url));
 const repository = 'taskqorg/agent-context';
 // Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
@@ -91,7 +91,7 @@ if (['mcp', 'hook', 'lifecycle', 'run', 'retrieval'].includes(process.argv[2])) 
 }
 await import(pathToFileURL(bin).href);
 `;
-export function seedRuntime() {
+export function seedRuntime({ migrate = false } = {}) {
   const existing = read(pointerFile());
   if (existing) {
     checkedPointer(existing);
@@ -99,7 +99,7 @@ export function seedRuntime() {
       if (fs.readFileSync(launcher(), 'utf8') !== launcherCode) fail('launcher drift');
       return existing;
     }
-    if (!compatibleUpdate(existing.version, version)) fail('local installation requires migration');
+    if (!compatibleUpdate(existing.version, version) && !(migrate === true && version.localeCompare(existing.version, 'en', { numeric: true }) > 0)) fail('local installation requires migration; use reviewed setup --migrate');
     // The verified previous installer knows its own exact bootstrap, including older schemas.
     const module = pathToFileURL(path.join(existing.dir, 'src/update.js')).href;
     if (sha(fs.readFileSync(launcher())) !== hardenedLegacyLauncher) {

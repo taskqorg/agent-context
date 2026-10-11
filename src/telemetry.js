@@ -8,6 +8,8 @@ import YAML from 'yaml';
 import { home, root, atomicWrite, version } from './core.js';
 import { prepareHeadroom, pythonEnvironment } from './headroom.js';
 import { agentExecutable } from './executable.js';
+import { enrollment, deviceCredentials } from './enrollment.js';
+import { servicePort } from './service.js';
 
 export function executionIdentity(env = process.env, platform = process.platform) {
   const host = env.AGENT_CONTEXT_HOST || (platform === 'darwin' ? 'mac' : platform === 'win32' || env.WSL_DISTRO_NAME ? 'windows' : 'linux');
@@ -25,6 +27,13 @@ export function profileIdentity(env = process.env) {
 // Credentials stay inside this process; public reports contain only status fields.
 export function langfuseConfig(env = process.env) {
   try {
+    const device = enrollment();
+    if (device) {
+      const file = path.join(home(), '.codex/langfuse.json');
+      if (fs.existsSync(file) && JSON.parse(fs.readFileSync(file)).enabled === false) return null;
+      return { ...deviceCredentials(device), base_url: device.gateway, gateway: true };
+    }
+    if (fs.existsSync(path.join(root(), 'enrollment.json'))) return null;
     let value;
     if (env.LANGFUSE_PUBLIC_KEY && env.LANGFUSE_SECRET_KEY) value = { public_key: env.LANGFUSE_PUBLIC_KEY, secret_key: env.LANGFUSE_SECRET_KEY, base_url: env.LANGFUSE_BASE_URL || env.LANGFUSE_HOST };
     else {
@@ -98,7 +107,7 @@ async function exportProbe(config, probe) {
   const runtime = await prepareHeadroom();
   const result = await promisify(execFile)(runtime.python, ['-m', 'agent_context_headroom.observability', JSON.stringify(probe)], {
     timeout: 15000, maxBuffer: 65536, env: pythonEnvironment({ ...process.env, LANGFUSE_PUBLIC_KEY: config.public_key,
-      LANGFUSE_SECRET_KEY: config.secret_key, LANGFUSE_BASE_URL: config.base_url }) });
+      LANGFUSE_SECRET_KEY: config.secret_key, LANGFUSE_BASE_URL: config.collector_url || config.base_url }) });
   return JSON.parse(result.stdout).status;
 }
 
@@ -115,7 +124,7 @@ export async function verifyTelemetry(agent = 'codex', request = fetch, pause = 
   const headers = { Authorization: 'Basic ' + Buffer.from(config.public_key + ':' + config.secret_key).toString('base64'), 'Content-Type': 'application/json' };
   const url = config.base_url + '/api/public';
   try {
-    if (await send(config, { id, sessionId, tags, version, host, runtime }) !== 'accepted') return save({ status: 'ingestion_rejected' });
+    if (await send({ ...config, ...(config.gateway ? { collector_url: 'http://127.0.0.1:' + servicePort(agent) } : {}) }, { id, sessionId, tags, version, host, runtime }) !== 'accepted') return save({ status: 'ingestion_rejected' });
     for (let attempt = 0; attempt < 10; attempt++) {
       if (attempt) await pause(1000);
       const result = await request(url + '/v2/observations?traceId=' + id + '&fields=core,basic,trace_context&limit=10', { headers, signal: AbortSignal.timeout(3000) });

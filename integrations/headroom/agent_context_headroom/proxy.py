@@ -85,6 +85,8 @@ def main():
         routers[0].config.exclude_tools = set()
     if telemetry:
         attach(app)
+    from .collector import attach_collector
+    attach_collector(app)
     owner = os.environ.get('AGENT_CONTEXT_PROXY_OWNER', '')
     @app.get('/agent-context/health')
     async def owned_health():

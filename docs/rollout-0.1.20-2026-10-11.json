@@ -64,19 +64,37 @@
     "reported_installed": "0.1.20",
     "reported_codex_claude_services": "0.1.20 in native Windows and WSL",
     "reported_live_facts_and_compression": "4 passed on final 0.1.20: Codex and Claude in native Windows and WSL",
-    "langfuse_credentials": "missing locally in both profiles",
-    "langfuse_delivery": "blocked on owner local hidden input",
-    "status": "final receipt received; compression passed, telemetry blocked",
+    "langfuse_credentials": "privately provisioned in both profiles under explicit owner authorization",
+    "langfuse_delivery": "synthetic OTLP/readback passed in both profiles",
+    "status": "compression and delivery verified; native generation/tool exporter awaits normal hook review",
     "receipt": "C:\\Users\\alexk\\Documents\\Codex\\scratch\\agent-context-019-df6289a\\WINDOWS-WSL-020-RESULT.md",
-    "hermes": "absent in both profiles"
+    "hermes": "absent in both profiles",
+    "key_transfer": "RSA4096 OAEP-SHA256/MGF1-SHA256 ciphertext only through existing SSH; transfer files and ephemeral key cleaned",
+    "delivery_probes": {
+      "native": "b3e8fe630be636623a2a193adb23b32c",
+      "wsl": "f631d55024cb37c589ced35dfe6a3716"
+    },
+    "compression_readback": {
+      "native": {
+        "session": "01a12a2c-2a39-71c1-96f3-ac9d5450b688",
+        "trace": "7bddac434c9ed956a4659f1e6899a584"
+      },
+      "wsl": {
+        "session": "01a12a2c-658b-7761-866d-6f38375af78e",
+        "trace": "c98539995fe79566c34c442137937bd8"
+      }
+    },
+    "compression_independently_read_back": true,
+    "native_exporter": "official Codex 0.4.2 installed in both profiles; trust review required",
+    "claude_native_exporter": "missing"
   },
   "limits": [
     "Native and compression spans correlate by native session/turn, not always by one parent trace tree.",
     "Compression outcomes and preserved fixture facts are not verified billing savings.",
     "Mac busy Codex proxy preserved; package installation is not current production proxy upgrade.",
-    "Windows Langfuse keys are never copied from another host.",
     "FRA Hermes CLI proof uses same profile/plugins; no new Telegram gateway turn was sent.",
-    "Signed stable auto-update channel was not promoted or qualified by this candidate rollout."
+    "Signed stable auto-update channel was not promoted or qualified by this candidate rollout.",
+    "Owner explicitly authorized Mac credential reuse on Windows/WSL; future keyless onboarding is a separate 0.2.0 candidate, not this deployed package."
   ],
-  "completion": "incomplete: Windows/WSL local Langfuse provisioning and Mac Codex proxy drain required"
+  "completion": "incomplete: native Windows/WSL Codex hook review and model/tool exporter proof, Claude native exporter, Mac busy Codex proxy drain remain"
 }

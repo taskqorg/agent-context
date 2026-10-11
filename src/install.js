@@ -132,7 +132,7 @@ function transaction(operation) {
 }
 export const install = (agents, options = {}) => transaction(() => applyInstall(agents, options));
 function applyInstall(agents, options) {
-  seedRuntime();
+  seedRuntime({ migrate: options.migrate });
   let plan = planInstall(agents);
   if (options.automatic) {
     plan = automaticPlan(plan);

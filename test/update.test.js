@@ -79,11 +79,12 @@ test('migration accepts the reviewed hardened legacy bootstrap but refuses unkno
   const originalBootstrap = fs.readFileSync(launcher());
   try {
     select(Buffer.concat([bootstrap, Buffer.from('// unknown edit\n')]));
-    assert.throws(seedRuntime); assert.equal(pointer().version, '0.1.3');
+    assert.throws(() => seedRuntime({ migrate: true })); assert.equal(pointer().version, '0.1.3');
     select(bootstrap); fs.appendFileSync(path.join(dir, 'bin/agent-context.js'), '// damaged');
-    assert.throws(seedRuntime, /package integrity/); assert.equal(pointer().version, '0.1.3');
+    assert.throws(() => seedRuntime({ migrate: true }), /package integrity/); assert.equal(pointer().version, '0.1.3');
     fs.writeFileSync(path.join(dir, 'bin/agent-context.js'), files['bin/agent-context.js']);
-    const migrated = seedRuntime();
+    if (version.split('.')[1] !== '1') assert.throws(() => seedRuntime(), /requires migration/);
+    const migrated = seedRuntime({ migrate: true });
     assert.equal(migrated.version, version); assert.equal(migrated.previous.version, '0.1.3');
     assert.notEqual(fs.readFileSync(launcher(), 'utf8'), bootstrap.toString());
   } finally { restore(); fs.writeFileSync(launcher(), originalBootstrap); }
@@ -134,7 +135,8 @@ test('runtime drift detected before final switch; incompatible minor requires mi
   restore(); const f = fixture();
   const result = await update({ ...f, preparer: async (...args) => { const dir = await f.preparer(...args); fs.writeFileSync(path.join(root(), 'active.json'), JSON.stringify({ ...initial, marker: 'external-change' })); return dir; } });
   assert.equal(result.status, 'failed'); assert.equal(pointer().marker, 'external-change');
-  restore(); const before = pointer(); assert.equal((await update(fixture({ next: '0.2.0' }))).status, 'migration_required'); assert.deepEqual(pointer(), before);
+  const nextMinor = version.split('.').map((part, index) => index === 1 ? Number(part) + 1 : index === 2 ? 0 : part).join('.');
+  restore(); const before = pointer(); assert.equal((await update(fixture({ next: nextMinor }))).status, 'migration_required'); assert.deepEqual(pointer(), before);
   assert.equal(compatibleUpdate('0.1.3', '0.1.4'), true);
   for (const next of ['0.1.2', '0.2.0', '1.1.4', '0.1.4-rc.1']) assert.equal(compatibleUpdate('0.1.3', next), false);
 });

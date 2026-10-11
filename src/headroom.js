@@ -17,7 +17,7 @@ export function pythonEnvironment(environment = process.env) {
 }
 export async function prepareHeadroom(run = execute) {
   const project = path.join(source, 'integrations', 'headroom');
-  const files = ['pyproject.toml', 'agent_context_headroom/__init__.py', 'agent_context_headroom/proxy.py', 'agent_context_headroom/observability.py', 'agent_context_headroom/request_context.py'];
+  const files = ['pyproject.toml', 'agent_context_headroom/__init__.py', 'agent_context_headroom/proxy.py', 'agent_context_headroom/observability.py', 'agent_context_headroom/request_context.py', 'agent_context_headroom/collector.py'];
   const recipe = sha(files.map(file => fs.readFileSync(path.join(project, file))).join('\0')).slice(0, 16);
   const dir = path.join(root(), 'headroom', recipe);
   const python = path.join(dir, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');

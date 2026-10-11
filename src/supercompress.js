@@ -19,11 +19,11 @@ export async function compressSupercompress({ context, query, session, agent }, 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 10000);
   try {
-    const response = await (options.fetch || fetch)('https://www.supercompress.dev/api/v1/compress', {
+    const response = await (options.fetch || fetch)(credentials.gateway ? credentials.gateway + '/v1/compress' : 'https://www.supercompress.dev/api/v1/compress', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-API-Key': credentials.key, 'Idempotency-Key': requestId },
+      headers: { 'Content-Type': 'application/json', ...(credentials.gateway ? { Authorization: 'Bearer ' + credentials.key } : { 'X-API-Key': credentials.key }), 'Idempotency-Key': requestId },
       body: JSON.stringify({ context, query, ccr: true, mode: 'compiler', coding_agent: agent, source: 'agent-context', session_id: sha(session), request_id: requestId }),
-      signal: controller.signal
+      signal: controller.signal, redirect: 'error'
     });
     if (!response.ok) return fallback(`http_${response.status}`);
     const body = await response.json();

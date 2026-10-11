@@ -19,6 +19,8 @@ import { spawn } from 'node:child_process';
 import { uninstall } from '../src/uninstall.js';
 import { telemetryStatus, verifyTelemetry, prepareCodexExporter } from '../src/telemetry.js';
 import { credentialInput, saveLangfuse } from '../src/credentials.js';
+import { connectGateway, enrollment } from '../src/enrollment.js';
+import { serveGateway } from '../src/gateway-server.js';
 
 const [command, ...args] = process.argv.slice(2);
 const names = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
@@ -26,16 +28,21 @@ const output = value => process.stdout.write(`${JSON.stringify(value, null, 2)}\
 const versionsDir = path.join(root(), 'versions');
 const inManagedRuntime = fs.existsSync(versionsDir) && fs.realpathSync(fileURLToPath(import.meta.url)).startsWith(fs.realpathSync(versionsDir) + path.sep);
 const recovery = command === 'update' && ['rollback', 'disable'].includes(args[0]) || command === 'doctor' && args.includes('--fix');
-if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
+if (!['install', 'setup', 'headroom', 'uninstall', 'connect', 'gateway'].includes(command) && !recovery && !inManagedRuntime && fs.existsSync(path.join(root(), 'active.json'))) {
   await import(pathToFileURL(launcher()).href);
 } else try {
-  if (command === 'setup') {
-    const selected = args.filter(value => value !== '--no-report');
+  if (command === 'connect') {
+    if (args.length !== 1) throw new Error('Usage: agent-context connect <https://gateway-origin>');
+    output(await connectGateway(args[0]));
+  } else if (command === 'gateway' && args[0] === 'serve' && args.length === 2) {
+    await serveGateway(args[1]);
+  } else if (command === 'setup') {
+    const selected = args.filter(value => !['--no-report', '--migrate'].includes(value));
     if (selected.some(value => !names[value])) throw new Error('Choose codex, claude or hermes');
     if (!(selected.length ? selected : Object.keys(names)).some(agent => fs.existsSync(path.join(home(), agent === 'claude' ? '.claude' : `.${agent}`)))) throw new Error('Setup requires an installed Codex, Claude Code or Hermes profile');
     const runtime = await prepareHeadroom();
     const exporters = await prepareCodexExporter(selected.length ? selected : Object.keys(names));
-    const report = install(selected.length ? selected : Object.keys(names), { automatic: true });
+    const report = install(selected.length ? selected : Object.keys(names), { automatic: true, migrate: args.includes('--migrate') });
     const reporting = incidentPolicy(!args.includes('--no-report'));
     report.warnings = compressionWarnings();
     const checks = await diagnose();
@@ -51,6 +58,7 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
     if (!checks.healthy) process.exitCode = 1;
   } else if (command === 'telemetry') {
     if (args[0] === 'verify' && args.length <= 2) {
+      if (enrollment()) await ensureService(args[1] || 'codex');
       const report = await verifyTelemetry(args[1]); output(report); if (report.status !== 'delivered') process.exitCode = 1;
     } else if (args[0] === 'status' && args.length === 1) {
       let agents = []; try { agents = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).agents || []; } catch {}
@@ -154,7 +162,7 @@ if (!['install', 'setup', 'headroom', 'uninstall'].includes(command) && !recover
 } catch (error) {
   if (!['incidents', '--version', 'uninstall'].includes(command)) recordIncident({ component: command === 'update' ? 'updater' : command === 'proxy' || command === 'lifecycle' ? 'proxy' : 'installer', operation: 'command', category: command === 'update' ? 'update_failed' : 'configuration_drift' });
   // Configuration parser errors may contain private values; report only known safe messages.
-  const safe = /^(Setup requires|Headroom requires|Headroom preparation already running|Unknown agent|Choose |Usage:|Update refused|Rollback refused|Uninstall refused|Unsupported |Hermes legacy|Configuration (changed|transaction)|Native verification)/.test(error.message);
+  const safe = /^(Setup requires|Headroom requires|Headroom preparation already running|Unknown agent|Choose |Usage:|Update refused|Rollback refused|Uninstall refused|Unsupported |Hermes legacy|Configuration (changed|transaction)|Native verification|GitHub sign-in|Gateway enrollment refused)/.test(error.message);
   process.stderr.write(`${safe ? error.message : 'Agent Context operation failed; inspect local configuration privately'}\n`);
   process.exitCode = 1;
 }

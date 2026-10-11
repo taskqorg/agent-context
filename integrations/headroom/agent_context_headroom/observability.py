@@ -41,6 +41,17 @@ def configure_environment():
         os.environ['HEADROOM_LANGFUSE_ENABLED'] = 'false'
         return False
     try:
+        home = Path(os.environ.get('AGENT_CONTEXT_HOME', str(Path.home())))
+        enrolled = home / '.agent-context/enrollment.json'
+        if enrolled.is_file():
+            source = home / '.codex/langfuse.json'
+            if source.is_file() and json.loads(source.read_text()).get('enabled') is False:
+                raise ValueError('Langfuse disabled by profile owner')
+            from .collector import device_config
+            _, device = device_config()
+            os.environ['LANGFUSE_PUBLIC_KEY'] = 'pk-lf-device-' + device['device']
+            os.environ['LANGFUSE_SECRET_KEY'] = 'sk-lf-device-' + device['token']
+            os.environ['LANGFUSE_BASE_URL'] = 'http://127.0.0.1:' + os.environ['AGENT_CONTEXT_PROXY_PORT']
         if not (os.environ.get('LANGFUSE_PUBLIC_KEY') and os.environ.get('LANGFUSE_SECRET_KEY')):
             home = Path(os.environ.get('AGENT_CONTEXT_HOME', str(Path.home())))
             path = Path(os.environ.get('AGENT_CONTEXT_LANGFUSE_CONFIG', str(home / '.codex/langfuse.json')))
