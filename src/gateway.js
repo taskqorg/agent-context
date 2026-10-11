@@ -19,7 +19,7 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
   fs.chmodSync(config.stateDir, 0o700);
   let devices = {};
   try { devices = JSON.parse(fs.readFileSync(stateFile, 'utf8')); fs.chmodSync(stateFile, 0o600); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  const checks = new Map(), rates = new Map();
+  const checks = new Map(), rates = new Map(), refreshing = new Map();
   let compressing = 0;
   const save = () => atomicWrite(stateFile, JSON.stringify(devices));
   const rate = (key, max) => {
@@ -35,6 +35,30 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
     const response = await github(config.team ? `/orgs/${config.organization}/teams/${config.team}/memberships/${user}` : `/user/memberships/orgs/${config.organization}`, token);
     return response.ok && (await response.json()).state === 'active';
   };
+  const tokenFields = body => {
+    if (body.expires_in === undefined && body.refresh_token === undefined && body.refresh_token_expires_in === undefined) return {};
+    if (typeof body.refresh_token !== 'string' || !/^[a-zA-Z0-9_]{1,512}$/.test(body.refresh_token) || !Number.isInteger(body.expires_in) || body.expires_in <= 0 || body.expires_in > 86400 || !Number.isInteger(body.refresh_token_expires_in) || body.refresh_token_expires_in <= 0 || body.refresh_token_expires_in > 366 * 86400) throw new Error('invalid_oauth_tokens');
+    return { githubRefreshToken: body.refresh_token, githubExpiresAt: now() + body.expires_in * 1000, githubRefreshExpiresAt: now() + body.refresh_token_expires_in * 1000 };
+  };
+  const refresh = async device => {
+    if (!device.githubExpiresAt || device.githubExpiresAt > now() + 60000) return;
+    if (refreshing.has(device.id)) return refreshing.get(device.id);
+    const pending = (async () => {
+      if (!device.githubRefreshToken || device.githubRefreshExpiresAt <= now()) throw new Error('github_reconnect_required');
+      const response = await request('https://github.com/login/oauth/access_token', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: config.clientId, grant_type: 'refresh_token', refresh_token: device.githubRefreshToken }), signal: AbortSignal.timeout(10000), redirect: 'error' });
+      if (!response.ok) throw new Error('github_refresh_failed');
+      const result = await response.json();
+      if (result.error || typeof result.access_token !== 'string' || !/^[a-zA-Z0-9_]{1,512}$/.test(result.access_token) || !result.refresh_token) throw new Error('github_refresh_failed');
+      const fields = tokenFields(result);
+      const identity = await github('/user', result.access_token);
+      if (!identity.ok || (await identity.json()).login !== device.user) throw new Error('github_identity_changed');
+      const previous = { githubToken: device.githubToken, githubRefreshToken: device.githubRefreshToken, githubExpiresAt: device.githubExpiresAt, githubRefreshExpiresAt: device.githubRefreshExpiresAt };
+      Object.assign(device, fields, { githubToken: result.access_token });
+      try { save(); } catch (error) { Object.assign(device, previous); throw error; }
+    })();
+    refreshing.set(device.id, pending);
+    try { await pending; } finally { refreshing.delete(device.id); }
+  };
   const authenticate = async auth => {
     let token = auth?.startsWith('Bearer ') ? auth.slice(7) : '';
     let publicKey;
@@ -46,6 +70,8 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
     if (!/^acd_[a-f0-9]{64}$/.test(token)) return null;
     const digest = sha(token), device = devices[digest];
     if (!device || device.revoked || publicKey && publicKey !== 'pk-lf-device-' + device.id) return null;
+    await refresh(device);
+    if (device.revoked) return null;
     const checked = checks.get(digest);
     if (!checked || now() - checked >= 60000) {
       if (!await member(device.githubToken, device.user)) { checks.delete(digest); return null; }
@@ -58,7 +84,7 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
   const readJSON = async req => {
     const bytes = new Uint8Array(await req.arrayBuffer());
     if (bytes.length > limitBytes) throw new Error('body_limit');
-    return JSON.parse(Buffer.from(bytes).toString('utf8'));
+    return bytes.length ? JSON.parse(Buffer.from(bytes).toString('utf8')) : {};
   };
   return {
     revoke(id) { const device = Object.values(devices).find(value => value.id === id); if (!device) return false; device.revoked = true; save(); return true; },
@@ -70,6 +96,9 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
           if (!rate('enroll:' + peer, 10)) return failure(429, 'rate_limited');
           const token = req.headers.get('authorization')?.replace(/^Bearer /, '');
           if (!token || token.length > 512 || !/^[a-zA-Z0-9_]+$/.test(token)) return failure(401, 'github_auth_required');
+          const body = await readJSON(req);
+          let fields;
+          try { fields = tokenFields(body); } catch { return failure(400, 'invalid_oauth_tokens'); }
           const result = await github('/user', token);
           if (!result.ok) return failure(401, 'github_auth_required');
           const user = (await result.json()).login;
@@ -77,7 +106,7 @@ export function createGateway(config, { request = fetch, now = Date.now } = {}) 
           if (Object.values(devices).filter(value => value.user === user && !value.revoked).length >= 20) return failure(409, 'device_limit');
           const key = 'acd_' + crypto.randomBytes(32).toString('hex');
           const id = crypto.randomBytes(16).toString('hex');
-          devices[sha(key)] = { id, user, githubToken: token, revoked: false, traces: {} };
+          devices[sha(key)] = { id, user, githubToken: token, ...fields, revoked: false, traces: {} };
           save();
           return Response.json({ device: id, user, token: key });
         }

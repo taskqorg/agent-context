@@ -14,10 +14,10 @@ Package rollback на версию без gateway/collector отказывает
 
 ## Однократная настройка владельца
 
-1. Зарегистрировать OAuth App организации: https://github.com/organizations/taskqorg/settings/applications/new . Имя `Agent Context`; homepage `https://github.com/taskqorg/agent-context`; callback `https://github.com/taskqorg/agent-context` (Device Flow callback не использует). Включить **Enable Device Flow**. Нужен только публичный **Client ID**; Client Secret для этой схемы не нужен.
+1. Зарегистрировать OAuth App организации: https://github.com/organizations/taskqorg/settings/applications/new . Имя `Agent Context`; homepage `https://github.com/taskqorg/agent-context`; callback `https://github.com/taskqorg/agent-context` (Device Flow callback не использует). Включить **Enable Device Flow** и **Token expiration**. Нужен только публичный **Client ID**; Client Secret для этой схемы не нужен.
 2. Разрешить приложение в организации, включая её ограничения OAuth/SSO. Scope `read:org` используется для проверки активного членства. По умолчанию доступ имеет организация `taskqorg`; при необходимости ограничить конкретной GitHub team через её slug в серверном config.
 3. На FRA создать закрытый JSON config 0600 вне репозитория: `clientId`, `organization`, необязательный `team`, абсолютный `stateDir`, `port:18880`, `langfuse:{public_key,secret_key,base_url}` и `supercompressKey`. Ключи берутся из существующих локальных закрытых профилей FRA программно; не вводятся в чат/argv. Проверка конфигурации отказывает неполным/некорректным значениям. Не используйте device credentials вместо серверных project keys.
-4. Запуск: `node <qualified checkout>/bin/agent-context.js gateway serve <private config path>`. Listener привязан только к `127.0.0.1`. Один процесс владеет stateDir. Сервис запускается под отдельным непривилегированным пользователем; config и state доступны только ему. `devices.json` хранит хеши device tokens и GitHub OAuth tokens scope read:org для повторной проверки членства; этот файл — секрет и не входит в диагностику/репозиторий.
+4. Запуск: `node <qualified checkout>/bin/agent-context.js gateway serve <private config path>`. Listener привязан только к `127.0.0.1`. Один процесс владеет stateDir. Сервис запускается под отдельным непривилегированным пользователем; config и state доступны только ему. `devices.json` хранит хеши device tokens и GitHub access/refresh tokens scope read:org и сроки их действия для повторной проверки членства; этот файл — секрет и не входит в диагностику/репозиторий.
 5. Для FRA можно использовать существующий TLS host без нового домена: `https://langfuse.ufobe.com/api/public/agent-context`. Внутри его Caddy `route`, **перед** существующим `@public_api`, добавить:
 
    ```caddy
@@ -29,6 +29,8 @@ Package rollback на версию без gateway/collector отказывает
    Это использует уже существующий API-маршрут. UI authentication Langfuse остаётся прежней. Перед reload сохранить закрытую копию и выполнить `caddy validate`; проверить HTTPS `/v1/info`, отказ неавторизованному upload и реальный GitHub-вход. Это схема развёртывания, не свидетельство уже изменённой Caddy configuration.
 
 6. В изолированном профиле выполнить `connect`, `setup`, `doctor --fix --live`, `telemetry verify`, настоящий native model/tool ход и запросить его observations. Проверить сотрудника/device/agent/host/runtime, native session/turn, model/token usage, compression outcome. До этого не переводить рабочих пользователей и не публиковать стабильный релиз.
+
+Токены Device Flow обновляются шлюзом при запросе за минуту до истечения access token. Пара access/refresh атомарно сохраняется в закрытом state; одновременные запросы используют одно обновление. Client Secret не нужен для refresh токенов, выданных через Device Flow. Ошибка обновления отказывает доступу; исходный контекст и локальная очередь сохраняют обычное поведение отказа. После шести месяцев без использования refresh token или отзыва доступа нужен повторный `connect`. Старые неистекающие токены поддерживаются.
 
 ## Маршруты и отказоустойчивость
 

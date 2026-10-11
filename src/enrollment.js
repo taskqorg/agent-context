@@ -46,7 +46,7 @@ export async function connectGateway(origin, { request = fetch, pause = ms => ne
     if (result.error === 'authorization_pending') continue;
     if (result.error === 'slow_down') { interval += 5; continue; }
     if (!result.access_token || result.error) throw new Error('GitHub sign-in denied or expired');
-    const response = await request(gateway + '/v1/enroll', { method: 'POST', headers: { Authorization: 'Bearer ' + result.access_token, 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(15000), redirect: 'error' });
+    const response = await request(gateway + '/v1/enroll', { method: 'POST', headers: { Authorization: 'Bearer ' + result.access_token, 'Content-Type': 'application/json' }, body: JSON.stringify(Object.fromEntries(['refresh_token', 'expires_in', 'refresh_token_expires_in'].filter(key => result[key] !== undefined).map(key => [key, result[key]]))), signal: AbortSignal.timeout(15000), redirect: 'error' });
     if (!response.ok) throw new Error('Gateway enrollment refused; check GitHub team membership');
     const value = await response.json();
     if (!/^[a-f0-9]{32}$/.test(value.device) || !/^acd_[a-f0-9]{64}$/.test(value.token) || !/^[a-zA-Z0-9-]{1,39}$/.test(value.user)) throw new Error('Unsupported enrollment response');
