@@ -11,7 +11,9 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-migration-'));
 process.env.AGENT_CONTEXT_HOME = home;
 test('migration from a verified legacy bootstrap upgrades code and restores matching config on package rollback', { skip: !fs.existsSync(new URL('../.git', import.meta.url)) }, async () => {
   const old = path.join(home, 'legacy'); fs.mkdirSync(old);
-  const archive = execFileSync('git', ['archive', 'HEAD']); execFileSync('tar', ['-x', '-C', old], { input: archive });
+  // A file, not stdin: bsdtar may stop reading at the end-of-archive marker, and the piped padding then fails with EPIPE.
+  // Relative name: GNU tar reads "C:\..." as a remote host.
+  execFileSync('git', ['archive', '-o', path.join(home, 'source.tar'), 'HEAD']); execFileSync('tar', ['-xf', 'source.tar', '-C', 'legacy'], { cwd: home });
   for (const name of ['smol-toml', 'yaml']) fs.cpSync(new URL('../node_modules/' + name, import.meta.url), path.join(old, 'node_modules', name), { recursive: true });
   fs.mkdirSync(path.join(home, '.codex'));
   const config = path.join(home, '.codex/config.toml'); fs.writeFileSync(config, '# owner comment\nmodel="existing"\n');
