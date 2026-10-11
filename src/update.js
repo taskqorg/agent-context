@@ -12,9 +12,9 @@ const repository = 'taskqorg/agent-context';
 // Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
 const hardenedLegacyLauncher = '58010bbde95c55e4c04f3c11ebe26497ef5b024f0d09193625203ce66125d51c';
 const json = value => `${JSON.stringify(value, null, 2)}\n`;
-// Ed25519 public key (SPKI PEM) for recipe.json.sig. Empty until the owner provisions a signing key in CI;
-// once set, unsigned or mis-signed releases are refused.
-export const releasePublicKey = '';
+// Ed25519 public key (SPKI PEM) for recipe.json.sig; unsigned or mis-signed releases are refused.
+// Private key: owner-held (scripts/sign-recipe.js), never in this repository.
+export const releasePublicKey = '-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA6fkOsxlO3Eqbsqa3cmZpzAUFTPNr8uOkMyZ9d9Rsyg8=\n-----END PUBLIC KEY-----\n';
 export function verifyRecipeSignature(bytes, signature, publicKey = releasePublicKey) {
   if (!publicKey) return true;
   if (!signature?.length) return false;
@@ -178,7 +178,7 @@ export async function prepare(archive, stage, expected) {
   }
   return dir;
 }
-export async function update({ automatic = false, fetcher = fetch, preparer = prepare } = {}) {
+export async function update({ automatic = false, fetcher = fetch, preparer = prepare, publicKey = releasePublicKey } = {}) {
   return lock(async () => {
     const active = checkedPointer(read(pointerFile()));
     const state = { ...read(stateFile()), ...read(policyFile()) };
@@ -200,9 +200,9 @@ export async function update({ automatic = false, fetcher = fetch, preparer = pr
       if (next === active.version) { record('current'); return { status: 'current', version: next }; }
       if (!compatibleUpdate(active.version, next)) { record('migration_required'); return { status: 'migration_required', version: next }; }
       const recipeBytes = await assetBytes(releaseAsset(release, 'recipe.json'), fetcher);
-      if (releasePublicKey) {
+      if (publicKey) {
         const signature = Buffer.from((await assetBytes(releaseAsset(release, 'recipe.json.sig'), fetcher)).toString('utf8').trim(), 'base64');
-        if (!verifyRecipeSignature(recipeBytes, signature)) fail('recipe signature');
+        if (!verifyRecipeSignature(recipeBytes, signature, publicKey)) fail('recipe signature');
       }
       const recipe = JSON.parse(recipeBytes);
       // Kill switch and staged rollout are recipe fields, so they are covered by the same digest/signature.

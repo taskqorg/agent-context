@@ -19,17 +19,21 @@ const restore = () => {
   fs.writeFileSync(path.join(root(), 'updates.json'), JSON.stringify({ enabled: true, lastAttempt: 0 }));
   fs.writeFileSync(path.join(root(), 'update-policy.json'), JSON.stringify({ enabled: true }));
 };
+const signing = crypto.generateKeyPairSync('ed25519');
+const testPublicKey = signing.publicKey.export({ type: 'spki', format: 'pem' });
 const nextPatch = version.split('.').map((part, index) => index === 2 ? Number(part) + 1 : part).join('.');
 function fixture({ badDigest = false, qualified = true, next = nextPatch, extra = {} } = {}) {
   const bytes = Buffer.from('synthetic package archive');
   const recipe = Buffer.from(JSON.stringify({ schema: 1, version: next, launcherSchema: 1, adapterContract: 1, platforms: [process.platform], clients: qualified ? ['codex', 'claude', 'hermes'] : ['codex'], archive: 'candidate.tgz', sha256: sha(bytes), ...extra }));
   const asset = (name, data) => ({ name, state: 'uploaded', digest: `sha256:${sha(data)}`, size: data.length, browser_download_url: `https://github.com/taskqorg/agent-context/releases/download/v${next}/${name}` });
-  const release = { tag_name: `v${next}`, draft: false, prerelease: false, assets: [asset('recipe.json', recipe), asset('candidate.tgz', bytes)] };
-  if (badDigest) release.assets[1].digest = `sha256:${'0'.repeat(64)}`;
+  const signature = Buffer.from(crypto.sign(null, recipe, signing.privateKey).toString('base64'));
+  const release = { tag_name: `v${next}`, draft: false, prerelease: false, assets: [asset('recipe.json', recipe), asset('recipe.json.sig', signature), asset('candidate.tgz', bytes)] };
+  if (badDigest) release.assets[2].digest = `sha256:${'0'.repeat(64)}`;
   let calls = 0;
   return {
     calls: () => calls,
-    fetcher: async url => { calls++; return new Response(url.endsWith('latest') ? JSON.stringify(release) : url.endsWith('recipe.json') ? recipe : bytes); },
+    publicKey: testPublicKey,
+    fetcher: async url => { calls++; return new Response(url.endsWith('latest') ? JSON.stringify(release) : url.endsWith('recipe.json') ? recipe : url.endsWith('recipe.json.sig') ? signature : bytes); },
     preparer: async (archive, stage, expected) => {
       assert.equal(fs.readFileSync(archive).toString(), bytes.toString());
       const dir = path.join(stage, 'package'); fs.mkdirSync(path.join(dir, 'bin'), { recursive: true }); fs.mkdirSync(path.join(dir, 'src'));
@@ -176,4 +180,11 @@ test('release signature verification accepts only the matching Ed25519 key', () 
   assert.equal(verifyRecipeSignature(bytes, signature, pem), true);
   assert.equal(verifyRecipeSignature(Buffer.from('{"schema":2}'), signature, pem), false);
   assert.equal(verifyRecipeSignature(bytes, Buffer.alloc(0), pem), false);
+});
+test('release signed with a different key is refused before download', async () => {
+  restore();
+  const before = pointer();
+  const other = crypto.generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'pem' });
+  const result = await update({ ...fixture(), publicKey: other });
+  assert.equal(result.status, 'failed'); assert.equal(result.reason, 'Update refused: recipe signature'); assert.deepEqual(pointer(), before);
 });
