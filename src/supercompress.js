@@ -5,7 +5,8 @@ import { recordIncident } from './incidents.js';
 export async function compressSupercompress({ context, query, session, agent }, options = {}) {
   const started = Date.now();
   const fallback = skipped => {
-    recordIncident({ component: 'compressor', operation: 'compress', category: skipped, agent: ['codex', 'claude-code', 'hermes', 'headroom'].includes(agent) ? agent : 'unknown' });
+    // Normal outcomes are metrics in events.jsonl, not incidents.
+    if (!['empty', 'too_large', 'no_gain'].includes(skipped)) recordIncident({ component: 'compressor', operation: 'compress', category: skipped, agent: ['codex', 'claude-code', 'hermes', 'headroom'].includes(agent) ? agent : 'unknown' });
     return { compressed_text: context, skipped, elapsed_ms: Date.now() - started };
   };
   if (typeof context !== 'string' || typeof query !== 'string' || !query.trim()) throw new Error('context and nonempty query must be strings');

@@ -56,12 +56,21 @@ class Supercompress:
         if not query:
             logger.info("SC skipped status=missing_current_query input_chars=%s", len(inp.content))
             return original()
+        # Several tool results in one request share one budget; an exhausted budget passes content through.
+        from .request_context import deadline
+        import time
+        limit = deadline.get()
+        timeout = 12.0 if not limit or not limit[0] else min(12.0, limit[0] - time.monotonic())
+        if timeout < 2:
+            logger.info("SC skipped status=request_budget input_chars=%s", len(inp.content))
+            return original()
         payload = dict(context=inp.content, query=query,
-                       session="headroom", agent="headroom")
+                       session="headroom", agent="headroom",
+                       timeout_ms=int((timeout - 1.5) * 1000))  # paid call ends before the bridge is killed
         try:
             process = subprocess.run(
                 [node, bridge], input=json.dumps(payload),
-                capture_output=True, text=True, encoding="utf-8", timeout=12,
+                capture_output=True, text=True, encoding="utf-8", timeout=timeout,
             )
             if process.returncode:
                 logger.warning("SC bridge failed exit_code=%s", process.returncode)

@@ -25,7 +25,7 @@ test('tryLock holds live owners and reclaims dead or legacy locks', () => {
 
 test('timeouts nest: SuperCompress fetch < bridge < Codex WS frame budget', () => {
   const fetchMs = Number(/timeoutMs \?\? (\d+)/.exec(fs.readFileSync('src/supercompress.js', 'utf8'))[1]);
-  const bridgeS = Number(/timeout=(\d+),\n/.exec(fs.readFileSync('integrations/headroom/agent_context_headroom/__init__.py', 'utf8'))[1]);
+  const bridgeS = Number(/timeout = 12.0 if/.test(fs.readFileSync("integrations/headroom/agent_context_headroom/__init__.py", "utf8")) ? 12 : NaN);
   const frameS = Number(/_CODEX_WS_COMPRESSION_TIMEOUT_SECONDS = ([\d.]+)/.exec(fs.readFileSync('integrations/headroom/agent_context_headroom/proxy.py', 'utf8'))[1]);
   assert.ok(fetchMs < bridgeS * 1000 && bridgeS < frameS, `${fetchMs}ms < ${bridgeS}s < ${frameS}s`);
 });

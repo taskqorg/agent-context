@@ -25,6 +25,12 @@ def register(ctx):
             try:
                 subprocess.run([node, launcher, 'lifecycle', 'hermes'], timeout=25, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except (OSError, subprocess.SubprocessError):
+                # Compression is off for this turn; make it visible instead of silently failing open.
+                try:
+                    subprocess.Popen([node, launcher, 'incidents', 'record'], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).communicate(
+                        b'{"component":"agent-adapter","operation":"lifecycle","category":"startup_failed","agent":"hermes"}', timeout=5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
                 return None
             with lock:
                 if len(started) >= 256:

@@ -32,6 +32,11 @@ test('automatic setup preserves unrelated settings, routes subscription auth, ha
   const hermes = YAML.parse(fs.readFileSync(path.join(home, '.hermes/config.yaml'), 'utf8'));
   assert.ok(hermes.plugins.enabled.includes('agent-context'));
   assert.equal(doctor().healthy, true, JSON.stringify(doctor()));
+  const settingsFile = path.join(home, '.claude/settings.json');
+  const settingsBytes = fs.readFileSync(settingsFile);
+  fs.writeFileSync(settingsFile, JSON.stringify({ ...claude, env: { ...claude.env, ANTHROPIC_BASE_URL: 'https://api.anthropic.com' } }));
+  assert.ok(doctor().issues.includes('claude:routing_drift'));
+  fs.writeFileSync(settingsFile, settingsBytes);
   assert.equal(install(['codex', 'claude', 'hermes'], { automatic: true }).transaction, null);
   fs.unlinkSync(codex);
   // Remove active service selection for this file-repair-only test; no subprocess/service is started.

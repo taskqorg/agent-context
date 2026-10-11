@@ -4,6 +4,9 @@ import json
 import re
 
 query = ContextVar('agent_context_query', default='')
+# Per-request (per WS frame) wall-clock budget for all paid compression calls together.
+REQUEST_BUDGET_SECONDS = 20.0
+deadline = ContextVar('agent_context_deadline', default=None)
 
 
 def current_query(body):
@@ -31,6 +34,7 @@ class CurrentRequest:
         if scope['type'] not in {'http', 'websocket'}:
             return await self.app(scope, receive, send)
         token = query.set('')
+        deadline_token = deadline.set([0.0])
         from .observability import identity
         identity_token = identity.set(dict(identity.get()))
         body = bytearray()
@@ -45,6 +49,9 @@ class CurrentRequest:
                     body.extend(message.get('body', b''))
                 if not message.get('more_body'):
                     payload = body
+            if payload:
+                import time
+                deadline.get()[0] = time.monotonic() + REQUEST_BUDGET_SECONDS
             if payload and len(payload) > 2_000_000:
                 query.set('')
             if payload and len(payload) <= 2_000_000:
@@ -79,4 +86,5 @@ class CurrentRequest:
             return await self.app(scope, capture, send)
         finally:
             query.reset(token)
+            deadline.reset(deadline_token)
             identity.reset(identity_token)
