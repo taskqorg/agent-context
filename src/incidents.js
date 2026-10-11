@@ -12,7 +12,7 @@ const directory = () => path.join(root(), 'incidents');
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 // Default transport is the anonymous relay: no GitHub identity, server-side dedup and counters.
 // `gh` posts under the user's own GitHub account and is used only when explicitly chosen.
-export const defaultRelay = 'https://agent-context-incidents.taskq.workers.dev/v1/incidents';
+export const defaultRelay = 'https://agent-context-incidents.alex-kirs.workers.dev/v1/incidents';
 const policy = () => {
   let value = { enabled: false };
   try { value = read(path.join(root(), 'incident-policy.json')); } catch {}
