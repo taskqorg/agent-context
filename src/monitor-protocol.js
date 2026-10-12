@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import { sha } from './core.js';
+import {nativeExportCodes} from './native-export.js';
 
 export const codexWsMetrics = ['frames_attempted_total', 'frames_compressed_total', 'frames_failed_total', 'frame_bytes_before_sum', 'frame_bytes_after_sum', 'frame_tokens_saved_sum', 'frame_elapsed_average_ms', 'frame_elapsed_max_ms'];
 export const monitorMetrics = ['active_connections', 'queue_batches', 'queue_bytes', 'queue_oldest_seconds', 'compressed', 'passthrough', 'compression_failed', 'input_chars', 'output_chars', 'last_activity_age_seconds', 'compression_calls', 'compression_total_ms', 'compression_max_ms', 'last_compression_age_seconds', 'native_rtk_calls', 'native_rtk_input_estimate', 'native_rtk_output_estimate', 'native_rtk_nonzero_exits', 'retiring_connections', 'retiring_seconds', 'stage_failures', 'worker_slots', 'telemetry_send_failures', ...codexWsMetrics.map(key => 'codex_ws_' + key)];
 const services = ['contextq', 'serverq', 'taskq', 'gateway', 'hermes-gateway', 'langfuse', 'updater'];
+monitorMetrics.push(...nativeExportCodes.map(code=>'native_export_'+code),'native_export_attempts','native_export_retry_seconds','native_export_recovery_age_seconds');
 const reasons = ['native_stats_unavailable', 'native_exporter_missing', 'telemetry_delivery_unverified', 'queue_unreadable', 'stale_report', 'invalid_report', 'automated_checks_only', 'status_snapshot', 'report_unavailable', 'invalid_report_policy', 'proxy_unavailable', 'compression_telemetry_disabled', 'delivery_backlog', 'proxy_health_not_agent_liveness', 'endpoint_reachable', 'endpoint_unavailable', 'updates_disabled', 'update_migration_required', 'update_failed', 'release_subscription_connected', 'release_subscription_unavailable', 'worker_retiring', 'worker_update_failed', 'telemetry_delivery_failed'];
 const categories = ['missing_key', 'key_conflict', 'invalid_key_config', 'timeout', 'request_failed', 'invalid_response', 'lost_critical_evidence', 'startup_failed', 'process_exit', 'configuration_drift', 'runtime_integrity', 'update_failed', 'delivery_failed'];
 const states = ['ok', 'warning', 'error', 'unknown'];

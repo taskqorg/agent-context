@@ -1,5 +1,5 @@
 import {flushNativeEvents} from './native-tools.js';
-import {nativeExportStats} from './native-export.js';
+import {nativeExportStats,nativeExportDiagnostics,nativeExportCodes} from './native-export.js';
 import { providers } from './providers.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,6 +67,7 @@ export async function collectMonitor({ health = serviceHealth, stats = headroomS
     try { metrics = queueStats(path.join(root(), 'telemetry-outbox', enrollment()?.device || 'local', agent === 'claude' ? 'claude-code' : agent), now); } catch { queueReadable = false; }
     if(agent==='codex') try {
       const pending=nativeExportStats();
+      Object.assign(metrics,nativeExportDiagnostics(now));
       metrics.queue_batches=(metrics.queue_batches||0)+pending.queue_batches;
       metrics.queue_bytes=(metrics.queue_bytes||0)+pending.queue_bytes;
       metrics.queue_oldest_seconds=Math.max(metrics.queue_oldest_seconds||0,pending.queue_oldest_seconds);
@@ -89,7 +90,7 @@ export async function collectMonitor({ health = serviceHealth, stats = headroomS
     if (state) metrics.active_connections = state.active || 0;
     if(state?.front_protocol===1) {metrics.retiring_connections=state.retiringWorker?.connections||0;metrics.retiring_seconds=state.retiringWorker?Math.max(0,(state.retiringWorker.retireAt-now)/1000):0;metrics.stage_failures=state.stageFailures||0;metrics.worker_slots=state.workerSlots||0;}
     if(Number.isFinite(state?.collector?.failures)) metrics.telemetry_send_failures=state.collector.failures;
-    const deliveryFailed=Boolean(state?.collector?.lastError);
+    const deliveryFailed=Boolean(state?.collector?.lastError)||nativeExportCodes.some(code=>metrics['native_export_'+code]>0);
     const workerFailed=Boolean(state?.rejectedVersion||state?.stageFailures);
     const rotating=Boolean(state?.retiringWorker);
     const exporterMissing = telemetryEnabled && ['missing', 'installed_hooks_disabled_or_unconfigured'].includes(telemetry.nativeExporters[agent]);
