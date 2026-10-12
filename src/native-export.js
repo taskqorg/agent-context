@@ -92,7 +92,7 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
       const marker=job.source+'.langfuse';
       if(fs.existsSync(marker)&&fs.readFileSync(marker,'utf8').split('\n').includes(turn)) {fs.unlinkSync(jobFile);return;}
       const config=await collector();
-      const env={...process.env,CODEX_HOME:path.join(home(),'.codex'),LANGFUSE_FLUSH_AT:'1',LANGFUSE_CODEX_PUBLIC_KEY:config.public_key,LANGFUSE_CODEX_SECRET_KEY:config.secret_key,LANGFUSE_CODEX_BASE_URL:config.base_url,LANGFUSE_CODEX_ENVIRONMENT:config.environment||'production',LANGFUSE_CODEX_METADATA:JSON.stringify({...config.metadata,'agent_context.exporter_version':version,'agent_context.capture_scope':'current_turn'})};
+      const env={...process.env,CODEX_HOME:path.join(home(),'.codex'),LANGFUSE_FLUSH_AT:'128',LANGFUSE_CODEX_PUBLIC_KEY:config.public_key,LANGFUSE_CODEX_SECRET_KEY:config.secret_key,LANGFUSE_CODEX_BASE_URL:config.base_url,LANGFUSE_CODEX_ENVIRONMENT:config.environment||'production',LANGFUSE_CODEX_METADATA:JSON.stringify({...config.metadata,'agent_context.exporter_version':version,'agent_context.capture_scope':'current_turn'})};
       if(config.user_id) env.LANGFUSE_CODEX_USER_ID=config.user_id;
       await run(process.execPath,[codexExporterPath()],{input:JSON.stringify({transcript_path:snapshot,turn_id:turn}),env,timeout:25000,maxBuffer:65536,windowsHide:true});
       const receipt=snapshot+'.langfuse';
