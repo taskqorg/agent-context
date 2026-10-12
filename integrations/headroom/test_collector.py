@@ -121,6 +121,9 @@ class CollectorTests(unittest.IsolatedAsyncioTestCase):
         import httpx
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
+            (home / '.agent-context').mkdir()
+            cli = Path(__file__).resolve().parents[2] / 'bin/agent-context.js'
+            (home / '.agent-context/launcher.mjs').write_text('import ' + json.dumps(cli.as_uri()) + ';\n')
             (home / '.codex').mkdir()
             config = {'public_key': 'synthetic-public', 'secret_key': 'synthetic-secret',
                       'base_url': 'http://127.0.0.1:18787', 'agent_context_base_url': 'https://lf.invalid', 'user_id': 'employee'}

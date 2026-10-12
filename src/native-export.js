@@ -74,7 +74,7 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
   if(!fs.existsSync(directory())||fs.existsSync(path.join(root(),'uninstalling.json'))) return;
   const release=tryLock(path.join(directory(),'worker.lock'),120000);
   if(!release) return;
-  let snapshot;
+  let snapshot,snapshotRoot;
   try {
     if(fs.existsSync(path.join(root(),'uninstalling.json'))) return;
     for(const name of fs.readdirSync(directory())) if(/^[a-f0-9]{64}\.jsonl(?:\.langfuse)?$/.test(name)) fs.rmSync(path.join(directory(),name),{force:true});
@@ -82,7 +82,11 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
       const j=JSON.parse(fs.readFileSync(f));return !j.lastAttempt||now-j.lastAttempt>=Math.min(300000,1000*2**Math.min(j.attempts,9));
     });
     if(!jobFile) return;
-    const job=JSON.parse(fs.readFileSync(jobFile));snapshot=path.join(directory(),job.id+'.jsonl');
+    const job=JSON.parse(fs.readFileSync(jobFile));
+    // The exporter resolves its sessions root three levels above the transcript.
+    snapshotRoot=fs.mkdtempSync(path.join(directory(),'snapshot-'));
+    snapshot=path.join(snapshotRoot,...new Date(job.at).toISOString().slice(0,10).split('-'),job.id+'.jsonl');
+    fs.mkdirSync(path.dirname(snapshot),{recursive:true,mode:0o700});
     try {
       const turn=await snapshotTurn(job.source,job.turn,snapshot);
       const marker=job.source+'.langfuse';
@@ -103,6 +107,7 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
     recordIncident({component:'telemetry',operation:'native_export_queue',category:'delivery_failed',agent:'codex'});
   }finally {
     if(snapshot) {fs.rmSync(snapshot,{force:true});fs.rmSync(snapshot+'.langfuse',{force:true});}
+    if(snapshotRoot) fs.rmSync(snapshotRoot,{recursive:true,force:true});
     release();
   }
 }
