@@ -8,6 +8,25 @@ Keep normal login/model/approval and native telemetry trust. Install private pin
 
 Gate: existing npm test + npm pack, native protected/error cases, live Codex CLI, Claude CLI and Claude Desktop Code, then qualified fleet rollout without interrupting active sessions. Store per-run RTK estimates separately from actual model usage; context-mode lookup is not automatically net savings.
 
+R9 statistics reader correction (user-authorized): ServiceQ and its read-only agent
+report consume legacy compression and native-tool observations separately. Deduplicate
+native events by stable event ID within device identity; fall back to observation ID
+when unavailable. Show RTK estimated input/output, sample count, session/call linkage,
+explicit production/qualification/unknown origin and native command exits separately
+from compression failures. Unknown origin must not become production. Missing sizes
+remain unavailable; preserve negative reductions. Legacy character counts are never
+added to token estimates or model usage. Existing native spans use delivery time;
+state this limitation, not an invented operation timestamp. Bound all source reads,
+show truncation and exclude synthetic roots. Host/agent/session filters use the same
+reader for the UI and agent JSON report; neither returns raw commands/conversations
+or credentials. Model usage retains per-model input/cache/output/reasoning fields,
+each with its own sample count; overlapping fields are not added together. Reported
+cost is separate from savings and invoices. Do not change native routing, hooks or
+histories in this reader fix.
+Acceptance: mixed units, missing IDs/sizes/origin, replay with a new span ID,
+nonzero command exit, zero/negative reduction, empty/incomplete windows and private
+metadata; check rendered UI and actual Langfuse readback before ServiceQ adoption.
+
 Stable interface: one agent_context MCP, three tools (index_document/search_document/get_original); tools run CLI accepts native command arguments. Engines remain internal. Never inject tools through proxy. Preserve normal client sandbox; use bounded temporary run state when managed state is protected. Report unavailable telemetry and expired recovery references.
 
 Release hardening (R4/R6/R8–R10), revised by user: native OS manager owns a small supervisor and permanent TCP ingress; versioned workers own the request logic. Stage a worker on a separate local port, verify identity/readiness, atomically select it for new TCP connections. Existing HTTP/SSE/WebSocket connections retain their worker. Keep at most two workers; serialize updates. Retain previous worker for rollback within the initial 15-minute retirement window. After that window request graceful exit, allow 30 seconds, then terminate the remaining owned process tree and record an incident. Installation owns the telemetry queue; a cross-process lease gives one sender per queue. Monitor actual active/retiring versions, connections, retirement deadline, backlog and errors. Qualify long requests, idle sockets, native Codex/Claude reconnection, failed stage/worker, rollback and queue preservation. A one-time legacy-listener migration is distinct from subsequent updates. Use standard Node TCP piping, not a custom HTTP stack or replacement for systemd.

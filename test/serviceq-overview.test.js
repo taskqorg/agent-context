@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { overview,nativeExportExplanation } from '../src/serviceq-overview.js';
+import { overview,nativeExportExplanation,reportFilters } from '../src/serviceq-overview.js';
 const now = Date.parse('2026-10-11T13:30:00Z');
 function row({ at = now - 60000, name = 'service.health.contextq.codex', host = 'windows', runtime = 'native', device = 'one', service = 'contextq', state = 'ok', agent = 'codex', reason = 'proxy_health_not_agent_liveness', metadata = {}, level = 'DEFAULT' } = {}) {
   return { id: 'span', traceId: 'abcdef1234567890', startTime: new Date(at).toISOString(), name, statusMessage: reason, level, tags: [`host:${host}`, `runtime:${runtime}`, `device:${device}`, `service:${service}`, `state:${state}`, `agent:${agent}`], metadata };
@@ -11,6 +11,50 @@ test('overview uses latest device identity and snapshot, never old WSL labels or
   assert.equal(result.hosts.find(h => h.id === 'windows/native').services.length, 0);
   const wsl = result.hosts.find(h => h.id === 'windows/wsl');
   assert.equal(wsl.fresh, true); assert.equal(wsl.agents.length, 1); assert.equal(wsl.agents[0].name, 'Codex');
+});
+
+test('R9 RTK estimates stay separate, replay uses event/device identity and command exit is not compression failure', () => {
+  const native = (id, extra = {}) => ({ ...row({ name: 'agent-context.native-tool', metadata: meta({ 'compression.id': '11111111-1111-4111-8111-111111111111', 'compression.strategy': 'rtk-native', 'compression.token_source': 'rtk_estimate', 'compression.input_tokens': 100, 'compression.output_tokens': 10, 'compression.exit_code': 7, ...extra }) }), id, sessionId: 'native-session' });
+  const result = overview({ nativeTools: [native('first'), native('replay'), { ...native('root'), id: 't-root' }, native('second', { 'compression.id': '22222222-2222-4222-8222-222222222222', 'compression.output_tokens': 150, 'compression.origin': 'qualification', tool_call_id: 'call-2' })], compression: [row({ metadata: meta({ 'compression.outcome': 'compressed', 'compression.input_chars': 1000, 'compression.output_chars': 500 }) })] }, now);
+  const a = result.hosts.find(h => h.id === 'windows/native').agents[0];
+  assert.equal(a.compression.input, 1000);
+  assert.deepEqual([a.nativeRtk.calls, a.nativeRtk.samples, a.nativeRtk.input, a.nativeRtk.output], [2, 2, 200, 160]);
+  assert.deepEqual([a.nativeRtk.reduced, a.nativeRtk.expanded, a.nativeRtk.nonzeroExits], [1, 1, 2]);
+  assert.deepEqual([a.nativeRtk.sessionLinks, a.nativeRtk.callLinks, a.nativeRtk.stableIds], [2, 1, 2]);
+  assert.deepEqual(a.nativeRtk.origins, { production: 0, qualification: 1, unknown: 1 });
+  assert.equal(a.nativeRtk.timeBasis, 'delivery'); assert.equal(a.nativeRtk.includesWrapperOverhead, false);
+  assert.equal(result.issues.length, 0); assert.ok(result.gaps.some(g => g.title.includes('RTK')));
+});
+
+test('R9 missing native sizes, unknown units and private metadata never become zero measurements or production', () => {
+  const sample = row({ name: 'agent-context.native-tool', metadata: { ...meta({ 'compression.input_tokens': 80, 'compression.output_tokens': 4, 'compression.origin': 'SECRET', 'compression.strategy': 'rtk-native', 'compression.token_source': 'future' }), raw_command: 'SECRET' } });
+  const result = overview({ nativeTools: [sample, { ...sample, id: 'different-span', metadata: {} }, { ...sample, startTime: 'invalid' }] }, now);
+  const r = result.hosts.find(h => h.id === 'windows/native').agents[0].nativeRtk;
+  assert.equal(r.calls, 2); assert.equal(r.samples, 0); assert.equal(r.input, null); assert.equal(r.output, null);
+  assert.equal(r.unknown, 2); assert.equal(r.exitSamples, 0); assert.equal(r.origins.unknown, 2);
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
+  assert.equal(overview({}, now).hosts[0].agents.length, 0);
+});
+
+test('R9 host/agent/session filters share the report reader without inventing links', () => {
+  const params = new URLSearchParams('period=86400&host=windows/native&agent=codex&session=wanted');
+  const filters = reportFilters(params), a = { ...row(), sessionId: 'wanted' }, b = { ...row(), sessionId: 'other' };
+  const result = overview({ activity: [a, b, row({ host: 'mac' })], nativeTools: [row()] }, now, 86400, filters);
+  assert.equal(result.hosts.length, 1); assert.equal(result.hosts[0].agents[0].activity.calls, 1);
+  assert.equal(result.hosts[0].agents[0].nativeRtk, null); assert.deepEqual(result.filters, filters);
+  for (const query of ['host=bad', 'agent=future', 'session=%3Cscript%3E', 'raw=SECRET']) assert.throws(() => reportFilters(new URLSearchParams(query)), /Invalid report filter/);
+});
+
+test('R9 model usage preserves overlapping units, partial samples and missing reported cost without private IO', () => {
+  const a = { ...row(), model: 'model-one', usageDetails: { input: 100, input_cached_tokens: 80, output: 10, output_reasoning_tokens: 4, raw: 'SECRET' }, costDetails: { total: 0.02 }, input: 'SECRET', output: 'SECRET' };
+  const b = { ...row(), model: 'model-one', usageDetails: { output: 0 } };
+  const result = overview({ activity: [a, b, { ...row(), model: '__proto__' }] }, now);
+  const m = result.hosts.find(h => h.id === 'windows/native').agents[0].activity.models;
+  assert.deepEqual(m['model-one'].usage, { input: 100, output: 10, input_cached_tokens: 80, output_reasoning_tokens: 4 });
+  assert.equal(m['model-one'].usageSamples.input, 1); assert.equal(m['model-one'].usageSamples.output, 2);
+  assert.equal(m['model-one'].reportedCost, 0.02); assert.equal(m['model-one'].costSamples, 1);
+  assert.equal(m.__proto__.reportedCost, null); assert.equal(Object.getPrototypeOf(m), Object.prototype);
+  assert.equal(JSON.stringify(result).includes('SECRET'), false);
 });
 test('absence and stale healthy samples remain unknown; missing reports are gaps, not errors', () => {
   const result = overview({ health: [row({ host: 'mac', at: now - 700000 }), row({ device: 'two', service: 'taskq', state: 'unknown', reason: 'report_unavailable' })] }, now);

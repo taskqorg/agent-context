@@ -32,6 +32,34 @@ Queries are bounded to 24 hours for health/history and 30 minutes, 2 hours or
 24 hours for activity/compression, with cursor pagination and a 10,000-row cap
 per source. It fetches metadata only, never conversation or tool content.
 No new agent configuration, monitor restart or database is needed for this UI.
+
+## Native RTK accounting
+
+The reader also fetches `agent-context.native-tool`. Native RTK is a separate
+table: estimates, sample/link counts, command exits and explicit origin. Existing
+events without an origin remain unknown, including historical qualification
+controls. The combined RTK estimate is not a production-only saving. No chars or
+model tokens are inferred from RTK estimates. Recovery-reference overhead is not
+included in those estimates. Existing native span timestamps represent delivery.
+Stable event IDs are deduplicated within device/host/runtime/agent identity;
+old events without device/event IDs use observation IDs only.
+
+The same read-only JSON report is available to agents without browser login:
+
+```sh
+AGENT_CONTEXT_LANGFUSE_CONFIG=/private/existing/config.json node scripts/serve-serviceq.js --report --period=86400 --host=windows/native --agent=codex --session=NATIVE_ID
+```
+
+Use the existing operator credentials locally; never send them to an agent/client
+or print their values. Filters are optional; periods remain 1800/7200/86400 seconds.
+The guarded `/serviceq/data` accepts the same `host`, `agent`, `session` filters.
+Session filters limit activity/compression; service-health snapshots retain their
+host scope and are not session health. A report contains aggregates and evidence
+trace IDs, never raw commands, prompts or tool results. Query caps and unknown
+links remain explicit. Filters do not reconstruct missing native identities.
+Model usage is grouped by the observed model with sample counts for each original
+input/cache/output/reasoning field. Overlapping fields are not summed into an invented
+total. Missing costs remain null; reported cost is not invoice or subscription savings.
 Rollback removes the guarded Caddy route and stops `serviceq-overview.service`.
 
 The monitor reads existing ContextQ proxy health, native telemetry queue metadata,
