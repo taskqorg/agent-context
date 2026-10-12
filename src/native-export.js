@@ -15,7 +15,7 @@ const execute=(command,args,{input,...options})=>new Promise((resolve,reject)=>{
 const directory=()=>path.join(root(),'native-hook-outbox');
 export const codexExporterPath=()=>path.join(home(),'.codex/plugins/cache/codex-observability-plugin/tracing/0.4.2/dist/index.mjs');
 const files=()=>fs.existsSync(directory())?fs.readdirSync(directory()).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)):[];
-export const nativeExportCodes = ['concurrency_limit','timeout','collector_unavailable','snapshot_unavailable','unacknowledged','process_failed','unknown'];
+export const nativeExportCodes = ['payload_too_large','concurrency_limit','timeout','collector_unavailable','snapshot_unavailable','unacknowledged','process_failed','unknown'];
 const retryDelay = attempts => Math.min(300000,1000*2**Math.min(attempts,9));
 export function nativeExportDiagnostics(now=Date.now()) {
   const metrics=Object.fromEntries(nativeExportCodes.map(code=>['native_export_'+code,0]));
@@ -44,6 +44,7 @@ function exportFailure(error,stage) {
   if(stage==='snapshot') return 'snapshot_unavailable';
   if(stage==='collector') return 'collector_unavailable';
   if(stage==='acknowledgement') return 'unacknowledged';
+  if(error.exportStatus===413) return 'payload_too_large';
   if(error.killed||error.code==='ETIMEDOUT') return 'timeout';
   if(String(error.message).includes('Concurrent export limit reached')) return 'concurrency_limit';
   return 'process_failed';
