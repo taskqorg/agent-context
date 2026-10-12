@@ -1,6 +1,6 @@
 {
   "name": "@alexkirs/agent-context",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "private": true,
   "license": "MIT",
   "repository": {
@@ -52,7 +52,8 @@
     "docs/provider-comparison-2026-10-12.json",
     "docs/spec",
     "benchmarks/context-options",
-    "benchmarks/desktop-candidates"
+    "benchmarks/desktop-candidates",
+    "docs/SESSION-DIAGNOSTICS.md"
   ],
   "scripts": {
     "test": "node scripts/integrity.js && node --test",
