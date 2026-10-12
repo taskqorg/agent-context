@@ -40,7 +40,7 @@ export function atomicSecretWrite(file, data, { platform = process.platform, exe
 }
 
 export function writeConfig(file, data, options = {}) {
-  const privateFile = file === path.join(home(), '.codex/langfuse.json') || file === path.join(home(), '.hermes/.env') || file === path.join(home(), '.claude/settings.json') && data.toString().includes('sk-lf-device-');
+  const privateFile = file === path.join(home(), '.codex/langfuse.json') || file === path.join(home(), '.hermes/.env') || file === path.join(home(), '.claude/settings.json');
   if (privateFile) return atomicSecretWrite(file, data, options);
   return options.exclusive ? fs.writeFileSync(file, data, { flag: 'wx', mode: 0o600 }) : atomicWrite(file, data);
 }

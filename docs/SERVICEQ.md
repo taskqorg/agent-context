@@ -91,3 +91,26 @@ profile ACLs are preserved; new secret files grant only user/SYSTEM/admin access
 ## Обновления хостов (0.2.6)
 
 Панель показывает выбранную версию пакета для новых сессий, последний стабильный релиз, реально работающие версии монитора и прокси, состояние подписки и updater. Старый активный proxy отмечается как ожидающий новых сессий; выбранный пакет не выдаётся за версию активного агента. Устаревший снимок не подтверждает ни подключение подписки, ни успешное применение.
+
+## Native Headroom counters (0.3.0 candidate)
+
+The monitor reads the public loopback `/stats` endpoint of the verified local
+Codex proxy. Only eight numeric `codex_ws_*` fields leave the host: attempted,
+compressed and failed frame counts, bytes before/after, estimated removed tokens,
+and average/maximum processing time. Request logs and configuration are discarded.
+A timeout, incompatible response or invalid number yields `native_stats_unavailable`;
+missing counters are never reported as zero. Legacy proxies keep their old collector.
+
+The panel shows these separately under process counters. Frames are protocol
+messages, not user turns. They reset on restart and can include repeated context.
+Estimated removed tokens do not account for cache pricing or later CCR retrieval
+and are not paid savings. These aggregates supplement per-turn native traces.
+Update the gateway and panel before candidate clients: older gateways reject the
+new metric names/reason rather than silently discard them.
+
+
+Telemetry contract: see [TELEMETRY-DELIVERY.md](TELEMETRY-DELIVERY.md#telemetry-contract-v1).
+The dashboard template no longer charts process counters or queue ages as Scores.
+Those remain available in snapshot metadata and the ServiceQ panel. Existing
+Langfuse dashboards require reprovisioning; existing mixed historical Scores are
+preserved and must be excluded from new operational charts.

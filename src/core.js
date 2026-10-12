@@ -2,10 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { compressSupercompress } from './supercompress.js';
+import { compressLocal } from './local-compression.js';
 import { enrollment } from './enrollment.js';
+import { providerSettings } from './providers.js';
 
-export const version = '0.2.11';
+export const version = '0.4.8';
 export const home = () => process.env.AGENT_CONTEXT_HOME || os.homedir();
 export const root = () => path.join(home(), '.agent-context');
 export const sha = value => crypto.createHash('sha256').update(value).digest('hex');
@@ -79,9 +80,6 @@ export async function compress({ context, query, session, agent, source = 'mcp' 
   };
   if (!context.trim()) return fallback('empty');
   if (context.length > 100000) return fallback('too_large');
-  const credentials = options.credentials || keyStatus();
-  if (credentials.conflict) return fallback('key_conflict');
-  if (!credentials.present) return fallback(credentials.error || 'missing_key');
   const stateFile = path.join(root(), 'state', `${sha(`${agent}\0${session}`)}.json`);
   const lock = `${stateFile}.lock`;
   try { fs.mkdirSync(path.dirname(stateFile), { recursive: true, mode: 0o700 }); }
@@ -94,9 +92,9 @@ export async function compress({ context, query, session, agent, source = 'mcp' 
     try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); }
     catch (error) { if (error.code !== 'ENOENT') return fallback('invalid_state'); }
     if (!Array.isArray(state.seen) || state.seen.some(value => typeof value !== 'string')) return fallback('invalid_state');
-    const digest = sha(`neural\0${context}\0${query}`);
+    const digest = sha(`${providerSettings().provider}-v1\0${context}\0${query}`);
     if (state.seen.includes(digest)) return { compressed_text: '', skipped: 'already_seen', elapsed_ms: 0 };
-    const result = await compressSupercompress({ context, query, session, agent }, { ...options, credentials });
+    const result = await compressLocal({ context, query }, options);
     if (result.skipped) return fallback(result.skipped);
     state.seen = [...state.seen.slice(-255), digest];
     atomicWrite(stateFile, JSON.stringify(state));

@@ -115,34 +115,6 @@
       ]
     },
     {
-      "name": "ServiceQ / Queue age",
-      "description": "Maximum telemetry outbox age in seconds in the selected period, grouped by service/agent score name.",
-      "view": "scores-numeric",
-      "chartType": "PIVOT_TABLE",
-      "metrics": [
-        {
-          "measure": "value",
-          "agg": "max"
-        }
-      ],
-      "dimensions": [
-        {
-          "field": "name"
-        },
-        {
-          "field": "tags"
-        }
-      ],
-      "filters": [
-        {
-          "type": "string",
-          "column": "name",
-          "operator": "ends with",
-          "value": ".queue_oldest_seconds"
-        }
-      ]
-    },
-    {
       "name": "ServiceQ / Agent activity",
       "description": "Observation counts by name. Proxy heartbeat is not agent liveness. Use trace tags to filter host, agent, device and user.",
       "view": "observations",
@@ -159,44 +131,6 @@
         }
       ],
       "filters": []
-    },
-    {
-      "name": "ServiceQ / Compression process counters",
-      "description": "Maximum cumulative counters per proxy process in selected period. Reset on restart; adapter calls only, not all Codex WS frames or model-token savings. passthrough includes failures (failed subset shown separately).",
-      "view": "scores-numeric",
-      "chartType": "PIVOT_TABLE",
-      "metrics": [
-        {
-          "measure": "value",
-          "agg": "max"
-        }
-      ],
-      "dimensions": [
-        {
-          "field": "name"
-        },
-        {
-          "field": "tags"
-        }
-      ],
-      "filters": [
-        {
-          "type": "stringOptions",
-          "column": "name",
-          "operator": "any of",
-          "value": [
-            "contextq.codex.compressed",
-            "contextq.codex.passthrough",
-            "contextq.codex.compression_failed",
-            "contextq.hermes.compressed",
-            "contextq.hermes.passthrough",
-            "contextq.hermes.compression_failed",
-            "contextq.claude-code.compressed",
-            "contextq.claude-code.passthrough",
-            "contextq.claude-code.compression_failed"
-          ]
-        }
-      ]
     }
   ]
 }

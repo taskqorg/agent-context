@@ -1,3 +1,4 @@
+import { monitorMetrics } from './monitor-protocol.js';
 const freshness = 10 * 60 * 1000;
 const tag = (row, key) => row.tags?.find(t => t.startsWith(key + ':'))?.slice(key.length + 1);
 const attribute = (row, key) => row.metadata?.['attributes.agent_context.' + key];
@@ -6,9 +7,15 @@ export const hostNames = { 'mac/native': 'Mac', 'windows/native': 'Windows', 'wi
 export const agentNames = { codex: 'Codex', hermes: 'Hermes', 'claude-code': 'Claude Code' };
 export const serviceNames = { contextq: 'ContextQ', serverq: 'ServerQ', taskq: 'TaskQ', gateway: 'Сборщик телеметрии', 'hermes-gateway': 'Hermes Gateway', langfuse: 'Langfuse', updater: 'Обновления' };
 export const reasons = {
+  worker_retiring:'Новые соединения идут в новую версию; старая обслуживает прежние.',
+  worker_update_failed:'Новый worker не прошёл проверку или упал; проверьте инциденты.',
+  native_stats_unavailable: 'Штатные счётчики Headroom недоступны. Обработка Codex не подтверждена.',
+  native_exporter_missing: 'Не подключён native exporter агента или выключены его hooks. Завершить онбординг.',
+  telemetry_delivery_unverified: 'Доставка этого агента в Langfuse не подтверждена. Монитор повторит проверку.',
   proxy_health_not_agent_liveness: 'Прокси доступен. Активность агента показана отдельно.',
   proxy_unavailable: 'Прокси недоступен — проверить локальный сервис ContextQ.',
   compression_telemetry_disabled: 'В прокси отключена телеметрия компрессии.',
+  telemetry_delivery_failed:'Ошибка отправки телеметрии; данные остаются в очереди.',
   delivery_backlog: 'Данные ждут отправки более 10 минут.',
   queue_unreadable: 'Не удалось прочитать очередь телеметрии.',
   endpoint_reachable: 'Сервис ответил на проверку.',
@@ -25,7 +32,7 @@ export const reasons = {
   release_subscription_unavailable: 'Подписка не подтверждена. Проверить монитор и соединение.',
   invalid_report_policy: 'Некорректная настройка срока действия отчёта.'
 };
-const normal = new Set(['compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget']);
+const normal = new Set(['compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget', 'passthrough']);
 const failures = {
   bridge_unavailable: 'Файл компрессора недоступен', bridge_failed: 'Не удалось запустить компрессор',
   missing_current_query: 'Не определён текущий запрос', timeout: 'Превышено время сжатия',
@@ -35,7 +42,7 @@ const failures = {
   fallback: 'Сбой обработки контекста', lost_critical_evidence: 'Компрессор потерял важные данные',
   invalid_device_config: 'Некорректная регистрация устройства', invalid_key_config: 'Некорректные настройки доступа'
 };
-export const outcomeNames = { compressed: 'Сжато', retrieval: 'Чтение сохранённого оригинала', content_type: 'Тип данных не подходит', ineligible: 'Блок не требует сжатия', no_gain: 'Сжатие не дало выигрыша', empty: 'Пустой блок', too_large: 'Блок превышает лимит', request_budget: 'Лимит обработки запроса' };
+export const outcomeNames = { compressed: 'Сжато', passthrough: 'Передано без сокращения', retrieval: 'Чтение сохранённого оригинала', content_type: 'Тип данных не подходит', ineligible: 'Блок не требует сжатия', no_gain: 'Сжатие не дало выигрыша', empty: 'Пустой блок', too_large: 'Блок превышает лимит', request_budget: 'Лимит обработки запроса' };
 const identity = row => ({ host: tag(row, 'host') || attribute(row, 'host'), runtime: tag(row, 'runtime') || attribute(row, 'runtime') || 'native', agent: tag(row, 'agent') || attribute(row, 'agent') });
 const safeTrace = row => /^[a-zA-Z0-9_-]{1,128}$/.test(row.traceId || '') ? row.traceId : null;
 
@@ -68,8 +75,8 @@ export function overview({ health = [], compression = [], activity = [], inciden
     }
     h.at = Math.max(h.at || 0, at); h.fresh = now - h.at <= freshness;
     const metrics = {};
-    for (const key of ['active_connections', 'queue_batches', 'queue_oldest_seconds', 'compressed', 'passthrough', 'compression_failed', 'input_chars', 'output_chars']) metrics[key] = number(attribute(row, 'monitor.' + key));
-    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : reasons[row.statusMessage] || 'Нет объяснения состояния.', metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
+    for (const key of monitorMetrics) metrics[key] = number(attribute(row, 'monitor.' + key));
+    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : reasons[row.statusMessage] || 'Нет объяснения состояния.', metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, retiringVersion: /^\d+\.\d+\.\d+$/.test(attribute(row,'proxy.retiring_version')||'')?attribute(row,'proxy.retiring_version'):null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
   }
   const measured = new Map(), since = now - period * 1000;
   let unattributed = 0;

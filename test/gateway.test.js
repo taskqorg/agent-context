@@ -6,7 +6,6 @@ import path from 'node:path';
 import { createGateway, gatewayTraceId } from '../src/gateway.js';
 import { connectGateway, enrollment, deviceCredentials, gatewayURL } from '../src/enrollment.js';
 import { keyStatus } from '../src/core.js';
-import { compressSupercompress } from '../src/supercompress.js';
 import { langfuseConfig } from '../src/telemetry.js';
 import { automaticPlan } from '../src/automatic.js';
 import { servicePort } from '../src/service.js';
@@ -74,23 +73,16 @@ test('chat onboarding emits only the public browser code and stores device token
   assert.throws(() => gatewayURL('https://user:secret@gateway.invalid'));
 });
 
-test('compression uses device credentials, preserves the query and falls back during outage', async () => {
-  const input = { context: 'synthetic result '.repeat(400), query: 'Keep my question exactly?', agent: 'codex', session: 'session' };
-  const result = await compressSupercompress(input, { fetch: (url, options) => gateway.handle(new Request(url, options)) });
-  assert.equal(result.compressed_text, 'short');
+test('gateway keeps the explicit legacy cloud route for old deployed clients', async () => {
+  const body = { context: 'synthetic result '.repeat(400), query: 'Keep my question exactly?', coding_agent: 'codex', session_id: 'session' };
+  const result = await gateway.handle(new Request('https://gateway.invalid/v1/compress', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + enrollment().token, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  }));
+  assert.equal((await result.json()).compressed_text, 'short');
   const paid = calls.find(call => call.url.includes('supercompress'));
-  assert.equal(JSON.parse(paid.options.body).query, input.query);
+  assert.equal(JSON.parse(paid.options.body).query, body.query);
   assert.equal(JSON.parse(paid.options.body).mode, 'neural');
-  assert.equal(JSON.parse(paid.options.body).ccr, undefined);
-  neuralFallback = true;
-  try {
-    const unavailable = await compressSupercompress(input, { fetch: (url, options) => gateway.handle(new Request(url, options)) });
-    assert.equal(unavailable.skipped, 'neural_unavailable');
-    assert.equal(unavailable.compressed_text, input.context);
-  } finally { neuralFallback = false; }
   assert.equal(JSON.parse(paid.options.body).session_id.includes('session'), false);
-  const fallback = await compressSupercompress(input, { fetch: async () => { throw new Error('offline'); } });
-  assert.equal(fallback.compressed_text, input.context);
 });
 
 test('telemetry binds employee/device identity, readback is device scoped, and arbitrary APIs are denied', async () => {
@@ -161,4 +153,14 @@ test('removing GitHub membership denies existing devices after bounded recheck; 
   assert.equal(gateway.revoke(device.device), true);
   assert.equal((await call('/v1/compress', { token: 'Bearer ' + device.token })).status, 401);
   fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test('telemetry gateway can start without any cloud compression key', async () => {
+  const local = createGateway({ ...config, stateDir: path.join(directory, 'local-only-server'), supercompressKey: undefined }, { request: async url => Response.json(url.endsWith('/user') ? { login: 'employee' } : { state: 'active' }), now: () => now });
+  const enrolled = await local.handle(new Request('https://gateway.invalid/v1/enroll', { method: 'POST', headers: { Authorization: 'Bearer gh_fake' }, body: '{}' })).then(r => r.json());
+  const response = await local.handle(new Request('https://gateway.invalid/v1/compress', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + enrolled.token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context: 'test', query: 'test', session_id: 'test', coding_agent: 'codex' }),
+  }));
+  assert.equal(response.status, 410);
 });

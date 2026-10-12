@@ -17,59 +17,33 @@ const credentials = { present: true, key: 'sc_synthetic_test_key_not_real' };
 const context = 'Background observations '.repeat(120) + '\nERROR ECONNREFUSED db.internal:5432';
 const query = 'Preserve exact errors';
 const input = session => ({ context, query, session, agent: 'Codex' });
-const success = async () => ({ ok: true, json: async () => ({ mode: 'neural-keep', compressed_text: 'Observations\nERROR ECONNREFUSED db.internal:5432', original_tokens: 800, kept_tokens: 20 }) });
+const success = async () => ({ compressed_text: 'Observations\nERROR ECONNREFUSED db.internal:5432' });
 
-test('Neural selector, original query and single output; duplicate is not billed again', async () => {
+test('local compression preserves query and deduplicates only legacy MCP results', async () => {
   let calls = 0;
-  const fetch = async (url, options) => {
-    calls++;
-    assert.equal(url, 'https://www.supercompress.dev/api/v1/compress');
-    const body = JSON.parse(options.body);
-    assert.equal(body.ccr, undefined);
-    assert.equal(body.mode, 'neural');
-    assert.equal(body.query, query);
-    assert.equal(body.context, context);
-    assert.equal(options.headers['X-API-Key'], credentials.key);
-    return success();
-  };
-  assert.equal((await compress(input('duplicate'), { fetch, credentials })).skipped, null);
-  assert.deepEqual((await compress(input('duplicate'), { fetch, credentials })).compressed_text, '');
+  const run = async value => { calls++; assert.deepEqual(value, { context, query }); return success(); };
+  assert.equal((await compress(input('duplicate'), { run })).skipped, null);
+  assert.equal((await compress(input('duplicate'), { run })).compressed_text, '');
   assert.equal(calls, 1);
 });
-for (const status of [409, 429, 503, 504]) test(`HTTP ${status} is one attempt and retains context`, async () => {
-  let calls = 0;
-  const result = await compress(input(`http-${status}`), { credentials, fetch: async () => { calls++; return { ok: false, status }; } });
-  assert.equal(calls, 1);
-  assert.equal(result.skipped, `http_${status}`);
+test('local failure retains original and retries are not marked seen', async () => {
+  const result = await compress(input('failure'), { run: async () => { throw new Error('private runtime error'); } });
+  assert.equal(result.skipped, 'local_compressor_unavailable');
   assert.equal(result.compressed_text, context);
+  assert.equal((await compress(input('failure'), { run: success })).skipped, null);
 });
-test('timeout retains context', async () => {
-  const fetch = (_, { signal }) => new Promise((resolve, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error(), { name: 'AbortError' }))));
-  const result = await compress(input('timeout'), { credentials, fetch, timeoutMs: 10 });
-  assert.equal(result.skipped, 'timeout');
-  assert.equal(result.compressed_text, context);
-});
-test('lost error rejects HTTP200 and does not mark input as seen', async () => {
-  const result = await compress(input('quality'), { credentials, fetch: async () => ({ ok: true, json: async () => ({ mode: 'neural-keep', compressed_text: 'all good' }) }) });
-  assert.equal(result.skipped, 'lost_critical_evidence');
-  assert.equal(result.compressed_text, context);
-  assert.equal((await compress(input('quality'), { credentials, fetch: success })).skipped, null);
-});
-test('no-gain, empty result and conflicting key retain original', async () => {
-  for (const [text, reason] of [[context, 'no_gain'], ['', 'invalid_response']]) {
-    const result = await compress(input(reason), { credentials, fetch: async () => ({ ok: true, json: async () => ({ mode: 'neural-keep', compressed_text: text }) }) });
+test('lost errors, empty and growing outputs retain original', async () => {
+  for (const [text, reason] of [['all good', 'lost_critical_evidence'], ['', 'invalid_response'], [context, 'no_gain']]) {
+    const result = await compress(input(reason), { run: async () => ({ compressed_text: text }) });
     assert.equal(result.skipped, reason);
     assert.equal(result.compressed_text, context);
   }
-  assert.equal((await compress(input('conflict'), { credentials: { ...credentials, conflict: true } })).skipped, 'key_conflict');
 });
-test('concurrent session preserves original instead of parallel API request', async () => {
+test('concurrent legacy session keeps the original', async () => {
   let release;
-  const pending = compress(input('concurrent'), { credentials, fetch: () => new Promise(resolve => { release = () => resolve(success()); }) });
-  const second = await compress(input('concurrent'), { credentials, fetch: success });
-  assert.equal(second.skipped, 'session_busy');
-  release();
-  await pending;
+  const pending = compress(input('concurrent'), { run: () => new Promise(resolve => { release = () => resolve(success()); }) });
+  assert.equal((await compress(input('concurrent'), { run: success })).skipped, 'session_busy');
+  release(); await pending;
 });
 test('state and telemetry contain no context, query or API key', () => {
   const log = fs.readFileSync(path.join(root(), 'events.jsonl'), 'utf8');
@@ -218,9 +192,9 @@ test('concurrent installer/rollback are refused without touching configuration',
     assert.ok(doctor().issues.includes('installation_lock_present'));
   } finally { fs.rmdirSync(lock); }
 });
-test('native MCP JSONL initializes, lists tools and returns safe missing-key fallback', async () => {
+test('native MCP JSONL initializes, lists tools and returns safe unavailable-runtime fallback', async () => {
   const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-mcp-'));
-  const child = spawn(process.execPath, [path.resolve('bin/agent-context.js'), 'mcp', 'hermes'], { env: { ...process.env, AGENT_CONTEXT_HOME: isolated, SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
+  const child = spawn(process.execPath, [path.resolve('bin/agent-context.js'), 'mcp', 'hermes'], { env: { ...process.env, AGENT_CONTEXT_HOME: isolated, AGENT_CONTEXT_PYTHON: path.join(isolated, 'missing-python'), SUPERCOMPRESS_API_KEY: '' }, windowsHide: true });
   let raw = '', errors = '';
   child.stdout.on('data', value => { raw += value; });
   child.stderr.on('data', value => { errors += value; });
@@ -241,7 +215,7 @@ test('native MCP JSONL initializes, lists tools and returns safe missing-key fal
   const policy = responses[1].result.tools[0].description;
   for (const rule of ['Never compress the user query', 'retain original context', 'already_seen means no new digest', 'unrelated global inbox', 'total token savings without measurements']) assert.ok(policy.includes(rule), rule);
   const result = JSON.parse(responses[2].result.content[0].text);
-  assert.equal(result.skipped, 'missing_key');
+  assert.equal(result.skipped, 'local_compressor_unavailable');
   assert.equal(result.compressed_text, context);
 });
 test('native MCP handles split Content-Length framing', async () => {

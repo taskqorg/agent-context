@@ -1,10 +1,11 @@
 import fs from 'node:fs';
+import {nativeTemporaryRuns} from './native-tools.js';
 import { removeMonitorService } from './monitor-service.js';
 import { writeConfig } from './private-file.js';
 import path from 'node:path';
 import { parse, stringify } from 'smol-toml';
 import YAML from 'yaml';
-import { root, home, sha, atomicWrite, acquireTransaction } from './core.js';
+import { root, home, sha, atomicWrite, acquireTransaction, tryLock } from './core.js';
 import { serviceHealth, stopService } from './service.js';
 import { treeHash } from './install.js';
 import { execFile } from 'node:child_process';
@@ -118,6 +119,7 @@ function reverseFile(file, before, after, current) {
 export function removalPlan() {
   const allowed = new Set(['.codex/config.toml', '.codex/hooks.json', '.codex/AGENTS.md', '.codex/langfuse.json', '.claude.json', '.claude/settings.json', '.claude/CLAUDE.md', '.hermes/config.yaml', '.hermes/.env', '.hermes/AGENTS.md', '.hermes/plugins/agent-context/plugin.yaml', '.hermes/plugins/agent-context/__init__.py'].map(file => path.resolve(home(), file)));
   allowed.add(path.join(root(), 'integration.json'));
+  allowed.add(path.join(root(), 'compression.json'));
   safePath(root(), new Set([path.resolve(root())]));
   const base = path.join(root(), 'backups');
   const files = new Map(), moves = [];
@@ -166,6 +168,7 @@ export function removalPlan() {
 export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPackage } = {}) {
   if (!fs.existsSync(root())) return { status: 'already_removed', globalPackage: dryRun ? 'not_checked' : await removeGlobal() };
   const release = acquireTransaction();
+  let exportRelease;
   let removed = false;
   try {
     const { changes, moves } = removalPlan();
@@ -176,8 +179,16 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
       if (state?.active) fail(`busy ${agent} service; close its active agent sessions first`);
       if (state) services.push(agent);
     }
-    if (dryRun) return { status: 'preview', restore: changes.map(item => item.file), restoreMigratedPlugins: moves.map(item => item.from), stopServices: services, removeData: root(), sharedCredentials: 'preserved' };
+    if (dryRun) return { status: 'preview', restore: changes.map(item => item.file), restoreMigratedPlugins: moves.map(item => item.from), stopServices: services, removeData: root(), removeTemporaryData:nativeTemporaryRuns().map(run=>run.dir), sharedCredentials: 'preserved' };
     atomicWrite(path.join(root(), 'uninstalling.json'), '{}');
+    if(fs.existsSync(path.join(root(),'native-hook-outbox'))) {
+      exportRelease=tryLock(path.join(root(),'native-hook-outbox/worker.lock'),120000);
+      if(!exportRelease) fail('native telemetry export still running; wait for completion');
+    }
+    const nativeRuns=nativeTemporaryRuns();
+    for(const run of nativeRuns) if(!run.completed) {
+      try {process.kill(run.pid,0);fail('native command still running');} catch(error){if(error.code!=='ESRCH') throw error;}
+    }
     for (const agent of ['codex', 'claude', 'hermes']) await stopService(agent);
     for (const item of changes) {
       const current = fs.existsSync(item.file) ? fs.readFileSync(item.file) : null;
@@ -215,10 +226,12 @@ export async function uninstall({ dryRun = false, removeGlobal = removeGlobalPac
       if (!fs.readdirSync(plugin).length) fs.rmdirSync(plugin);
     }
     release();
+    for(const run of nativeRuns) fs.rmSync(run.dir,{recursive:true,force:true});
     fs.rmSync(root(), { recursive: true });
     removed = true;
     return { status: 'removed', restored: changes.map(item => item.file), globalPackage, sharedCredentials: 'preserved', reloadRequired: true };
   } finally {
+    exportRelease?.();
     if (!removed && fs.existsSync(path.join(root(), 'install.lock'))) release();
     if (!removed) fs.rmSync(path.join(root(), 'uninstalling.json'), { force: true });
   }

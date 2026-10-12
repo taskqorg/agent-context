@@ -1,0 +1,51 @@
+{
+  "stage": "qualification_only",
+  "baseline": {"provider": "none", "native_compaction": true},
+  "headroom": {
+    "package": "headroom-ai", "version": "0.40.0",
+    "entrypoint": "agent_context_headroom.providers.compress_context",
+    "provider": "headroom-local", "scope": "eligible tool text",
+    "originals": "replay harness only; native retrieval not qualified"
+  },
+  "rtk": {
+    "package": "rtk-ai/rtk", "version": "0.51.0",
+    "release": "https://github.com/rtk-ai/rtk/releases/tag/v0.51.0",
+    "mac_arm64_archive_sha256": "8817d8b71afc02ac8bf06eb24bcc41c306592ab735b68e8fee9db1ba0de7cb59",
+    "entrypoint": ["rtk", "pipe", "-f"],
+    "filters": {"log": "log", "test": "pytest", "search": "grep"},
+    "unsupported": "original passthrough",
+    "native_recall": "not wired in pipe replay"
+  },
+  "context-mode": {
+    "package": "context-mode", "version": "1.0.169",
+    "install": ["npm", "install", "--prefix", "<lab>/context-mode", "context-mode@1.0.169"],
+    "entrypoint": "server.bundle.mjs",
+    "tool_route": ["ctx_execute_file", "ctx_search when indexed"],
+    "document_route": ["ctx_index", "ctx_search"],
+    "recovery": "ctx_execute_file bounded original chunks",
+    "license": "Elastic-2.0; review before redistribution"
+  },
+  "boost": {
+    "package": "jfrog/boost", "version": "0.15.4",
+    "release": "https://github.com/jfrog/boost/releases/tag/v0.15.4",
+    "mac_arm64_archive_sha256": "709ddbf7b18abd1c0052735c71d29b7df6f1364ddbcb509fb80b51e08935bfd4",
+    "entrypoint": ["boost"],
+    "route": "suffix stdin filter: (command) | boost",
+    "status": "preview accepted for isolated qualification; Linux container replay",
+    "isolation": "Docker, network none, no host agent settings",
+    "qualification_env": {"BOOST_FEATURE_FLAGS_FORCE_ENABLED": "boost-cli-filtering"},
+    "native_mac_status": "binary downloaded; global consent check not bypassed"
+  },
+  "token-optimizer": {
+    "source": "https://github.com/alexgreensh/token-optimizer",
+    "status": "research candidate; not installed in first qualification"
+  },
+  "scaledown-auto-safe": {
+    "provider": "scaledown",
+    "rate": "auto",
+    "stage": "tested cloud API; safe profile specified, not implemented or deployed",
+    "protected": ["git", "source code", "JSON", "exact output", "unknown tool"],
+    "requires": ["original archived", "verified retrieval", "critical evidence retained"],
+    "fallback": "original"
+  }
+}

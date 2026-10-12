@@ -5,6 +5,14 @@ export function serve(agent) {
   const policy = 'Use once for new bulky context when useful. Never compress the user query. Prefer returned compressed_text; on skipped/failure retain original context; already_seen means no new digest. Do not read an unrelated global inbox or replay session history. Supply a stable session_id for deduplication. This tool does not intercept every model request; do not claim total token savings without measurements. Keep normal agent login; run agent-context doctor for configuration checks.'
     + (agent === 'claude' ? ' Bash stdout is already handled by the Agent Context hook; do not recompress it through MCP.' : '');
   const session = crypto.randomUUID();
+  return serveTools([{ name: 'compress_context', description: policy, inputSchema: { type: 'object', properties: { context: { type: 'string' }, query: { type: 'string' }, session_id: { type: 'string' } }, required: ['context', 'query'], additionalProperties: false } }], async (name,args) => {
+    if (name !== 'compress_context') throw new Error('Unknown tool');
+    const value=await compress({context:args.context,query:args.query,session:args.session_id || session,agent});
+    return {content:[{type:'text',text:JSON.stringify(value)}]};
+  });
+}
+export function serveTools(tools, call, instructions) {
+
   let buffer = Buffer.alloc(0);
   let chain = Promise.resolve();
   const send = (object, framed) => {
@@ -15,21 +23,17 @@ export function serve(agent) {
     if (!Object.hasOwn(message, 'id')) return;
     let result;
     try {
-      if (message.method === 'initialize') result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'agent-context', version } };
+      if (message.method === 'initialize') result = { protocolVersion: message.params?.protocolVersion || '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'agent-context', version }, ...(instructions?{instructions}:{}) };
       else if (message.method === 'ping') result = {};
-      else if (message.method === 'tools/list') result = { tools: [{ name: 'compress_context', description: policy, inputSchema: { type: 'object', properties: { context: { type: 'string' }, query: { type: 'string' }, session_id: { type: 'string' } }, required: ['context', 'query'], additionalProperties: false } }] };
-      else if (message.method === 'tools/call') {
-        if (message.params?.name !== 'compress_context') throw new Error('Unknown tool');
-        const args = message.params.arguments || {};
-        const value = await compress({ context: args.context, query: args.query, session: args.session_id || session, agent });
-        result = { content: [{ type: 'text', text: JSON.stringify(value) }] };
-      } else {
+      else if (message.method === 'tools/list') result = {tools};
+      else if (message.method === 'tools/call') result=await call(message.params?.name,message.params?.arguments || {});
+      else {
         send({ jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } }, framed);
         return;
       }
       send({ jsonrpc: '2.0', id: message.id, result }, framed);
-    } catch {
-      send({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: 'Invalid tool request; keep original context' } }, framed);
+    } catch (error) {
+      send({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: error.code==='ENOENT' || error.code==='REFERENCE_EXPIRED' ? 'Missing or expired original reference; read source normally' : 'Invalid or unavailable tool request; keep original context' } }, framed);
     }
   }
   function drain() {

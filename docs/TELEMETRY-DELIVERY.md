@@ -1,5 +1,10 @@
 # Телеметрия и сравнение компрессоров — кандидат 2026-10-11
 
+Текущий кандидат — **0.3.0, локальный Headroom**, без облачного компрессора.
+Актуальные результаты: [telemetry-0.3.0-qualification.json](../evidence/telemetry-0.3.0-qualification.json.gz).
+Разделы ниже до `Claude correlation` описывают предыдущую диагностику и не
+подтверждают текущее внедрение. Полная квалификация всех хостов ещё не завершена.
+
 Статус: **проверен кандидат, рабочее внедрение не завершено**. Ветка `codex/telemetry-delivery`; SuperCompress остаётся текущим компрессором. Рабочие профили, gateway и контейнеры не переключались. Нового стабильного релиза нет.
 
 ## Исправления пакета
@@ -58,3 +63,97 @@ Readback подтверждён: trace `d912bc50a4d02f39ffcfe34823457011`, sessi
 7. Подготовить точный review/DEV/LIVE пакет перед рабочим rollout. Текущая квалификация не является стабильным релизом.
 
 Документация: [Langfuse best practices](https://langfuse.com/docs/observability/best-practices), [SDK/OTLP](https://langfuse.com/docs/observability/sdk/overview), [Codex integration](https://langfuse.com/integrations/developer-tools/codex).
+
+## Claude correlation in the local 0.3.0 candidate
+
+Claude's official exporter records native `tool_id` and a parent conversational
+turn. The proxy receives the same `tool_use_id` in Anthropic tool results but
+normally receives no native turn ID. Request middleware records the validated
+IDs from the latest user message as `agent_context.request_tool_result_ids`.
+Join these with native tool observations **within the same native session** to
+locate the owning turn. This is request-level context, not a claim that every
+listed tool block was compressed. Historical tool IDs and payloads are omitted;
+a subsequent request without tool results clears this attribute.
+
+`native_turn_missing` remains true when no native turn ID was supplied. The
+adapter does not invent one or modify the native Claude exporter or Headroom.
+
+Hermes emits native turn IDs as `session:task:turn`. Both header and request-body
+identity validation accept these bounded IDs, including colons; control characters
+and IDs longer than 128 characters remain rejected. This preserves the original
+ID for matching compression with the native Hermes root, without rewriting it.
+
+Hermes `terminal` and `read_file` return JSON envelopes. The candidate plugin sends
+only their string `output` or `content` field to the public compression endpoint,
+then restores the envelope with all other fields unchanged. Unknown tools and
+unrecognized envelope shapes keep the existing whole-result path. Small payloads,
+no gain and failed requests leave the original result intact. Headroom itself is
+unchanged. Compression counters measure the submitted **payload**, excluding the
+preserved envelope; a recovery marker retrieves that exact original payload.
+
+## FRA Hermes: capture depth
+
+The existing `tight-langfuse` external exporter defaults to depth 4, counting
+the worker event envelope. That replaces `response.assistant_message.content`
+with a truncation marker before Langfuse receives it. The installer now sets the
+exporter's existing `HERMES_LANGFUSE_MAX_DEPTH=10` in Hermes `.env` when absent.
+Explicit owner values are preserved; the bundled `observability/langfuse`
+exporter is not affected. Normal install backup/undo covers this configuration.
+
+The identical native FRA control with depth 10 delivered the exact final answer,
+two generations, one tool and compression under the correct session/turn.
+No Headroom, Hermes core or exporter source change was needed. Redaction and
+bounded capture remain enabled. Hermes' observer hooks additionally enforce a
+50,000-character payload cap and can reduce individual strings to 1,000
+characters; input previews are **not** proof of complete model-input capture.
+
+Local compression does not mean Headroom's full air-gap mode. In Headroom 0.40,
+`HEADROOM_OFFLINE=1` forbids Langfuse export even to a configured loopback collector.
+The enrolled shutdown test explicitly uses `HEADROOM_OFFLINE=0` for its synthetic
+local exporter; its destination remains unreachable loopback and spans must stay
+in the private queue. Model downloads and cloud compressors remain disabled.
+Windows queue fixtures provide the same launcher as an installed profile; native
+ACL validation belongs to the real Windows private-file test, not POSIX mode bits.
+
+
+## Telemetry contract v1
+
+All managed native exporters and compression exporters send OTLP to their agent's
+loopback collector. It applies the same labels before durable enqueue. Enrolled
+profiles then use the authenticated gateway; direct profiles use their configured
+Langfuse destination. `agent_context_base_url` retains that upstream when Codex's
+`base_url` points to the collector. Never use a loopback collector as its upstream.
+
+| Field | Source / meaning |
+| --- | --- |
+| `user.id`, `langfuse.user.id` | Enrollment GitHub login; direct profiles use explicit shared `user_id` in Langfuse config. Never infer from email or OS username. |
+| `agent_context.host`, `runtime`, `agent` | Profile host, native/WSL runtime, codex/claude-code/hermes; mirrored in tags. |
+| `agent_context.telemetry.schema` | Contract version 1. |
+| Session, turn, trace and observation IDs | Preserve native IDs; gateway trace namespace stays deterministic per device. |
+| Missing user / measurement | Absent, never a fabricated user or zero. Doctor reports missing canonical user. |
+| Environment | production/development/qualification; tests never claim production health. |
+
+Per-compression observations carry `compression.outcome`, `input_chars`,
+`output_chars`, and `elapsed_ms`: one operation, characters and milliseconds.
+Character reduction is `(sum(input_chars) - sum(output_chars)) / sum(input_chars)`
+for the same observed events, only when the denominator is positive. It is not
+billed token or cost savings. Router coverage is partial and excludes unmeasured
+traffic; no request denominator is inferred from compression-call counts.
+
+Monitor `monitor.*` values are diagnostic snapshots. Compression call/character
+sums and totals accumulate since process start, maximums are process maximums,
+queue size/age and active connections are current gauges. Do not sum snapshots,
+derive a rate without reset-aware deltas, or mix their units on one chart.
+Only fresh known-state health verdicts remain Scores (0/1); unknown has no score.
+Queue/counter widgets using the old Scores are removed from the dashboard template;
+the ServiceQ panel reads the existing snapshot metadata instead.
+
+Model latency, actual input/cache/output tokens and cost come from native
+GENERATION observations. Compression observations do not emit generation usage.
+Use percentiles of per-operation elapsed time for compression latency, never a
+process lifetime maximum or character count. Retries retain event IDs and queued
+bytes; partial ingestion rejection retains the batch.
+
+This changes future managed exports. Old aliases and mixed Scores remain historical.
+Filter by contract metadata and deployment time for acceptance; do not silently
+merge Unknown/email/login history or compare qualification with production.

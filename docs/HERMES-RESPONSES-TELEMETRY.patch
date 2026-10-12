@@ -1,0 +1,52 @@
+--- a/plugins/observability/langfuse/__init__.py
++++ b/plugins/observability/langfuse/__init__.py
+@@ -462,6 +462,14 @@
+ 
+ 
+ def _serialize_message(message: dict[str, Any]) -> dict[str, Any]:
++    # Responses tool items carry output/arguments, not chat-completions role/content.
++    if message.get("type") == "function_call_output":
++        message = {"role": "tool", "tool_call_id": message.get("call_id"), "content": message.get("output")}
++    elif message.get("type") == "function_call":
++        return {"role": "assistant", "content": None, "tool_calls": [{
++            "id": message.get("call_id"), "type": "function",
++            "function": {"name": _safe_value(message.get("name")), "arguments": _capture_content(message.get("arguments"))},
++        }]}
+     role, is_tool = message.get("role"), message.get("role") == "tool"
+     return {
+         "role": role, "content": _capture_content(message.get("content"), parse_json_strings=is_tool),
+--- /dev/null
++++ b/tests/plugins/test_langfuse_responses_input.py
+@@ -0,0 +1,32 @@
++"""Responses tool items must remain visible in native Langfuse generation input."""
++import importlib
++import json
++
++import pytest
++
++
++@pytest.mark.parametrize('mode', ['sanitized', 'metadata'])
++def test_responses_tool_input_keeps_pairing_and_capture_policy(monkeypatch, mode):
++    mod = importlib.import_module('plugins.observability.langfuse')
++    monkeypatch.setattr(mod, '_capture_mode', lambda: mode)
++    monkeypatch.setattr(mod, '_redact_secrets', lambda value: value.replace('fixture-secret', '[REDACTED]'))
++    messages = [
++        {'role': 'user', 'content': 'Read fixture'},
++        {'type': 'function_call', 'call_id': 'call-1', 'name': 'terminal', 'arguments': '{"command":"echo fixture-secret"}'},
++        {'type': 'function_call_output', 'call_id': 'call-1', 'output': '{"output":"amber-47 fixture-secret","exit_code":0}'},
++    ]
++    before = json.dumps(messages)
++    result = mod._messages_for_langfuse_input(request_messages=messages)
++    assert result[1]['role'] == 'assistant'
++    assert result[2]['role'] == 'tool'
++    assert result[2]['tool_call_id'] == 'call-1'
++    assert 'fixture-secret' not in json.dumps(result)
++    if mode == 'sanitized':
++        assert result[1]['tool_calls'][0]['id'] == result[2]['tool_call_id']
++        assert result[1]['tool_calls'][0]['function']['name'] == 'terminal'
++        assert '[REDACTED]' in result[1]['tool_calls'][0]['function']['arguments']
++        assert result[2]['content'] == {'output': 'amber-47 [REDACTED]', 'exit_code': 0}
++    else:
++        assert 'amber-47' not in json.dumps(result)
++        assert result[2]['content']['omitted'] is True
++    assert json.dumps(messages) == before

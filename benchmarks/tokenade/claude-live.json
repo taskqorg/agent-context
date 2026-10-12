@@ -1,0 +1,298 @@
+{
+  "expected": {
+    "failure": {
+      "error_code": "E42",
+      "endpoint": "db.internal:5432",
+      "retries": 3,
+      "release": "1.2.3"
+    },
+    "json": {
+      "files_count": 35,
+      "last_file": "benchmarks/context-options",
+      "node_requirement": ">=22"
+    }
+  },
+  "rows": [
+    {
+      "task": "failure",
+      "arm": "baseline",
+      "exit": 0,
+      "is_error": false,
+      "answer": "{\"error_code\": \"E42\", \"endpoint\": \"db.internal:5432\", \"retries\": 3, \"release\": \"1.2.3\", \"assertion\": \"AssertionError: retry limit exceeded (assert 3 == 2)\"}",
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 8058,
+        "cache_read_input_tokens": 7739,
+        "output_tokens": 203,
+        "output_tokens_details": {
+          "thinking_tokens": 41
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 8058,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 117,
+            "cache_read_input_tokens": 5122,
+            "cache_creation_input_tokens": 5553,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 5553
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "model_usage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 4,
+          "outputTokens": 203,
+          "cacheReadInputTokens": 7739,
+          "cacheCreationInputTokens": 8058,
+          "webSearchRequests": 0,
+          "costUSD": 0.07008779999999999,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 41,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "duration_ms": 8503,
+      "tool_calls": [
+        {
+          "name": "Bash",
+          "input": {
+            "command": "python3 -m pytest -q test_health.py",
+            "description": "Run health test once"
+          }
+        }
+      ],
+      "bare_json_valid": true,
+      "facts_passed": true
+    },
+    {
+      "task": "failure",
+      "arm": "candidate",
+      "exit": 0,
+      "is_error": false,
+      "answer": "```json\n{\"error_code\": \"E42\", \"endpoint\": \"db.internal:5432\", \"retries\": 3, \"release\": \"1.2.3\", \"assertion\": \"assert 3 == 2 (retry limit exceeded)\"}\n```",
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 1021,
+        "cache_read_input_tokens": 10011,
+        "output_tokens": 212,
+        "output_tokens_details": {
+          "thinking_tokens": 27
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 1021,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 103,
+            "cache_read_input_tokens": 5228,
+            "cache_creation_input_tokens": 576,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 576
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "model_usage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 4,
+          "outputTokens": 212,
+          "cacheReadInputTokens": 10011,
+          "cacheCreationInputTokens": 1021,
+          "webSearchRequests": 0,
+          "costUSD": 0.0144262,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 27,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "duration_ms": 6245,
+      "tool_calls": [
+        {
+          "name": "Bash",
+          "input": {
+            "command": "python3 -m pytest -q test_health.py",
+            "description": "Run health tests once"
+          }
+        }
+      ],
+      "bare_json_valid": false,
+      "facts_passed": true
+    },
+    {
+      "task": "json",
+      "arm": "baseline",
+      "exit": 0,
+      "is_error": false,
+      "answer": "{\"files_count\": 35, \"last_file\": \"benchmarks/context-options\", \"node_requirement\": \">=22\"}",
+      "usage": {
+        "input_tokens": 4,
+        "cache_creation_input_tokens": 1985,
+        "cache_read_input_tokens": 9334,
+        "output_tokens": 154,
+        "output_tokens_details": {
+          "thinking_tokens": 40
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 1985,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 80,
+            "cache_read_input_tokens": 5107,
+            "cache_creation_input_tokens": 1105,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 1105
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "model_usage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 4,
+          "outputTokens": 154,
+          "cacheReadInputTokens": 9334,
+          "cacheCreationInputTokens": 1985,
+          "webSearchRequests": 0,
+          "costUSD": 0.0208428,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 40,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "duration_ms": 5090,
+      "tool_calls": [
+        {
+          "name": "Read",
+          "input": {
+            "file_path": "/private/tmp/contextq-tokenade/workspace/package-fixture.json"
+          }
+        }
+      ],
+      "bare_json_valid": true,
+      "facts_passed": true
+    },
+    {
+      "task": "json",
+      "arm": "candidate",
+      "exit": 0,
+      "is_error": false,
+      "answer": "```json\n{\"files_count\":35,\"last_file\":\"benchmarks/context-options\",\"node_requirement\":\">=22\"}\n```",
+      "usage": {
+        "input_tokens": 6,
+        "cache_creation_input_tokens": 1449,
+        "cache_read_input_tokens": 15974,
+        "output_tokens": 276,
+        "output_tokens_details": {
+          "thinking_tokens": 0
+        },
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 1449,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "global",
+        "iterations": [
+          {
+            "input_tokens": 2,
+            "output_tokens": 42,
+            "cache_read_input_tokens": 5993,
+            "cache_creation_input_tokens": 224,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 224
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard",
+        "fallback_credit": null
+      },
+      "model_usage": {
+        "claude-opus-5-5[1m]": {
+          "inputTokens": 6,
+          "outputTokens": 276,
+          "cacheReadInputTokens": 15974,
+          "cacheCreationInputTokens": 1449,
+          "webSearchRequests": 0,
+          "costUSD": 0.0203308,
+          "contextWindow": 1000000,
+          "maxOutputTokens": 128000,
+          "thinkingTokens": 0,
+          "canonicalModel": "claude-opus-5-5",
+          "provider": "firstParty",
+          "costBasis": "list"
+        }
+      },
+      "duration_ms": 7534,
+      "tool_calls": [
+        {
+          "name": "Read",
+          "input": {
+            "file_path": "/private/tmp/contextq-tokenade/workspace/package-fixture.json"
+          }
+        },
+        {
+          "name": "Bash",
+          "input": {
+            "command": "jq '{files_count: (.files|length), last_file: .files[-1], node_requirement: .engines.node}' /private/tmp/contextq-tokenade/workspace/package-fixture.json",
+            "description": "Extract file count, last entry, node requirement"
+          }
+        }
+      ],
+      "bare_json_valid": false,
+      "facts_passed": true
+    }
+  ]
+}

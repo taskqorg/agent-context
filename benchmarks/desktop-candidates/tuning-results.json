@@ -1,0 +1,270 @@
+{
+  "date": "2026-10-12",
+  "stage": "qualification",
+  "scope": "Claude Desktop Code/Max; same frozen document; seven required fact groups; not whole-agent qualification",
+  "cloud_screen": [
+    {
+      "variant": "scaledown-0.5",
+      "provider": "scaledown",
+      "rate": "0.5",
+      "query": "Preserve exact facts: supported platforms and clients; WSL runtime; Desktop Chat automatic interception scope; all provider identifiers; silent fallback policy; cloud key and model download requirement for local mode.",
+      "elapsed_ms": 1259.94,
+      "before_chars": 9324,
+      "after_chars": 5356,
+      "before_tokens": 1909,
+      "after_tokens": 1089,
+      "outcome": "compressed",
+      "facts": {
+        "platforms": true,
+        "clients": true,
+        "wsl": true,
+        "chat": true,
+        "identifiers": true,
+        "fallback": true,
+        "local_requirements": true
+      },
+      "all_facts": true,
+      "missing": []
+    },
+    {
+      "variant": "scaledown-0.8",
+      "provider": "scaledown",
+      "rate": "0.8",
+      "query": "Preserve exact facts: supported platforms and clients; WSL runtime; Desktop Chat automatic interception scope; all provider identifiers; silent fallback policy; cloud key and model download requirement for local mode.",
+      "elapsed_ms": 969.82,
+      "before_chars": 9324,
+      "after_chars": 2176,
+      "before_tokens": 1909,
+      "after_tokens": 436,
+      "outcome": "compressed",
+      "facts": {
+        "platforms": true,
+        "clients": true,
+        "wsl": true,
+        "chat": true,
+        "identifiers": false,
+        "fallback": true,
+        "local_requirements": true
+      },
+      "all_facts": false,
+      "missing": [
+        "identifiers"
+      ]
+    },
+    {
+      "variant": "scaledown-auto-explicit",
+      "provider": "scaledown",
+      "rate": "auto",
+      "query": "Preserve exact facts: supported platforms and clients; WSL runtime; Desktop Chat automatic interception scope; all provider identifiers; silent fallback policy; cloud key and model download requirement for local mode. Keep all inline-code spans exactly, including provider names; do not remove identifiers or paraphrase restrictions.",
+      "elapsed_ms": 1063.44,
+      "before_chars": 9324,
+      "after_chars": 2265,
+      "before_tokens": 1909,
+      "after_tokens": 460,
+      "outcome": "compressed",
+      "facts": {
+        "platforms": true,
+        "clients": true,
+        "wsl": true,
+        "chat": true,
+        "identifiers": true,
+        "fallback": true,
+        "local_requirements": true
+      },
+      "all_facts": true,
+      "missing": []
+    }
+  ],
+  "cloud_repeat_checks": [
+    {
+      "provider": "scaledown",
+      "outcome": "compressed",
+      "input_chars": 9324,
+      "output_chars": 2265,
+      "elapsed_ms": 1162.56,
+      "all_required_names": true,
+      "repeat": 0
+    },
+    {
+      "provider": "scaledown",
+      "outcome": "compressed",
+      "input_chars": 9324,
+      "output_chars": 2265,
+      "elapsed_ms": 940.07,
+      "all_required_names": true,
+      "repeat": 1
+    }
+  ],
+  "context_mode_component_repeats": [
+    {
+      "repeat": 0,
+      "elapsed_ms": 21.67783300000002,
+      "recovery_ok": true,
+      "error": false
+    },
+    {
+      "repeat": 1,
+      "elapsed_ms": 5.608458999999925,
+      "recovery_ok": true,
+      "error": false
+    },
+    {
+      "repeat": 2,
+      "elapsed_ms": 5.365374999999858,
+      "recovery_ok": true,
+      "error": false
+    }
+  ],
+  "native": [
+    {
+      "variant": "scaledown-auto-explicit",
+      "session_id": "f17e82aa-f465-4bd1-bfd5-eb07cf054b7b",
+      "hook": {
+        "session": "f17e82aa-f465-4bd1-bfd5-eb07cf054b7b",
+        "event": "PostToolUse",
+        "tool": "Read",
+        "variant": "scaledown-auto-explicit",
+        "provider": "scaledown",
+        "rate": "auto",
+        "response_fields": [
+          "type",
+          "file"
+        ],
+        "outcome": "compressed",
+        "file_fields": [
+          "filePath",
+          "content",
+          "numLines",
+          "startLine",
+          "totalLines"
+        ],
+        "before_chars": 9324,
+        "raw_after_chars": 2265,
+        "missing": [],
+        "after_chars": 2370,
+        "original_path": "/tmp/contextq-desktop-candidates/variants/cloud/originals/487b070c58302a58.txt",
+        "elapsed_ms": 1531
+      },
+      "native_tool_calls": [
+        {
+          "name": "Read",
+          "input": {
+            "file_path": "/tmp/contextq-desktop-candidates/variants/cloud/claude-doc-read.txt"
+          }
+        }
+      ],
+      "all_seven_fact_groups_correct": true,
+      "answer": "Platforms: macOS, native Windows, Linux. WSL is a separate runtime/profile.\n\nClients: Codex CLI/Desktop, Claude Code CLI/Desktop Code, Hermes. Claude Desktop Chat is in the recipe table, MCP tools only.\n\nWSL: separate runtime/profile, not same runtime as Windows or Linux.\n\nDesktop Chat auto interception: none. On-demand MCP compression only. Automatic full-history interception outside scope. No automatic interception claim; unverified.\n\nProvider identifiers: `headroom-local`, `supercompress`, `scaledown`. `supercompress` is the Neural option.\n\nSilent fallback: none. One provider per agent profile, no silent fallback to another provider. On timeout, invalid output, or failed validation: keep original, report reason.\n\nLocal mode: no cloud key, no model download.\n\nDoc status: **draft**, target contract, current code not assumed compliant.",
+      "native_model_usage_unique_messages": [
+        {
+          "id": "msg_011CfwKN8xVA9N5EjY52Z9p9",
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 23773,
+          "cache_read_input_tokens": 46471,
+          "output_tokens": 81
+        },
+        {
+          "id": "msg_011CfwKNMGA64ZAirXe3zCuY",
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 3208,
+          "cache_read_input_tokens": 70244,
+          "output_tokens": 767
+        }
+      ],
+      "tool_output_file": "scaledown-auto-explicit-native.txt"
+    },
+    {
+      "variant": "context-mode-index-search",
+      "session_id": "7ea67f76-826d-41b0-a1e5-8f19cd992e65",
+      "hook": {
+        "session": "7ea67f76-826d-41b0-a1e5-8f19cd992e65",
+        "event": "PostToolUse",
+        "tool": "Read",
+        "variant": "context-mode-index-search",
+        "provider": "context-mode",
+        "rate": "native index/search",
+        "response_fields": [
+          "type",
+          "file"
+        ],
+        "outcome": "compressed",
+        "file_fields": [
+          "filePath",
+          "content",
+          "numLines",
+          "startLine",
+          "totalLines"
+        ],
+        "before_chars": 9324,
+        "raw_after_chars": 2654,
+        "missing": [],
+        "after_chars": 2759,
+        "original_path": "/tmp/contextq-desktop-candidates/variants/cloud/originals/487b070c58302a58.txt",
+        "elapsed_ms": 470
+      },
+      "native_tool_calls": [
+        {
+          "name": "Read",
+          "input": {
+            "file_path": "/tmp/contextq-desktop-candidates/variants/cloud/claude-doc-read.txt"
+          }
+        },
+        {
+          "name": "Read",
+          "input": {
+            "file_path": "/tmp/contextq-desktop-candidates/variants/cloud/originals/487b070c58302a58.txt"
+          }
+        }
+      ],
+      "all_seven_fact_groups_correct": true,
+      "answer": "Platforms: macOS, native Windows, Linux. WSL is a separate runtime/profile.\n\nClients: Codex CLI/Desktop, Claude Code CLI/Desktop Code, Hermes.\n\nWSL: separate runtime/profile, not the same as native Windows.\n\nDesktop Chat: on-demand MCP compression only. Automatic full-history interception is out of scope.\n\nProvider identifiers: `headroom-local`, `supercompress` (Neural), `scaledown`. One provider per agent profile.\n\nSilent fallback: none. No silent fallback to another provider. On timeout, invalid output, or failed validation, keep original and report reason.\n\nLocal mode: no cloud key, no model download required.\n\nCloud key/model requirements for `supercompress` and `scaledown`: not in the read output. Not guessing.\n\nNote: read header says \"Indexed 8 sections\" but only two sections shown in output. Remaining sections not seen. Re-read if needed.",
+      "native_model_usage_unique_messages": [
+        {
+          "id": "msg_011CfwKTR9hyJMF78g9EZuor",
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 23768,
+          "cache_read_input_tokens": 46471,
+          "output_tokens": 139
+        },
+        {
+          "id": "msg_011CfwKTgCLFYCZQKdxbc8it",
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 3399,
+          "cache_read_input_tokens": 70239,
+          "output_tokens": 798
+        },
+        {
+          "id": "msg_011CfwKdnrTJC2HkCrcbbL6g",
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 1044,
+          "cache_read_input_tokens": 73638,
+          "output_tokens": 85
+        },
+        {
+          "id": "msg_011CfwKdtsMZ8Ge6bnbSYHs1",
+          "input_tokens": 2,
+          "cache_creation_input_tokens": 3610,
+          "cache_read_input_tokens": 74682,
+          "output_tokens": 140
+        }
+      ],
+      "tool_output_file": "context-mode-index-search-native.txt"
+    }
+  ],
+  "recovery": {
+    "exact_bytes": true,
+    "native_read_passed": true,
+    "recompressed": false,
+    "answer": "O2, verbatim:\n\n> Explain selected changes. Use concise instructions plus existing deterministic helpers for validation, backups, service lifecycle and restore. Request only missing input or required consent.\n\nSource: [originals/487b070c58302a58.txt:28](/tmp/contextq-desktop-candidates/variants/cloud/originals/487b070c58302a58.txt:28), under \"Onboarding and removal\"."
+  },
+  "active_profile": {
+    "variant": "context-mode-index-search",
+    "provider": "context-mode",
+    "rate": "native index/search",
+    "query": "Platforms Clients Providers Desktop Chat local mode silent fallback"
+  },
+  "active_hook": "/tmp/contextq-desktop-candidates/tuning/read-hook.mjs",
+  "hook_scope": "only /tmp/contextq-desktop-candidates/variants/cloud/claude-doc-read.txt; unrelated files pass through",
+  "quota_savings": "not_measured; no matched baseline model turn",
+  "headroom_excluded": true
+}

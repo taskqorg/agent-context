@@ -16,7 +16,7 @@ test('automatic verify reports instead of throwing when the legacy adapter was r
   const report = await verify('hermes');
   assert.equal(report.mode, 'automatic');
   assert.equal(report.service, 'unavailable');
-  assert.equal(report.skipped, 'missing_key');
+  assert.equal(report.skipped, 'service_unavailable');
   assert.equal(report.passed, false);
 });
 

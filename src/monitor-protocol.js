@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import { sha } from './core.js';
 
-export const monitorMetrics = ['active_connections', 'queue_batches', 'queue_bytes', 'queue_oldest_seconds', 'compressed', 'passthrough', 'compression_failed', 'input_chars', 'output_chars', 'last_activity_age_seconds'];
+export const codexWsMetrics = ['frames_attempted_total', 'frames_compressed_total', 'frames_failed_total', 'frame_bytes_before_sum', 'frame_bytes_after_sum', 'frame_tokens_saved_sum', 'frame_elapsed_average_ms', 'frame_elapsed_max_ms'];
+export const monitorMetrics = ['active_connections', 'queue_batches', 'queue_bytes', 'queue_oldest_seconds', 'compressed', 'passthrough', 'compression_failed', 'input_chars', 'output_chars', 'last_activity_age_seconds', 'compression_calls', 'compression_total_ms', 'compression_max_ms', 'last_compression_age_seconds', 'native_rtk_calls', 'native_rtk_input_estimate', 'native_rtk_output_estimate', 'native_rtk_nonzero_exits', 'retiring_connections', 'retiring_seconds', 'stage_failures', 'worker_slots', 'telemetry_send_failures', ...codexWsMetrics.map(key => 'codex_ws_' + key)];
 const services = ['contextq', 'serverq', 'taskq', 'gateway', 'hermes-gateway', 'langfuse', 'updater'];
-const reasons = ['queue_unreadable', 'stale_report', 'invalid_report', 'automated_checks_only', 'status_snapshot', 'report_unavailable', 'invalid_report_policy', 'proxy_unavailable', 'compression_telemetry_disabled', 'delivery_backlog', 'proxy_health_not_agent_liveness', 'endpoint_reachable', 'endpoint_unavailable', 'updates_disabled', 'update_migration_required', 'update_failed', 'release_subscription_connected', 'release_subscription_unavailable'];
+const reasons = ['native_stats_unavailable', 'native_exporter_missing', 'telemetry_delivery_unverified', 'queue_unreadable', 'stale_report', 'invalid_report', 'automated_checks_only', 'status_snapshot', 'report_unavailable', 'invalid_report_policy', 'proxy_unavailable', 'compression_telemetry_disabled', 'delivery_backlog', 'proxy_health_not_agent_liveness', 'endpoint_reachable', 'endpoint_unavailable', 'updates_disabled', 'update_migration_required', 'update_failed', 'release_subscription_connected', 'release_subscription_unavailable', 'worker_retiring', 'worker_update_failed', 'telemetry_delivery_failed'];
 const categories = ['missing_key', 'key_conflict', 'invalid_key_config', 'timeout', 'request_failed', 'invalid_response', 'lost_critical_evidence', 'startup_failed', 'process_exit', 'configuration_drift', 'runtime_integrity', 'update_failed', 'delivery_failed'];
 const states = ['ok', 'warning', 'error', 'unknown'];
 const label = value => typeof value === 'string' && /^[a-zA-Z0-9_-]{1,64}$/.test(value);
@@ -19,8 +20,8 @@ export function validateMonitor(value, now = Date.now()) {
   const seen = new Set();
   for (const service of value.services) {
     const key = service.service + ':' + (service.agent || 'none');
-    if (!exact(service, ['service', 'agent', 'state', 'reason', 'metrics', 'version']) || !services.includes(service.service) || !['none', 'codex', 'claude-code', 'hermes'].includes(service.agent) || !states.includes(service.state) || !reasons.includes(service.reason) || !exact(service.metrics, monitorMetrics) || seen.has(key)) throw new Error('Invalid monitoring service');
-    if (service.version !== undefined && !/^\d+\.\d+\.\d+$/.test(service.version)) throw new Error('Invalid service version');
+    if (!exact(service, ['service', 'agent', 'state', 'reason', 'metrics', 'version', 'retiringVersion', 'targetVersion']) || !services.includes(service.service) || !['none', 'codex', 'claude-code', 'hermes'].includes(service.agent) || !states.includes(service.state) || !reasons.includes(service.reason) || !exact(service.metrics, monitorMetrics) || seen.has(key)) throw new Error('Invalid monitoring service');
+    for(const key of ['version','retiringVersion','targetVersion']) if(service[key]!==undefined&&!/^\d+\.\d+\.\d+$/.test(service[key])) throw new Error('Invalid service version');
     seen.add(key);
     for (const metric of Object.values(service.metrics)) if (!Number.isFinite(metric) || metric < 0 || metric > Number.MAX_SAFE_INTEGER) throw new Error('Invalid monitoring metric');
   }
@@ -35,15 +36,15 @@ export function monitorExport(packet, { device = 'local', user, now = Date.now()
   const traceId = sha('monitor\0' + device + '\0' + packet.id).slice(0, 32);
   const spans = [], scores = [];
   const baseTags = ['component:monitor', 'host:' + packet.host, 'runtime:' + packet.runtime, 'device:' + device, ...(user ? ['user:' + user] : [])];
-  const base = [attr('langfuse.environment', 'production'), attr('langfuse.trace.name', 'Service monitor'), attr('agent_context.version', packet.version), attr('agent_context.host', packet.host), attr('agent_context.runtime', packet.runtime), attr('agent_context.observed_at', packet.at), ...(user ? [attr('langfuse.user.id', user)] : []), ...Object.entries(packet.updater || {}).map(([k, v]) => attr('agent_context.update.' + k, v))];
+  const base = [attr('langfuse.environment', 'production'), attr('langfuse.trace.name', 'Service monitor'), attr('agent_context.telemetry.schema', 1), attr('agent_context.version', packet.version), attr('agent_context.host', packet.host), attr('agent_context.runtime', packet.runtime), attr('agent_context.observed_at', packet.at), ...(user ? [attr('langfuse.user.id', user)] : []), ...Object.entries(packet.updater || {}).map(([k, v]) => attr('agent_context.update.' + k, v))];
   const span = (id, at, name, level, reason, tags, values = []) => ({ traceId, spanId: sha(id).slice(0, 16), name, startTimeUnixNano: String(BigInt(Date.parse(at)) * 1000000n), endTimeUnixNano: String(BigInt(Date.parse(at) + 1) * 1000000n), attributes: [...base, attr('langfuse.observation.type', 'span'), attr('langfuse.observation.level', level), attr('langfuse.observation.status_message', reason), attr('langfuse.trace.tags', [...baseTags, ...tags]), ...values] });
   for (const service of packet.services) {
     const key = service.service + '.' + service.agent;
     const tags = ['service:' + service.service, 'agent:' + service.agent, 'state:' + service.state];
-    const healthSpan = span(key, packet.at, 'service.health.' + key, service.state === 'error' ? 'ERROR' : service.state === 'ok' ? 'DEFAULT' : 'WARNING', service.reason, tags, [...(service.version ? [attr('agent_context.proxy.version', service.version)] : []), ...Object.entries(service.metrics).map(([k, v]) => attr('agent_context.monitor.' + k, v))]);
+    const healthSpan = span(key, packet.at, 'service.health.' + key, service.state === 'error' ? 'ERROR' : service.state === 'ok' ? 'DEFAULT' : 'WARNING', service.reason, tags, [...(service.version ? [attr('agent_context.proxy.version', service.version)] : []), ...(service.retiringVersion?[attr('agent_context.proxy.retiring_version',service.retiringVersion)]:[]), ...(service.targetVersion?[attr('agent_context.proxy.target_version',service.targetVersion)]:[]), ...Object.entries(service.metrics).map(([k, v]) => attr('agent_context.monitor.' + k, v))]);
     healthSpan.traceId = sha(traceId + key).slice(0, 32); spans.push(healthSpan);
     // Delayed snapshots stay historical; replay must not turn a stale health sample into a fresh score.
-    if (now - Date.parse(packet.at) <= 600000) for (const [name, value] of Object.entries({ ...service.metrics, ...(service.state === 'unknown' ? {} : { health: service.state === 'ok' ? 1 : 0 }) })) scores.push({ id: sha(traceId + '\0' + key + '\0' + name), traceId: healthSpan.traceId, observationId: sha(key).slice(0, 16), name: key + '.' + name, value, dataType: 'NUMERIC', environment: 'production' });
+    if (now - Date.parse(packet.at) <= 600000) for (const [name, value] of Object.entries(service.state === 'unknown' ? {} : { health: service.state === 'ok' ? 1 : 0 })) scores.push({ id: sha(traceId + '\0' + key + '\0' + name), traceId: healthSpan.traceId, observationId: sha(key).slice(0, 16), name: key + '.' + name, value, dataType: 'NUMERIC', environment: 'production' });
   }
   for (const item of packet.incidents) {
     // Separate stable incident trace/span IDs make repeat uploads idempotent.

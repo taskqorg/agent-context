@@ -57,13 +57,29 @@ def register(ctx):
         logger.info('transform tool=%s input_chars=%s query_present=%s', tool_name, len(result), bool(query))
         if not query:
             return None
-        body = {'model': ctx.get_config('tokenizer_model', 'gpt-6.1-sol'), 'messages': [{'role': 'user', 'content': query}, {'role': 'tool', 'content': result}]}
+        content, envelope = result, None
+        field = {'terminal': 'output', 'read_file': 'content'}.get(tool_name)
+        if field:
+            try:
+                candidate = json.loads(result)
+                if isinstance(candidate, dict) and isinstance(candidate.get(field), str):
+                    envelope, content = candidate, candidate[field]
+            except ValueError:
+                pass
+        if len(content) < 2048:
+            return None
+        # Headroom routes JSON structurally; give it the native tool's text payload.
+        body = {'model': ctx.get_config('tokenizer_model', 'gpt-6.1-sol'), 'messages': [{'role': 'user', 'content': query}, {'role': 'tool', 'content': content}]}
         request = urllib.request.Request(base + '/v1/compress', data=json.dumps(body).encode(), headers={'Content-Type': 'application/json', 'x-session-id': session_id, 'x-turn-id': turn_id})
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 value = json.load(response)['messages'][-1]['content']
-            if isinstance(value, str) and value and len(value) < len(result):
-                return value
+            if isinstance(value, str) and value and len(value) < len(content):
+                if envelope is not None:
+                    envelope[field] = value
+                    value = json.dumps(envelope, ensure_ascii=False)
+                if len(value) < len(result):
+                    return value
         except OSError:
             with lock:
                 started.discard(session_id)

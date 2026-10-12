@@ -37,3 +37,5 @@ jobs:
           python -m pip install ./integrations/headroom
           python -m unittest discover -s integrations/headroom
           python -m unittest discover -s integrations/hermes
+      - name: Qualify local package and HTTP proxy without service credentials
+        run: node scripts/local-smoke.mjs

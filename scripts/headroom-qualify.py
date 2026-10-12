@@ -32,7 +32,7 @@ root = Path(__file__).resolve().parent.parent
 work = Path(args.cwd or tempfile.mkdtemp(prefix="agent-context-qualification-"))
 work.mkdir(parents=True, exist_ok=True)
 owner = str(uuid.uuid4())
-environment = dict(os.environ, AGENT_CONTEXT_PROXY_OWNER=owner, AGENT_CONTEXT_BRIDGE=str(root / "bin/headroom-compress.js"),
+environment = dict(os.environ, AGENT_CONTEXT_PROXY_OWNER=owner,
                    AGENT_CONTEXT_PROXY_PORT=str(args.port), PYTHONDONTWRITEBYTECODE="1")
 with work.joinpath("proxy.log").open("w", encoding="utf-8") as log:
     process = subprocess.Popen([sys.executable, "-m", "agent_context_headroom.proxy"],

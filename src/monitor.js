@@ -1,13 +1,16 @@
+import {flushNativeEvents} from './native-tools.js';
+import {nativeExportStats} from './native-export.js';
+import { providers } from './providers.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { root, home, version, tryLock } from './core.js';
 import { atomicSecretWrite } from './private-file.js';
-import { langfuseConfig, profileIdentity } from './telemetry.js';
+import { langfuseConfig, profileIdentity, telemetryStatus, refreshTelemetryDelivery } from './telemetry.js';
 import { serviceHealth } from './service.js';
 import { incidents } from './incidents.js';
 import { updateSummary } from './update-subscription.js';
 import { enrollment } from './enrollment.js';
-import { monitorExport, validateMonitor, newMonitorId } from './monitor-protocol.js';
+import { monitorExport, validateMonitor, newMonitorId, codexWsMetrics } from './monitor-protocol.js';
 
 export const MONITOR_INTERVAL_MS = 300000;
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -39,24 +42,60 @@ export function reportHealth(file, maxAgeSeconds, kind, now = Date.now()) {
     return ['ok', 'warning', 'error', 'unknown'].includes(report.state) ? { state: report.state, reason: 'status_snapshot' } : { state: 'unknown', reason: 'invalid_report' };
   } catch { return { state: 'unknown', reason: 'report_unavailable' }; }
 }
-export async function collectMonitor({ health = serviceHealth, now = Date.now() } = {}) {
+export async function headroomStats(state, request = fetch) {
+  if (!Number.isInteger(state?.port) || state.port < 1 || state.port > 65535) return null;
+  try {
+    const response = await request(`http://127.0.0.1:${state.port}/stats`, { redirect: 'error', signal: AbortSignal.timeout(2000) });
+    if (!response.ok) return null;
+    // Export only numeric aggregates; /stats also contains private request metadata.
+    const ws = (await response.json()).codex_ws;
+    const values = { ...ws, frame_elapsed_average_ms: ws?.frame_elapsed_ms?.average, frame_elapsed_max_ms: ws?.frame_elapsed_ms?.max };
+    if (codexWsMetrics.some(key => !Number.isFinite(values[key]) || values[key] < 0 || values[key] > Number.MAX_SAFE_INTEGER)) return null;
+    return Object.fromEntries(codexWsMetrics.map(key => ['codex_ws_' + key, values[key]]));
+  } catch { return null; }
+}
+export async function collectMonitor({ health = serviceHealth, stats = headroomStats, now = Date.now() } = {}) {
+  await flushNativeEvents();
   let settings = {}; try { settings = read(path.join(root(), 'monitor-config.json')); } catch {}
-  let installed = []; try { installed = read(path.join(root(), 'integration.json')).agents || []; } catch {}
+  let installed = [], telemetryEnabled = false;
+  try { const config = read(path.join(root(), 'integration.json')); installed = config.agents || []; telemetryEnabled = config.telemetry === true; } catch {}
   const services = [];
+  const telemetry = telemetryStatus(installed);
   for (const agent of installed.filter(a => ['codex', 'claude', 'hermes'].includes(a))) {
     const state = await health(agent);
     let metrics = {}, queueReadable = true;
     try { metrics = queueStats(path.join(root(), 'telemetry-outbox', enrollment()?.device || 'local', agent === 'claude' ? 'claude-code' : agent), now); } catch { queueReadable = false; }
-    const outcomes = state?.compression?.supercompress_outcomes;
+    if(agent==='codex') try {
+      const pending=nativeExportStats();
+      metrics.queue_batches=(metrics.queue_batches||0)+pending.queue_batches;
+      metrics.queue_bytes=(metrics.queue_bytes||0)+pending.queue_bytes;
+      metrics.queue_oldest_seconds=Math.max(metrics.queue_oldest_seconds||0,pending.queue_oldest_seconds);
+    }catch {queueReadable=false;}
+    const outcomes = state?.compression?.outcomes || state?.compression?.supercompress_outcomes;
     for (const key of ['input_chars', 'output_chars']) if (Number.isFinite(state?.compression?.tool_context?.[key])) metrics[key] = state.compression.tool_context[key];
     if (outcomes) {
       metrics.compressed = outcomes.compressed || 0;
-      const normal = new Set(['compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget']);
+      const normal = new Set(['compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget', 'passthrough']);
       metrics.passthrough = Object.entries(outcomes).filter(([key]) => key !== 'compressed').reduce((n, [, v]) => n + v, 0);
       metrics.compression_failed = Object.entries(outcomes).filter(([key]) => !normal.has(key)).reduce((n, [, v]) => n + v, 0);
     }
+    for (const key of ['compressed', 'passthrough']) if (Number.isFinite(state?.compression?.tool_context?.[key])) metrics[key] = state.compression.tool_context[key];
+    for (const [key, target] of Object.entries({ calls: 'compression_calls', total_ms: 'compression_total_ms', max_ms: 'compression_max_ms' })) if (Number.isFinite(state?.compression?.latency?.[key])) metrics[target] = state.compression.latency[key];
+    if (Number.isFinite(state?.compression?.last_attempt_at)) metrics.last_compression_age_seconds = Math.max(0, Math.round(now / 1000 - state.compression.last_attempt_at));
+    for(const key of ['native_rtk_calls','native_rtk_input_estimate','native_rtk_output_estimate','native_rtk_nonzero_exits']) if(Number.isFinite(state?.compression?.native_tools?.[key])) metrics[key]=state.compression.native_tools[key];
+    const native = agent === 'codex' && providers.includes(state?.compressor) ? await stats(state) : undefined;
+    const statsMissing = native === null;
+    Object.assign(metrics, native);
     if (state) metrics.active_connections = state.active || 0;
-    services.push({ service: 'contextq', agent: agent === 'claude' ? 'claude-code' : agent, state: !state ? 'error' : !queueReadable || state.telemetry === false || metrics.queue_oldest_seconds > 600 ? 'warning' : 'ok', reason: !state ? 'proxy_unavailable' : !queueReadable ? 'queue_unreadable' : state.telemetry === false ? 'compression_telemetry_disabled' : metrics.queue_oldest_seconds > 600 ? 'delivery_backlog' : 'proxy_health_not_agent_liveness', metrics, ...(state?.version ? { version: state.version } : {}) });
+    if(state?.front_protocol===1) {metrics.retiring_connections=state.retiringWorker?.connections||0;metrics.retiring_seconds=state.retiringWorker?Math.max(0,(state.retiringWorker.retireAt-now)/1000):0;metrics.stage_failures=state.stageFailures||0;metrics.worker_slots=state.workerSlots||0;}
+    if(Number.isFinite(state?.collector?.failures)) metrics.telemetry_send_failures=state.collector.failures;
+    const deliveryFailed=Boolean(state?.collector?.lastError);
+    const workerFailed=Boolean(state?.rejectedVersion||state?.stageFailures);
+    const rotating=Boolean(state?.retiringWorker);
+    const exporterMissing = telemetryEnabled && ['missing', 'installed_hooks_disabled_or_unconfigured'].includes(telemetry.nativeExporters[agent]);
+    const deliveryUnverified = telemetryEnabled && telemetry.deliveryByAgent[agent]?.status !== 'delivered';
+    const telemetryMissing = telemetryEnabled && state?.telemetry === false;
+    services.push({ service: 'contextq', agent: agent === 'claude' ? 'claude-code' : agent, state: !state || state.backendHealthy===false ? 'error' : !queueReadable || deliveryFailed || statsMissing || telemetryMissing || exporterMissing || deliveryUnverified || metrics.queue_oldest_seconds > 600 || workerFailed || rotating ? 'warning' : 'ok', reason: !state || state.backendHealthy===false ? 'proxy_unavailable' : !queueReadable ? 'queue_unreadable' : deliveryFailed?'telemetry_delivery_failed':statsMissing ? 'native_stats_unavailable' : telemetryMissing ? 'compression_telemetry_disabled' : exporterMissing ? 'native_exporter_missing' : metrics.queue_oldest_seconds > 600 ? 'delivery_backlog' : deliveryUnverified ? 'telemetry_delivery_unverified' : workerFailed?'worker_update_failed':rotating?'worker_retiring':'proxy_health_not_agent_liveness', metrics, ...(state?.version ? { version: state.version } : {}), ...(state?.retiringWorker?{retiringVersion:state.retiringWorker.version}:{}), ...(state?.targetVersion?{targetVersion:state.targetVersion}:{}) });
   }
   for (const service of ['serverq', 'taskq']) {
     const spec = settings[service];
@@ -91,11 +130,11 @@ export async function collectMonitor({ health = serviceHealth, now = Date.now() 
 }
 export async function sendMonitor(packet, config, request = fetch, identity = {}) {
   if (!config) return false;
-  const headers = { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(config.public_key + ':' + config.secret_key).toString('base64') };
+  const headers = { 'Content-Type': 'application/json', 'x-langfuse-ingestion-version': '4', Authorization: 'Basic ' + Buffer.from(config.public_key + ':' + config.secret_key).toString('base64') };
   const deadline = Date.now() + 40000;
   const post = (url, body) => { const remaining = deadline - Date.now(); if (remaining <= 0) throw new Error('Monitor delivery deadline'); return request(url, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(Math.min(10000, remaining)) }); };
   if (config.gateway) return (await post(config.base_url + '/v1/monitor', packet)).ok;
-  const exported = monitorExport(packet, identity);
+  const exported = monitorExport(packet, { user: config.user_id, ...identity });
   const response = await post(config.base_url + '/api/public/otel/v1/traces', exported.otlp);
   if (!response.ok || Number((await response.json()).partialSuccess?.rejectedSpans) > 0) return false;
   for (const score of exported.scores) if (!(await post(config.base_url + '/api/public/scores', score)).ok) return false;
@@ -110,6 +149,7 @@ export async function monitorTick({ force = false, collect = collectMonitor, con
     const stateFile = path.join(root(), 'monitor-state.json');
     let state = {}; try { state = read(stateFile); } catch {}
     if (!force && now - (state.lastAttempt || 0) < MONITOR_INTERVAL_MS) return { status: 'not_due' };
+    if (config) await refreshTelemetryDelivery(now);
     const directory = path.join(root(), 'monitor-outbox'); fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     const queued = queueStats(directory, now);
     if (queued.queue_batches < 1000 && queued.queue_bytes <= 20 * 1024 * 1024) {
