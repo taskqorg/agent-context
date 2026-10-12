@@ -33,6 +33,12 @@ test('R9: Stop only queues; retry preserves job, worker exports one exact turn a
   assert.ok(nativeExportDiagnostics(tick).native_export_retry_seconds>0);
   tick+=600000;
  }
+ const batches=[];
+ await processCodexExports({collector,now:tick,run:async(command,args,options)=>{batches.push(options.env.LANGFUSE_FLUSH_AT);assert.equal(options.env.LANGFUSE_CODEX_FAIL_ON_ERROR,'true');throw Object.assign(new Error('private SDK response'),{exportStatus:413});}});
+ assert.deepEqual(batches,['128','32','8']);assert.equal(nativeExportStats().queue_batches,1);tick+=600000;
+ let rejected=0;
+ await processCodexExports({collector,now:tick,run:async()=>{rejected++;throw Object.assign(new Error('private auth failure'),{exportStatus:401});}});
+ assert.equal(rejected,1);tick+=600000;
  let calls=0;
  await processCodexExports({collector,now:tick,run:async(command,args,options)=>{
   calls++;assert.equal(options.env.LANGFUSE_FLUSH_AT,'128');assert.equal(JSON.parse(options.env.LANGFUSE_CODEX_METADATA)['agent_context.exporter_version'], version);const payload=JSON.parse(options.input),text=fs.readFileSync(payload.transcript_path,'utf8');

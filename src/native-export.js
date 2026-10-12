@@ -6,7 +6,10 @@ import {home,root,atomicWrite,sha,tryLock,version} from './core.js';
 import {recordIncident} from './incidents.js';
 import {atomicSecretWrite} from './private-file.js';
 const execute=(command,args,{input,...options})=>new Promise((resolve,reject)=>{
-  const child=execFile(command,args,options,(error,stdout)=>error?reject(error):resolve({stdout}));
+  const child=execFile(command,args,options,(error,stdout,stderr)=>{
+    if(error&&/\bcode:\s*413\b/.test(stderr)) error.exportStatus=413;
+    error?reject(error):resolve({stdout});
+  });
   child.stdin.on('error',()=>{});child.stdin.end(input);
 });
 const directory=()=>path.join(root(),'native-hook-outbox');
@@ -128,7 +131,13 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
       stage='collector';const config=await collector();
       const env={...process.env,CODEX_HOME:path.join(home(),'.codex'),LANGFUSE_FLUSH_AT:'128',LANGFUSE_CODEX_PUBLIC_KEY:config.public_key,LANGFUSE_CODEX_SECRET_KEY:config.secret_key,LANGFUSE_CODEX_BASE_URL:config.base_url,LANGFUSE_CODEX_ENVIRONMENT:config.environment||'production',LANGFUSE_CODEX_METADATA:JSON.stringify({...config.metadata,'agent_context.exporter_version':version,'agent_context.capture_scope':'current_turn'})};
       if(config.user_id) env.LANGFUSE_CODEX_USER_ID=config.user_id;
-      stage='process';await run(process.execPath,[codexExporterPath()],{input:JSON.stringify({transcript_path:snapshot,turn_id:turn}),env,timeout:25000,maxBuffer:65536,windowsHide:true});
+      stage='process';
+      for(const batch of [128,32,8]) {
+        try {
+          await run(process.execPath,[codexExporterPath()],{input:JSON.stringify({transcript_path:snapshot,turn_id:turn}),env:{...env,LANGFUSE_FLUSH_AT:String(batch),LANGFUSE_CODEX_DEBUG:'true',LANGFUSE_CODEX_FAIL_ON_ERROR:'true'},timeout:25000,maxBuffer:65536,windowsHide:true});
+          break;
+        }catch(error){if(error.exportStatus!==413||batch===8)throw error;}
+      }
       stage='acknowledgement';
       const receipt=snapshot+'.langfuse';
       if(!fs.existsSync(receipt)||!fs.readFileSync(receipt,'utf8').split('\n').includes(turn)) throw new Error('Native exporter did not acknowledge turn');
