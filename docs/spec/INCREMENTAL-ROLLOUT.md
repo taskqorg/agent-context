@@ -25,3 +25,5 @@ R9 telemetry correction: ingress and worker share the installation control token
 R6 qualification fixture correction: packaged Python collector tests create their own launcher in the temporary installation home before invoking the real Windows ACL-protected outbox writer. Test isolation must not depend on the working installation; failed qualification keeps the active package and queues unchanged.
 
 R9 Codex exporter batching: use128spans per batch instead of1 to keep a flush of the default2048span SDK queue below its30 concurrent export limit. The existing4MiB collector limit and retry retention remain; batching does not guarantee export of an oversized individual span. Qualify a retained native turn that reproduced the concurrency failure.
+
+Lifecycle notice correction: a Claude launcher route override describes routing and unverified proxy telemetry only. Local RTK/MCP coverage is independent; no broad proxy compression or automatic child-process coverage is claimed. Codex routing and hook behavior remain unchanged. Retire only confirmed experimental registrations with protected backups; preserve unrelated hooks and cached active sessions.

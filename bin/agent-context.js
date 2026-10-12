@@ -139,8 +139,8 @@ if (!['install', 'setup', 'onboard', 'headroom', 'provider', 'uninstall', 'conne
     // Same gate as install: never take over a third-party gateway or its credentials, only the first-party default.
     if (result.bypassed && process.env.CLAUDE_ENV_FILE && process.env.ANTHROPIC_BASE_URL === 'https://api.anthropic.com'
       && !process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN && !process.env.CLAUDE_CODE_USE_BEDROCK && !process.env.CLAUDE_CODE_USE_VERTEX) fs.appendFileSync(process.env.CLAUDE_ENV_FILE, `export ANTHROPIC_BASE_URL='${result.url}'\nunset CLAUDE_CODE_OAUTH_TOKEN CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH\n`);
-    if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session bypasses the compression proxy (launcher overrides ANTHROPIC_BASE_URL); its own requests are not compressed. Claude processes it starts (claude -p, TaskQ workers) use the proxy.',
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Agent Context proxy is bypassed in this session: its own tool results are NOT compressed and headroom stats do not cover it. Do not claim compression savings for this session. Claude processes started from Bash here are routed through the proxy.' } });
+    if (result.bypassed) output({ systemMessage: 'Agent Context: this Claude session uses the launcher’s own API route. RTK tools and agent_context MCP work independently of that route. Proxy-based telemetry for this session is not confirmed; check native delivery separately.',
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'Keep the launcher’s API route and normal login/approval policy. Agent Context uses RTK for qualified native commands and MCP for explicit reference lookup; the proxy does not broadly compress model requests. Verify actual tool coverage and native telemetry readback before claiming results.' } });
   } else if (command === 'retrieval') {
     // Do not block the MCP handshake on proxy startup. Owner identity is checked (1s); if the port is not
     // our proxy, start ours in the background. Same loopback trust boundary as the agent's base URL.
