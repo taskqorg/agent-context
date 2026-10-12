@@ -23,7 +23,7 @@
     "src/monitor-runtime.js": "a3516134c88d2f3d187e627e10b05ecfb6d9fb335d25010ba8118231af096a1b",
     "src/monitor-service.js": "55a9228cd541ff96a8b720c5ce4d6581f1677f7b4e59aa1b597e276afd2659fc",
     "src/monitor.js": "305eabb78a314a098daac519d1701f95836a38ad65e93c451dac3cd021d4a82d",
-    "src/native-export.js": "5fdec72423938f5388bb525db6e47a7edcbd67a4ae3c74ed2a9e7c660f145b14",
+    "src/native-export.js": "5a9eeea7e5669d2a7a8d9fd9aa9176a6407b608929465c0d782778126f77722a",
     "src/native-tools.js": "69c77fb0dc7dc5d3ece328f455ad5ff83158f06a6b9362c397a31e3ccb8de97b",
     "src/onboarding.js": "5e91023bde17f4d40e61b3aaa57325c0ad45a414c90450e7337e77d19685efe3",
     "src/private-file.js": "b7075dc745d61f40e41970b36f78521fe4b1a4d0a1c8c2c66033e69002b395e5",

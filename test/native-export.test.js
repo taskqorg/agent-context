@@ -23,6 +23,8 @@ test('R9: Stop only queues; retry preserves job, worker exports one exact turn a
  await processCodexExports({collector,now:Date.now()+10000,run:async(command,args,options)=>{
   calls++;assert.equal(options.env.LANGFUSE_FLUSH_AT,'1');assert.equal(JSON.parse(options.env.LANGFUSE_CODEX_METADATA)['agent_context.exporter_version'], version);const payload=JSON.parse(options.input),text=fs.readFileSync(payload.transcript_path,'utf8');
   assert.equal(payload.turn_id,'current');assert.ok(text.includes('current exact literal'));assert.ok(!text.includes('earlier exact literal'));assert.ok(text.includes('native-session'));
+  assert.match(path.relative(path.resolve(path.dirname(payload.transcript_path),'../../..'),path.dirname(payload.transcript_path)),/^\d{4}[\\/]\d{2}[\\/]\d{2}$/);
+  assert.ok(path.resolve(path.dirname(payload.transcript_path),'../../..').startsWith(path.join(root(),'native-hook-outbox','snapshot-')));
   fs.writeFileSync(payload.transcript_path+'.langfuse','current\n');
  }});
  assert.equal(calls,1);assert.equal(nativeExportStats().queue_batches,0);assert.equal(fs.readFileSync(source+'.langfuse','utf8'),'current\n');

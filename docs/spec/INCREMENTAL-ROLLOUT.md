@@ -16,6 +16,8 @@ Native Stop hooks enqueue locally and return promptly. Our service owns conversi
 
 R9 Stop output uses Codex's shared hook response fields (`continue: true`, `suppressOutput: true`); internal queue receipts are not hook responses. Qualification covers the actual CLI stdout as well as retained queue state.
 
+R9 native turn snapshots use a private per-job sessions root with the exporter's expected YYYY/MM/DD layout. Exporter discovery stays inside that snapshot root; it must not walk the installation's parents. Snapshot cleanup removes only the worker-owned temporary root, never pending jobs or native progress.
+
 Final rollout: qualify CLI and isolated transports before Mac/Windows/FRA adoption; do not test or stage changes in busy Claude Desktop. Install only the final qualified package there. Audit supported client profiles and remove confirmed obsolete owned registrations, hooks, services and dependencies; preserve login, credentials, unrelated settings and active work. Windows uses pinned WinSW with native UAC/credential entry and the installation owner account. Direct and gateway OTLP exports select Langfuse v4 ingestion; verify observations through API v2.
 
 R9 telemetry correction: ingress and worker share the installation control token. Failed native-event delivery records a sanitized incident and retains the event for retry; acknowledgement prevents resubmission. Claude SDK uses LANGFUSE_FLUSH_AT=1 to avoid oversized multi-span batches at the 4 MiB collector boundary. This does not guarantee acceptance of an oversized individual span or recover historical failed exports. Gate: installer configuration, 403 retention/incident/retry, shared-token transport, npm test and npm pack.
