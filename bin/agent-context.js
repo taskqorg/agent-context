@@ -166,7 +166,8 @@ if (!['install', 'setup', 'onboard', 'headroom', 'provider', 'uninstall', 'conne
     const {enqueueCodexExport} = await import('../src/native-export.js');
     const input=fs.readFileSync(0,'utf8');
     if(Buffer.byteLength(input)>65536) throw new Error('Native hook payload too large');
-    output(enqueueCodexExport(JSON.parse(input)));
+    enqueueCodexExport(JSON.parse(input));
+    output({ continue: true, suppressOutput: true });
   } else if (command === 'tools') {
     if (args[0] === 'prepare') output(await prepareNativeTools());
     else if (args[0] === 'run') process.exitCode = await nativeRun(args.slice(1));

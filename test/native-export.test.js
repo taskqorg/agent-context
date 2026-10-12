@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {enqueueCodexExport,processCodexExports,nativeExportStats} from '../src/native-export.js';
 import {root,version} from '../src/core.js';
 const profile=fs.mkdtempSync(path.join(os.tmpdir(),'contextq-native-export-'));
@@ -12,6 +13,8 @@ const lines=[{type:'session_meta',payload:{id:'native-session'}},...['earlier','
 fs.writeFileSync(source,lines.map(x=>JSON.stringify(x)).join('\n')+'\n');
 test('R9: Stop only queues; retry preserves job, worker exports one exact turn and acknowledges once',async()=>{
  const input={transcript_path:source,turn_id:'current'};
+ const hook=spawnSync(process.execPath,['bin/agent-context.js','native-hook','codex'],{input:JSON.stringify(input),encoding:'utf8',env:process.env});
+ assert.equal(hook.status,0,hook.stderr);assert.deepEqual(JSON.parse(hook.stdout),{continue:true,suppressOutput:true});
  assert.deepEqual(enqueueCodexExport(input),enqueueCodexExport(input));assert.equal(nativeExportStats().queue_batches,1);
  const collector=async()=>({base_url:'http://127.0.0.1:18787',public_key:'synthetic',secret_key:'synthetic'});
  await processCodexExports({collector,run:async()=>{throw new Error('fixture unavailable')}});
