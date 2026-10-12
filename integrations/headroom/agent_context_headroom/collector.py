@@ -212,33 +212,36 @@ def attach_collector(app):
             logging.getLogger(__name__).warning('Telemetry delivery failed category=%s', error)
     app.state.agent_context_collector_status = delivery_status
     async def flush_once():
-        async with drain_lock, httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
-            with sender_lease(directory) as acquired:
-                if not acquired:
-                    return
-                try:
-                    pending = sorted(directory.glob('*.json'), key=lambda p: p.stat().st_mtime)[:8]
-                except OSError:
-                    remember('queue_unreadable')
-                    pending = []
-                for file in pending:
-                    if file.is_symlink():
-                        continue
+        try:
+            async with drain_lock, httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
+                with sender_lease(directory) as acquired:
+                    if not acquired:
+                        return
                     try:
-                        _, current = collector_config()
-                        if current['device'] != device['device'] or destination_id(current) != destination_id(device):
+                        pending = sorted(directory.glob('*.json'), key=lambda p: p.stat().st_mtime)[:8]
+                    except OSError:
+                        remember('queue_unreadable')
+                        pending = []
+                    for file in pending:
+                        if file.is_symlink():
+                            continue
+                        try:
+                            _, current = collector_config()
+                            if current['device'] != device['device'] or destination_id(current) != destination_id(device):
+                                break
+                            auth = 'Bearer ' + current['token'] if current['enrolled'] else 'Basic ' + base64.b64encode((current['public_key'] + ':' + current['secret_key']).encode()).decode()
+                            result = await client.post(current['gateway'] + '/api/public/otel/v1/traces', content=file.read_bytes(), headers={'Authorization': auth, 'Content-Type': 'application/json', 'x-langfuse-ingestion-version': '4'})
+                            if result.status_code == 200 and not result.json().get('partialSuccess', {}).get('rejectedSpans'):
+                                file.unlink(missing_ok=True)
+                                remember(None)
+                            else:
+                                remember('partial_rejection' if result.status_code == 200 else 'http_rejected')
+                                break
+                        except (OSError, ValueError, KeyError, httpx.HTTPError):
+                            remember('transport_error')
                             break
-                        auth = 'Bearer ' + current['token'] if current['enrolled'] else 'Basic ' + base64.b64encode((current['public_key'] + ':' + current['secret_key']).encode()).decode()
-                        result = await client.post(current['gateway'] + '/api/public/otel/v1/traces', content=file.read_bytes(), headers={'Authorization': auth, 'Content-Type': 'application/json', 'x-langfuse-ingestion-version': '4'})
-                        if result.status_code == 200 and not result.json().get('partialSuccess', {}).get('rejectedSpans'):
-                            file.unlink(missing_ok=True)
-                            remember(None)
-                        else:
-                            remember('partial_rejection' if result.status_code == 200 else 'http_rejected')
-                            break
-                    except (OSError, ValueError, KeyError, httpx.HTTPError):
-                        remember('transport_error')
-                        break
+        except (OSError, ValueError):
+            remember('queue_unreadable')
     async def flush():
         while True:
             await flush_once()
