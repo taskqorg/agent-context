@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { overview } from '../src/serviceq-overview.js';
+import { overview,nativeExportExplanation } from '../src/serviceq-overview.js';
 const now = Date.parse('2026-10-11T13:30:00Z');
 function row({ at = now - 60000, name = 'service.health.contextq.codex', host = 'windows', runtime = 'native', device = 'one', service = 'contextq', state = 'ok', agent = 'codex', reason = 'proxy_health_not_agent_liveness', metadata = {}, level = 'DEFAULT' } = {}) {
   return { id: 'span', traceId: 'abcdef1234567890', startTime: new Date(at).toISOString(), name, statusMessage: reason, level, tags: [`host:${host}`, `runtime:${runtime}`, `device:${device}`, `service:${service}`, `state:${state}`, `agent:${agent}`], metadata };
@@ -86,4 +86,10 @@ test('native WebSocket counters retain separate units and missing measurements r
   assert.equal(agent.activity, null);
   const missing = overview({ health: [row({ state: 'warning', reason: 'native_stats_unavailable' })] }, now);
   assert.ok([...missing.issues, ...missing.gaps].some(i => i.detail.includes('счётчики Headroom недоступны')));
+});
+
+test('FD2/FD3 diagnostics preserve concurrent causes and separate recovery proof',()=>{
+ const text=nativeExportExplanation({native_export_timeout:2,native_export_concurrency_limit:1,native_export_attempts:5,native_export_retry_seconds:20,native_export_recovery_age_seconds:60});
+ assert.match(text,/не завершился/);assert.match(text,/параллельных/);assert.match(text,/20 сек/);assert.match(text,/не Langfuse readback/);
+ assert.equal(nativeExportExplanation({}), '');
 });

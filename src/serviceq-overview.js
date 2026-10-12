@@ -1,4 +1,11 @@
 import { monitorMetrics } from './monitor-protocol.js';
+const exportCauses={concurrency_limit:'Exporter превысил лимит параллельных отправок; требуется обновление batching',timeout:'Exporter не завершился в срок; событие сохранено',collector_unavailable:'Локальный collector не подтвердил identity или routing; проверить сервис',snapshot_unavailable:'Завершённый native turn недоступен; проверить источник',unacknowledged:'Exporter не подтвердил turn; событие сохранено',process_failed:'Exporter завершился с ошибкой; требуется локальная диагностика',unknown:'Сохранён прежний отказ без точной причины; ожидается диагностический retry'};
+export function nativeExportExplanation(metrics) {
+  const messages=Object.entries(exportCauses).filter(([code])=>metrics['native_export_'+code]>0).map(([code,text])=>text+' ('+metrics['native_export_'+code]+')');
+  if(messages.length) messages.push('Максимум попыток: '+(metrics.native_export_attempts??'не измерено')+'. Следующая допустимая попытка через '+(metrics.native_export_retry_seconds===null?'не измерено':Math.ceil(metrics.native_export_retry_seconds))+' сек.');
+  if(Number.isFinite(metrics.native_export_recovery_age_seconds))messages.push('Последний успешный retry: '+Math.round(metrics.native_export_recovery_age_seconds)+' сек. назад; это acknowledgement exporter, не Langfuse readback');
+  return messages.join('. ');
+}
 const freshness = 10 * 60 * 1000;
 const tag = (row, key) => row.tags?.find(t => t.startsWith(key + ':'))?.slice(key.length + 1);
 const attribute = (row, key) => row.metadata?.['attributes.agent_context.' + key];
@@ -76,7 +83,8 @@ export function overview({ health = [], compression = [], activity = [], inciden
     h.at = Math.max(h.at || 0, at); h.fresh = now - h.at <= freshness;
     const metrics = {};
     for (const key of monitorMetrics) metrics[key] = number(attribute(row, 'monitor.' + key));
-    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : reasons[row.statusMessage] || 'Нет объяснения состояния.', metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, retiringVersion: /^\d+\.\d+\.\d+$/.test(attribute(row,'proxy.retiring_version')||'')?attribute(row,'proxy.retiring_version'):null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
+    const exportExplanation=now-at<=freshness?nativeExportExplanation(metrics):'';
+    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : [reasons[row.statusMessage] || 'Нет объяснения состояния.',exportExplanation].filter(Boolean).join(' '), metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, retiringVersion: /^\d+\.\d+\.\d+$/.test(attribute(row,'proxy.retiring_version')||'')?attribute(row,'proxy.retiring_version'):null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
   }
   const measured = new Map(), since = now - period * 1000;
   let unattributed = 0;

@@ -9,6 +9,7 @@ import { compressionWarnings } from './conflicts.js';
 import { telemetryStatus } from './telemetry.js';
 import { writeConfig } from './private-file.js';
 import { providerSettings } from './providers.js';
+import {nativeExportDiagnostics,nativeExportCodes} from './native-export.js';
 
 export async function diagnose({ fix = false, live = false } = {}) {
   const actions = [];
@@ -93,7 +94,10 @@ export async function diagnose({ fix = false, live = false } = {}) {
       if (telemetryEnabled && state?.telemetry === false) { warnings.push({ code: 'compression_telemetry_disabled', agent }); telemetryIssues.push(`${agent}:compression_telemetry_disabled`); }
     }
   }
-  return { ...config, issues: [...config.issues, ...telemetryIssues], warnings, services, serviceDetails, telemetry, incidents: incidents(), repairs: actions,
+  let nativeExport;
+  try {nativeExport=nativeExportDiagnostics();if(nativeExportCodes.some(code=>nativeExport['native_export_'+code]>0))telemetryIssues.push('codex:native_export_failed');}
+  catch {telemetryIssues.push('codex:native_export_queue_unreadable');}
+  return { ...config, issues: [...config.issues, ...telemetryIssues], nativeExport, warnings, services, serviceDetails, telemetry, incidents: incidents(), repairs: actions,
     healthy: config.healthy && !telemetryIssues.length && Object.values(services).every(value => value === 'ready'),
     runtimeProof: live || fix ? 'owned_health_only_not_model_proof' : 'not_run' };
 }
