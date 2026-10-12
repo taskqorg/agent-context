@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
-import { atomicSecretWrite } from '../src/private-file.js';
+import { atomicSecretWrite, writeConfig } from '../src/private-file.js';
 
 test('Windows protects the empty temp file before writing secrets and preserves the original on ACL refusal', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-context-private-'));
@@ -57,5 +57,22 @@ foreach($sid in $allowed){if(-not ($rules | Where-Object {$_.IdentityReference.V
     const environment = { ...process.env, AGENT_CONTEXT_TEST_FILE: file };
     for (const key of Object.keys(environment)) if (key.toUpperCase() === 'PSMODULEPATH') delete environment[key];
     execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { env: environment, windowsHide: true, stdio: 'pipe', timeout: 10000 });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+
+test('Claude settings use protected writes for shared direct credentials as well as device credentials', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'contextq-claude-private-'));
+  process.env.AGENT_CONTEXT_HOME = dir;
+  let protectedWrite = false;
+  try {
+    writeConfig(path.join(dir, '.claude/settings.json'), JSON.stringify({ env: { LANGFUSE_SECRET_KEY: 'synthetic' } }), {
+      platform: 'win32', execute: (_, args, options) => {
+        protectedWrite = true;
+        assert.equal(fs.readFileSync(options.env.AGENT_CONTEXT_PRIVATE_FILE, 'utf8'), '');
+        assert.equal(args.join(' ').includes('synthetic'), false);
+      },
+    });
+    assert.equal(protectedWrite, true);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

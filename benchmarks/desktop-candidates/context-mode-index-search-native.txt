@@ -1,0 +1,32 @@
+1	Indexed 8 sections (0 with code) from: read-qualification
+2	Use ctx_search(queries: ["..."]) to query this content. Use source: "read-qualification" to scope results.
+3	## Platforms Clients Providers Desktop Chat local mode silent fallback
+4	
+5	--- [current-session | 2026-10-11 23:29 | read-qualification] ---
+6	### Agent Context > Outcome and scope
+7	
+8	## Outcome and scope
+9	
+10	One package configures agent context compression and telemetry. One panel explains who runs what, whether compression works, and where failures occur.
+11	
+12	- Platforms: macOS, native Windows, Linux; WSL is a separate runtime/profile.
+13	- Clients: Codex CLI/Desktop, Claude Code CLI/Desktop Code, Hermes.
+14	- Desktop Chat: on-demand MCP compression only; automatic full-history interception is outside scope.
+15	- Keep normal login, subscription, model selection, permissions and hook trust.
+16	- No custom SSO, bundled inference service, new compressor, or mandatory hosted compression.
+17	
+18	--- [current-session | 2026-10-11 23:29 | read-qualification] ---
+19	### Agent Context > Product behavior
+20	
+21	## Product behavior
+22	
+23	- **P1 — Package.** MUST install, diagnose, update and remove its own integration reversibly. Preserve unrelated settings and active sessions. Report deferred updates.
+24	- **P2 — Interception.** MUST use the supported client recipe. Proxy and hook adapters share provider selection, safeguards and event semantics. Never compress the same block twice.
+25	- **P3 — Providers.** MUST support selectable `headroom-local`, `supercompress` Neural, and `scaledown` adapters. One provider per agent profile; no silent fallback to another provider. Local mode requires no cloud key or model download.
+26	- **P4 — Safety.** MUST preserve user requests, auth, tool IDs, error evidence, signed thinking and previously transmitted prefixes. Compress eligible new tool results before model submission. Keep the original on timeout, invalid output or failed validation; report the reason.
+27	- **P5 — Originals.** MUST allow original retrieval without recompression. Bound storage and retention; report expiry. Production artifacts cannot depend on temporary directories.
+28	- **P6 — Reliability.** MUST bound request size, concurrency, timeout, memory, storage and telemetry queues. Telemetry failure must not block agent work. No process-wide termination during an update.
+29	- **P7 — Control.** MUST show configured and actual running package/provider/config versions separately. Support enable, disable, provider switch and rollback per agent profile.
+30	
+31	> Throttle: call #1/8 in this window. 2 call(s) before soft cap. Prefer ctx_search(queries: [...]) array form for multi-query workloads — it counts as a single call.
+32	[Qualification original: /tmp/contextq-desktop-candidates/variants/cloud/originals/487b070c58302a58.txt]

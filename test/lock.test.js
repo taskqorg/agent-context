@@ -22,10 +22,3 @@ test('tryLock holds live owners and reclaims dead or legacy locks', () => {
   assert.equal(tryLock(lock, 60000), null, 'fresh ownerless lock gets a grace period');
   fs.rmSync(dir, { recursive: true, force: true });
 });
-
-test('timeouts nest: SuperCompress fetch < bridge < Codex WS frame budget', () => {
-  const fetchMs = Number(/timeoutMs \?\? (\d+)/.exec(fs.readFileSync('src/supercompress.js', 'utf8'))[1]);
-  const bridgeS = Number(/timeout = 12.0 if/.test(fs.readFileSync("integrations/headroom/agent_context_headroom/__init__.py", "utf8")) ? 12 : NaN);
-  const frameS = Number(/_CODEX_WS_COMPRESSION_TIMEOUT_SECONDS = ([\d.]+)/.exec(fs.readFileSync('integrations/headroom/agent_context_headroom/proxy.py', 'utf8'))[1]);
-  assert.ok(fetchMs < bridgeS * 1000 && bridgeS < frameS, `${fetchMs}ms < ${bridgeS}s < ${frameS}s`);
-});

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { serviceHealth, ensureService, servicePort, stopService } from '../src/service.js';
-import { root } from '../src/core.js';
+import { root, version } from '../src/core.js';
 import { proxyIdentity } from '../src/run.js';
 test('Windows redirector requires matching ready and health identity with a live child', () => {
   const ready = { owner: 'owned', pid: 20 }, health = { owner: 'owned', pid: 20 };
@@ -53,7 +53,15 @@ test('owned health requires stored owner and child identity; a busy different ve
     fs.writeFileSync(file, JSON.stringify({ agent: 'codex', port: servicePort('codex'), owner, childPid: 99, version: '0.1.5' }));
     assert.equal(await serviceHealth('codex'), null);
     fs.writeFileSync(file, JSON.stringify({ agent: 'codex', port: servicePort('codex'), owner, childPid: 42, version: '0.1.5' }));
-    assert.equal((await ensureService('codex')).updateDeferred, true);
+    const deferred = await ensureService('codex');
+    assert.equal(deferred.updateDeferred, true);
+    assert.equal(deferred.status, 'update_pending');
+    assert.equal(deferred.targetVersion, version);
+    fs.writeFileSync(file, JSON.stringify({ agent: 'codex', port: servicePort('codex'), owner, childPid: 42, version }));
+    globalThis.fetch = async () => new Response(JSON.stringify({ owner, pid: 42, active: 1, compressor: 'scaledown' }));
+    assert.equal((await ensureService('codex')).status, 'update_pending');
+    globalThis.fetch = async () => new Response(JSON.stringify({ owner, pid: 42, active: 1, compressor: 'local-tools' }));
+    assert.equal((await ensureService('codex')).status, 'ready');
     assert.equal(await serviceHealth('claude'), null);
   } finally { globalThis.fetch = prior; }
 });

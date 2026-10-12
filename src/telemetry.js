@@ -24,6 +24,11 @@ export function profileIdentity(env = process.env) {
   return executionIdentity({ ...env, AGENT_CONTEXT_HOST: env.AGENT_CONTEXT_HOST || host });
 }
 
+export function telemetryDisabled() {
+  try { return JSON.parse(fs.readFileSync(process.env.AGENT_CONTEXT_LANGFUSE_CONFIG || path.join(home(), '.codex/langfuse.json'))).enabled === false; }
+  catch { return false; }
+}
+
 // Credentials stay inside this process; public reports contain only status fields.
 export function langfuseConfig(env = process.env) {
   try {
@@ -31,7 +36,7 @@ export function langfuseConfig(env = process.env) {
     if (device) {
       const file = path.join(home(), '.codex/langfuse.json');
       if (fs.existsSync(file) && JSON.parse(fs.readFileSync(file)).enabled === false) return null;
-      return { ...deviceCredentials(device), base_url: device.gateway, gateway: true };
+      return { ...deviceCredentials(device), base_url: device.gateway, gateway: true, user_id: device.user };
     }
     if (fs.existsSync(path.join(root(), 'enrollment.json'))) return null;
     let value;
@@ -55,6 +60,8 @@ export function langfuseConfig(env = process.env) {
         value = { public_key: values.HERMES_LANGFUSE_PUBLIC_KEY, secret_key: values.HERMES_LANGFUSE_SECRET_KEY, base_url: values.HERMES_LANGFUSE_BASE_URL };
       }
     }
+    if (value.user_id !== undefined && (typeof value.user_id !== 'string' || !/^[a-zA-Z0-9-]{1,39}$/.test(value.user_id))) return null;
+    if (value.agent_context_base_url) value.base_url = value.agent_context_base_url;
     if (value.enabled === false || !['public_key', 'secret_key', 'base_url'].every(key => typeof value[key] === 'string' && value[key].trim())) return null;
     const url = new URL(value.base_url);
     if (url.username || url.password || !['https:', 'http:'].includes(url.protocol)) return null;
@@ -66,6 +73,9 @@ export function nativeExporter(agent) {
   try {
     if (agent === 'codex') {
       const config = parse(fs.readFileSync(path.join(home(), '.codex/config.toml'), 'utf8'));
+      let queued=false;
+      try {queued=JSON.parse(fs.readFileSync(path.join(home(),'.codex/hooks.json'))).hooks?.Stop?.some(rule=>rule.hooks?.some(h=>h.command?.includes('launcher.mjs')&&h.command.includes('native-hook codex')));} catch {}
+      if(queued) return config.features?.hooks===true?'configured_trust_and_delivery_unverified':'installed_hooks_disabled_or_unconfigured';
       if (config.plugins?.['tracing@codex-observability-plugin']?.enabled !== true) return 'missing';
       return config.features?.hooks === true ? 'configured_trust_and_delivery_unverified' : 'installed_hooks_disabled_or_unconfigured';
     }
@@ -90,14 +100,40 @@ export async function prepareCodexExporter(agents, execute = promisify(execFile)
   } catch { return { status: 'native_install_unresolved', trust: 'unmodified' }; }
 }
 
+export async function prepareNativeExporters(agents, execute = promisify(execFile)) {
+  const results = {};
+  for (const agent of agents) {
+    if (!langfuseConfig()) { results[agent] = { status: 'credentials_missing' }; continue; }
+    if (agent === 'codex') { results[agent] = await prepareCodexExporter([agent], execute); continue; }
+    if (nativeExporter(agent) !== 'missing') { results[agent] = { status: 'already_configured_delivery_unverified' }; continue; }
+    if (agent === 'hermes') { results[agent] = { status: 'native_install_unresolved', next: 'Enable the installed Hermes Langfuse exporter using its native plugin workflow, then repeat onboarding.' }; continue; }
+    try {
+      const executable = agentExecutable('claude');
+      const options = { env: { ...process.env, CLAUDE_CONFIG_DIR: path.join(home(), '.claude') }, timeout: 60000, maxBuffer: 1024 * 1024, windowsHide: true };
+      await execute(executable.command, [...executable.args, 'plugin', 'marketplace', 'add', 'langfuse/Claude-Observability-Plugin'], options);
+      await execute(executable.command, [...executable.args, 'plugin', 'install', 'langfuse-observability@langfuse-observability'], options);
+      results[agent] = { status: 'installed_by_native_agent', trust: 'native_review_required' };
+    } catch { results[agent] = { status: 'native_install_unresolved', trust: 'unmodified' }; }
+  }
+  return results;
+}
+
 export function telemetryStatus(agents) {
-  let delivery = { status: 'unverified' };
-  try { delivery = JSON.parse(fs.readFileSync(path.join(root(), 'telemetry-delivery.json'))); } catch {}
-  const config = langfuseConfig();
-  const identity = profileIdentity();
-  if (delivery.status === 'delivered' && (delivery.destination !== destination(config) || delivery.host !== identity.host || delivery.runtime !== identity.runtime || delivery.version !== version || Date.now() - Date.parse(delivery.checkedAt) > 86400000 || !Number.isFinite(Date.parse(delivery.checkedAt)))) delivery = { status: 'stale_verification', checkedAt: delivery.checkedAt };
-  return { ...identity, credentials: config ? 'configured' : 'missing_or_invalid',
-    nativeExporters: Object.fromEntries(agents.map(agent => [agent, nativeExporter(agent)])), delivery };
+  let latest = { status: 'unverified' }, saved = {};
+  try { latest = JSON.parse(fs.readFileSync(path.join(root(), 'telemetry-delivery.json'))); } catch {}
+  const config = langfuseConfig(), identity = profileIdentity();
+  const fresh = value => {
+    if (value.status === 'delivered' && (value.destination !== destination(config) || value.host !== identity.host || value.runtime !== identity.runtime || value.version !== version || Date.now() - Date.parse(value.checkedAt) > 86400000 || Date.parse(value.checkedAt) > Date.now() + 60000 || !Number.isFinite(Date.parse(value.checkedAt)))) return { status: 'stale_verification', checkedAt: value.checkedAt };
+    return value;
+  };
+  for (const agent of agents) {
+    let value = { status: 'unverified' };
+    try { value = JSON.parse(fs.readFileSync(path.join(root(), 'telemetry-delivery', agent + '.json'))); } catch {}
+    saved[agent] = fresh(value.agent === agent ? value : { status: 'unverified' });
+  }
+  const delivery = agents.length ? { status: Object.values(saved).every(v => v.status === 'delivered') ? 'delivered' : 'incomplete', proof: 'per_agent_synthetic_otlp_only_not_native_exporters' } : fresh(latest);
+  return { ...identity, credentials: config ? 'configured' : 'missing_or_invalid', userIdentity: config?.user_id ? 'configured' : 'missing',
+    nativeExporters: Object.fromEntries(agents.map(agent => [agent, nativeExporter(agent)])), delivery, deliveryByAgent: saved };
 }
 
 const destination = config => config ? crypto.createHash('sha256').update(config.base_url + '\0' + config.public_key + '\0' + config.secret_key).digest('hex') : null;
@@ -115,7 +151,12 @@ export async function verifyTelemetry(agent = 'codex', request = fetch, pause = 
   if (!['codex', 'claude', 'hermes'].includes(agent)) throw new Error('Choose codex, claude or hermes');
   const config = langfuseConfig();
   const checkedAt = new Date().toISOString();
-  const save = report => { atomicWrite(path.join(root(), 'telemetry-delivery.json'), JSON.stringify({ ...report, checkedAt, version, destination: destination(config) })); return { ...report, checkedAt }; };
+  const save = report => {
+    const value = { ...report, agent, checkedAt, version, destination: destination(config) };
+    atomicWrite(path.join(root(), 'telemetry-delivery', agent + '.json'), JSON.stringify(value));
+    atomicWrite(path.join(root(), 'telemetry-delivery.json'), JSON.stringify(value));
+    return { ...report, agent, checkedAt };
+  };
   if (!config) return save({ status: 'missing_or_invalid_credentials' });
   const id = crypto.randomBytes(16).toString('hex');
   const sessionId = 'agent-context-qualification-' + id;
@@ -134,4 +175,19 @@ export async function verifyTelemetry(agent = 'codex', request = fetch, pause = 
     }
     return save({ status: 'accepted_not_observed', traceId: id });
   } catch { return save({ status: 'transport_failed' }); }
+}
+
+// Runs in the monitor, outside model requests; retries failed checks at most hourly.
+export async function refreshTelemetryDelivery(now = Date.now(), verify = verifyTelemetry) {
+  if (!langfuseConfig()) return;
+  let agents = [];
+  try { agents = JSON.parse(fs.readFileSync(path.join(root(), 'integration.json'))).agents || []; } catch {}
+  agents = agents.filter(agent => ['codex', 'claude', 'hermes'].includes(agent));
+  const status = telemetryStatus(agents);
+  for (const agent of agents) {
+    const previous = status.deliveryByAgent[agent], at = Date.parse(previous.checkedAt);
+    const interval = previous.status === 'delivered' ? 86400000 : 3600000;
+    if (Number.isFinite(at) && at <= now + 60000 && now - at < interval) continue;
+    await verify(agent);
+  }
 }

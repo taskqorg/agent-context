@@ -1,10 +1,11 @@
+import { providerSettings } from './providers.js';
 import fs from 'node:fs';
 import { langfuseConfig, profileIdentity } from './telemetry.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
 import YAML from 'yaml';
-import { atomicWrite, home, root, sha, keyStatus, version, acquireTransaction } from './core.js';
+import { atomicWrite, home, root, sha, version, acquireTransaction } from './core.js';
 import { launcher, seedRuntime, updateStatus } from './update.js';
 import { automaticPlan } from './automatic.js';
 import { servicePort } from './service.js';
@@ -13,7 +14,7 @@ import { atomicSecretWrite, writeConfig } from './private-file.js';
 
 export const bin = launcher;
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
-const agentNames = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
+export const agentNames = { codex: 'Codex', claude: 'Claude Code', hermes: 'Hermes' };
 const read = file => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '';
 const ownedCommand = hook => /(?:supercompress(?:-proxy)?[\\/]|(?:agent-context\.js|launcher\.mjs)["']?\s+(?:hook|mcp)\b)/i.test(`${hook.command || ''} ${hook.commandWindows || ''}`);
 export function stripHooks(value) {
@@ -232,16 +233,14 @@ export function connectionFor(agent) {
   throw new Error(`Unknown agent: ${agent}`);
 }
 export function doctor() {
-  const credentials = keyStatus();
   const issues = [];
-  if (!credentials.present) issues.push(credentials.error || 'missing_key');
-  if (credentials.conflict) issues.push('key_conflict');
   const agents = {};
   let automatic = [];
   try { automatic = JSON.parse(read(path.join(root(), 'integration.json'))).agents || []; } catch {}
   for (const agent of Object.keys(agentNames)) {
     const dir = path.join(home(), agent === 'claude' ? '.claude' : `.${agent}`);
     if (!fs.existsSync(dir)) { agents[agent] = 'absent'; continue; }
+    if (automatic.length && !automatic.includes(agent)) { agents[agent] = 'not_selected'; continue; }
     try {
       const connection = connectionFor(agent);
       agents[agent] = connection?.command === process.execPath && connection?.args?.[0] === bin() && connection?.args?.[1] === 'mcp' && connection?.args?.[2] === agent ? 'configured' : 'not_configured';
@@ -251,8 +250,8 @@ export function doctor() {
           agents[agent] = config?.plugins?.enabled?.includes('agent-context') && config?.plugins?.entries?.['agent-context']?.settings?.launcher === bin() ? 'configured' : 'not_configured';
         } else {
           const config = agent === 'codex' ? parseToml(read(path.join(dir, 'config.toml'))) : objectAt(path.join(home(), '.claude.json'));
-          const entry = agent === 'codex' ? config.mcp_servers?.headroom : config.mcpServers?.headroom;
-          agents[agent] = entry?.command === process.execPath && entry?.args?.[0] === bin() && entry?.args?.[1] === 'retrieval' && entry?.args?.[2] === agent ? 'configured' : 'not_configured';
+          const entry = agent === 'codex' ? config.mcp_servers?.agent_context : config.mcpServers?.agent_context;
+          agents[agent] = entry?.command === process.execPath && entry?.args?.[0] === bin() && entry?.args?.[1] === 'tools' && entry?.args?.[2] === 'mcp' && entry?.args?.[3] === agent ? 'configured' : 'not_configured';
         }
         // Routing is what actually sends model traffic through the proxy; MCP registration alone proves nothing.
         const url = `http://127.0.0.1:${servicePort(agent)}`;
@@ -267,7 +266,12 @@ export function doctor() {
         const hooks = objectAt(hooksFile).hooks || {};
         const list = Object.values(hooks).flatMap(rules => rules.flatMap(rule => rule.hooks));
         if (list.some(hook => ownedCommand(hook) && !`${hook.command} ${hook.commandWindows}`.includes(bin()))) issues.push(`${agent}:legacy_hook`);
-        if (agent === 'claude' && list.filter(hook => `${hook.command}`.includes(bin())).length !== 1) issues.push('claude:hook_count');
+        if (agent === 'claude' && automatic.includes(agent)) {
+          for (const [event, command] of [['SessionStart', 'lifecycle claude'], ['PreToolUse', 'tools hook']]) {
+            const owned = (hooks[event] || []).flatMap(rule => rule.hooks || []).filter(hook => hook.command?.includes(bin()) && hook.command.includes(command));
+            if (owned.length !== 1) issues.push(`claude:${event}_hook`);
+          }
+        }
       } else if (fs.existsSync(path.join(dir, 'plugins', 'supercompress')) || /supercompress/i.test(JSON.stringify(YAML.parse(read(path.join(dir, 'config.yaml')))?.hooks || {}))) issues.push('hermes:legacy_plugin_or_hook');
     } catch { agents[agent] = 'invalid_config'; issues.push(`${agent}:invalid_config`); }
   }
@@ -292,5 +296,5 @@ export function doctor() {
     integrity = Object.entries(manifest.files).every(([file, digest]) => sha(fs.readFileSync(path.join(packageRoot, file))) === digest) ? 'verified' : 'modified';
   } catch {}
   if (integrity !== 'verified') issues.push(`recipe_integrity:${integrity}`);
-  return { version, node: process.version, platform: process.platform, integrity, agents, updates: updateStatus(), keyPresent: credentials.present, keyConflict: credentials.conflict, locks, projectOverrides: overrides, issues, healthy: !issues.length, runtimeProof: 'not_run' };
+  return { version, node: process.version, platform: process.platform, integrity, agents, updates: updateStatus(), compressor: providerSettings().provider, compressionCredentialsRequired: ['supercompress', 'scaledown'].includes(providerSettings().provider), locks, projectOverrides: overrides, issues, healthy: !issues.length, runtimeProof: 'not_run' };
 }

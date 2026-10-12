@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { prepareHeadroom, pythonEnvironment } from './headroom.js';
+import { providerSettings } from './providers.js';
 import { root, version } from './core.js';
 import { agentExecutable } from './executable.js';
 import { profileIdentity, langfuseConfig } from './telemetry.js';
@@ -68,15 +69,17 @@ export async function startProxy(runtime, environment = {}) {
   const dir = fs.mkdtempSync(path.join(cache, 'proxy-'));
   const ready = path.join(dir, 'ready.json');
   const owner = crypto.randomUUID();
-  const controlKey = crypto.randomUUID();
+  const controlKey = environment.AGENT_CONTEXT_CONTROL_KEY || crypto.randomUUID();
+  if (!/^[a-f0-9-]{36,64}$/.test(controlKey)) throw new Error('Invalid proxy control key');
   const log = fs.openSync(path.join(dir, 'proxy.log'), 'a', 0o600);
   const identity = profileIdentity({ ...process.env, ...environment });
   const child = spawn(runtime.python, ['-m', 'agent_context_headroom.proxy'], {
-    env: pythonEnvironment({ ...process.env, AGENT_CONTEXT_COMPRESSOR: '', AGENT_CONTEXT_PROXY_PORT: '0',
+    env: pythonEnvironment({ ...process.env, AGENT_CONTEXT_PROXY_PORT: '0',
       AGENT_CONTEXT_HOST: identity.host, AGENT_CONTEXT_RUNTIME: identity.runtime,
       AGENT_CONTEXT_LANGFUSE: process.env.AGENT_CONTEXT_LANGFUSE ?? (langfuseConfig() ? '1' : '0'),
       AGENT_CONTEXT_STAGE: process.env.AGENT_CONTEXT_STAGE || 'production',
-      ...environment, AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_BRIDGE: path.join(source, 'bin/headroom-compress.js'), AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey }),
+      ...environment, AGENT_CONTEXT_COMPRESSOR: providerSettings({ ...process.env, ...environment }).provider,
+      AGENT_CONTEXT_VERSION: version, AGENT_CONTEXT_NODE: process.execPath, AGENT_CONTEXT_READY_FILE: ready, AGENT_CONTEXT_PROXY_OWNER: owner, AGENT_CONTEXT_CONTROL_KEY: controlKey }),
     windowsHide: true, stdio: ['ignore', log, log],
   });
   fs.closeSync(log);

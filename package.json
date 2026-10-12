@@ -1,19 +1,19 @@
 {
   "name": "@alexkirs/agent-context",
-  "version": "0.2.11",
+  "version": "0.4.8",
   "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/taskqorg/agent-context.git"
   },
-  "description": "Controlled SuperCompress integration for Codex, Claude Code and Hermes",
+  "description": "Local Headroom integration for Codex, Claude Code and Hermes",
   "type": "module",
   "bin": {
     "agent-context": "bin/agent-context.js"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.5"
   },
   "files": [
     "bin",
@@ -30,6 +30,8 @@
     "integrations/headroom/agent_context_headroom/*.py",
     "integrations/headroom/test_adapter.py",
     "integrations/headroom/test_collector.py",
+    "integrations/headroom/test_activity.py",
+    "integrations/headroom/test_providers.py",
     "docs/HEADROOM-QUALIFICATION.md",
     "docs/INCIDENTS.md",
     "docs/TELEMETRY-DELIVERY.md",
@@ -45,7 +47,12 @@
     "INSTALL.md",
     "AGENTS.md",
     "dashboards/serviceq.json",
-    "docs/SERVICEQ.md"
+    "docs/SERVICEQ.md",
+    "docs/WRAPPER-DESIGN.md",
+    "docs/provider-comparison-2026-10-12.json",
+    "docs/spec",
+    "benchmarks/context-options",
+    "benchmarks/desktop-candidates"
   ],
   "scripts": {
     "test": "node scripts/integrity.js && node --test",

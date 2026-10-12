@@ -1,0 +1,115 @@
+{
+  "version": "1.2.3",
+  "scope": "isolated native output screen; no agent install; not billing savings",
+  "rows": [
+    {
+      "fixture": "claude-bash-log",
+      "command": [
+        "filter",
+        "--deliver",
+        "docker",
+        "logs",
+        "fixture"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 81,
+      "input_tokens": 4018,
+      "output_tokens": 119,
+      "reduction_pct": 97.0,
+      "missing": [],
+      "output_sha256": "5a690c6782b948bf7dc72510d142f3609a46be6c844f10637953ca7a9900aec0"
+    },
+    {
+      "fixture": "codex-test-failure",
+      "command": [
+        "filter",
+        "--deliver",
+        "pytest",
+        "-q"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 32,
+      "input_tokens": 923,
+      "output_tokens": 320,
+      "reduction_pct": 65.3,
+      "missing": [],
+      "output_sha256": "d9c3ec500a488b2f101b694c7cf356476bddd458c1f411b94b28a24a47648888"
+    },
+    {
+      "fixture": "codex-code-read",
+      "command": [
+        "read",
+        "/tmp/contextq-tokenade/workspace/codex-code-read.txt"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 36,
+      "input_tokens": 511,
+      "output_tokens": 511,
+      "reduction_pct": 0.0,
+      "missing": [],
+      "output_sha256": "233cad7d6ecc92bcee7876b3500a5fd67675711ba76531501f0eeba03038239f"
+    },
+    {
+      "fixture": "codex-json-read",
+      "command": [
+        "read",
+        "/tmp/contextq-tokenade/workspace/codex-json-read.txt"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 34,
+      "input_tokens": 537,
+      "output_tokens": 291,
+      "reduction_pct": 45.8,
+      "missing": [
+        "\"node\": \">=22\""
+      ],
+      "output_sha256": "7f1a1a8c401eb2c900cc07d0d25e10b430f620feb829264b181c0eeb9665bad3",
+      "valid_same_json": false
+    },
+    {
+      "fixture": "codex-search",
+      "command": [
+        "filter",
+        "--deliver",
+        "grep",
+        "-n",
+        "ERROR"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 27,
+      "input_tokens": 141,
+      "output_tokens": 141,
+      "reduction_pct": 0.0,
+      "missing": [],
+      "output_sha256": "85dc54b9d2567ed7f48b56db1a168191c9fc9ac804b5785dc37afe12c75f30ed"
+    },
+    {
+      "fixture": "claude-doc-read",
+      "command": [
+        "read",
+        "/tmp/contextq-tokenade/workspace/claude-doc-read.txt"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 33,
+      "input_tokens": 1909,
+      "output_tokens": 1909,
+      "reduction_pct": 0.0,
+      "missing": [],
+      "output_sha256": "487b070c58302a582b997a591d572d0406eb8bae8b26f8c5d52030fd3dfe33d7"
+    },
+    {
+      "fixture": "dense-protected",
+      "command": [
+        "read",
+        "/tmp/contextq-tokenade/workspace/dense-protected.txt"
+      ],
+      "exit_code": 0,
+      "elapsed_ms": 28,
+      "input_tokens": 21,
+      "output_tokens": 21,
+      "reduction_pct": 0.0,
+      "missing": [],
+      "output_sha256": "a1a39b6efeda8ac7b744889f19418e1fd102052411073db033cfa9fcd7c38ce2"
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+[
+  {
+    "full_name": "router-for-me/CLIProxyAPI",
+    "stargazers_count": 54854,
+    "pushed_at": "2026-10-11T22:39:21Z",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "html_url": "https://github.com/router-for-me/CLIProxyAPI"
+  },
+  {
+    "full_name": "musistudio/claude-code-router",
+    "stargazers_count": 37628,
+    "pushed_at": "2026-10-10T03:35:10Z",
+    "license": {
+      "key": "mit",
+      "name": "MIT License",
+      "spdx_id": "MIT",
+      "url": "https://api.github.com/licenses/mit",
+      "node_id": "MDc6TGljZW5zZTEz"
+    },
+    "html_url": "https://github.com/musistudio/claude-code-router"
+  },
+  {
+    "full_name": "rtk-ai/rtk",
+    "stargazers_count": 82975,
+    "pushed_at": "2026-10-11T23:13:12Z",
+    "license": {
+      "key": "apache-2.0",
+      "name": "Apache License 2.0",
+      "spdx_id": "Apache-2.0",
+      "url": "https://api.github.com/licenses/apache-2.0",
+      "node_id": "MDc6TGljZW5zZTI="
+    },
+    "html_url": "https://github.com/rtk-ai/rtk"
+  },
+  {
+    "full_name": "mksglu/context-mode",
+    "stargazers_count": 26678,
+    "pushed_at": "2026-10-11T18:05:48Z",
+    "license": {
+      "key": "other",
+      "name": "Other",
+      "spdx_id": "NOASSERTION",
+      "url": null,
+      "node_id": "MDc6TGljZW5zZTA="
+    },
+    "html_url": "https://github.com/mksglu/context-mode"
+  },
+  {
+    "full_name": "BerriAI/litellm",
+    "stargazers_count": 60979,
+    "pushed_at": "2026-10-11T23:58:24Z",
+    "license": {
+      "key": "other",
+      "name": "Other",
+      "spdx_id": "NOASSERTION",
+      "url": null,
+      "node_id": "MDc6TGljZW5zZTA="
+    },
+    "html_url": "https://github.com/BerriAI/litellm"
+  }
+]

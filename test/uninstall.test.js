@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import { parse, stringify } from 'smol-toml';
@@ -110,4 +111,18 @@ test('failed preparation without registrations can be removed; unjournaled owned
   await assert.rejects(uninstall({ removeGlobal: noGlobal }), /no restoration journal/);
   fs.writeFileSync(file, 'model="keep"\n');
   assert.equal((await uninstall({ removeGlobal: noGlobal })).status, 'removed'); assert.equal(fs.existsSync(root()), false);
+});
+
+test('uninstall refuses active owned native command, then removes completed recovery data',async()=>{
+ const {home,file}=fixture();install(['codex'],{automatic:true});const before=fs.readFileSync(file);
+ const id=crypto.randomUUID(),dir=path.join(os.tmpdir(),'agent-context-native-'+id);
+ fs.mkdirSync(dir,{mode:0o700});const marker={schema:1,id,owner:root(),pid:process.pid,at:Date.now(),completed:false};
+ try{
+  fs.writeFileSync(path.join(dir,'run.json'),JSON.stringify(marker));
+  await assert.rejects(uninstall({removeGlobal:noGlobal}),/native command still running/);
+  assert.deepEqual(fs.readFileSync(file),before);
+  fs.writeFileSync(path.join(dir,'run.json'),JSON.stringify({...marker,completed:true}));
+  assert.ok((await uninstall({dryRun:true,removeGlobal:noGlobal})).removeTemporaryData.includes(dir));
+  await uninstall({removeGlobal:noGlobal});assert.equal(fs.existsSync(dir),false);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});fs.rmSync(home,{recursive:true,force:true})}
 });

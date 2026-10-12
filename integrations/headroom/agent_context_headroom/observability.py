@@ -8,28 +8,37 @@ import os
 import re
 from pathlib import Path
 import uuid
-from collections import Counter
+from collections import Counter, deque
 from threading import Lock
 import time
 
 identity = ContextVar('agent_context_request', default={})
+compression_outcome = ContextVar('agent_context_compression_outcome', default=None)
 _outcomes = Counter()
+_native = Counter()
+_native_ids = set()
+_native_order = deque()
 _outcome_lock = Lock()
 _last_compression = None
+_latency = Counter()
 _tool_context = Counter()
 
 
-def record_compression(status, before, after, elapsed_ms):
+def record_compression(status, before, after, elapsed_ms, strategy='local-text'):
+    from .providers import provider_name
     global _last_compression
     with _outcome_lock:
         _outcomes[status] += 1
         _last_compression = time.time()
+        _latency['calls'] += 1
+        _latency['total_ms'] += elapsed_ms
+        _latency['max_ms'] = max(_latency['max_ms'], elapsed_ms)
     from opentelemetry import trace
     span = trace.get_current_span()
     for key, value in {'outcome': status, 'input_chars': before, 'output_chars': after,
-                       'elapsed_ms': elapsed_ms, 'compressor': 'supercompress'}.items():
+                       'elapsed_ms': elapsed_ms, 'strategy': strategy, 'compressor': provider_name()}.items():
         span.set_attribute('agent_context.compression.' + key, value)
-    normal = {'compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget'}
+    normal = {'compressed', 'retrieval', 'content_type', 'ineligible', 'no_gain', 'empty', 'too_large', 'request_budget', 'passthrough'}
     if status not in normal:
         span.set_attribute('langfuse.observation.level', 'ERROR')
         span.set_attribute('langfuse.observation.status_message', status)
@@ -37,11 +46,31 @@ def record_compression(status, before, after, elapsed_ms):
         span.set_status(Status(StatusCode.ERROR, status))
 
 
-def compression_status():
+def native_seen(event_id):
     with _outcome_lock:
-        return {'supercompress_outcomes': dict(_outcomes), 'last_attempt_at': _last_compression,
-                'tool_context': dict(_tool_context),
-                'coverage': 'router_tool_blocks_only_not_all_codex_ws_frames',
+        return event_id in _native_ids
+
+
+def record_native(value):
+    with _outcome_lock:
+        if value['id'] in _native_ids:
+            return False
+        _native_ids.add(value['id'])
+        _native_order.append(value['id'])
+        if len(_native_order) > 1000:
+            _native_ids.discard(_native_order.popleft())
+        _native['native_rtk_calls'] += 1
+        _native['native_rtk_input_estimate'] += value['input_tokens']
+        _native['native_rtk_output_estimate'] += value['output_tokens']
+        _native['native_rtk_nonzero_exits'] += int(value.get('exit_code', 0) != 0)
+    return True
+
+def compression_status():
+    from .providers import provider_name
+    with _outcome_lock:
+        return {'outcomes': dict(_outcomes), 'last_attempt_at': _last_compression,
+                'tool_context': dict(_tool_context), 'latency': dict(_latency), 'native_tools': dict(_native),
+                'coverage': 'qualified_native_commands_and_reference_mcp' if provider_name() == 'local-tools' else 'router_tool_blocks_only_not_all_codex_ws_frames',
                 'proof': 'adapter_outcomes_not_model_token_savings'}
 
 
@@ -51,15 +80,12 @@ def configure_environment():
         return False
     try:
         home = Path(os.environ.get('AGENT_CONTEXT_HOME') or str(Path.home()))
-        enrolled = home / '.agent-context/enrollment.json'
-        if enrolled.is_file():
-            source = home / '.codex/langfuse.json'
-            if source.is_file() and json.loads(source.read_text()).get('enabled') is False:
-                raise ValueError('Langfuse disabled by profile owner')
-            from .collector import device_config
-            _, device = device_config()
-            os.environ['LANGFUSE_PUBLIC_KEY'] = 'pk-lf-device-' + device['device']
-            os.environ['LANGFUSE_SECRET_KEY'] = 'sk-lf-device-' + device['token']
+        source = Path(os.environ.get('AGENT_CONTEXT_LANGFUSE_CONFIG', str(home / '.codex/langfuse.json')))
+        if (home / '.agent-context/enrollment.json').is_file() or source.is_file():
+            from .collector import collector_config
+            _, config = collector_config()
+            os.environ['LANGFUSE_PUBLIC_KEY'] = config['public_key']
+            os.environ['LANGFUSE_SECRET_KEY'] = config['secret_key']
             os.environ['LANGFUSE_BASE_URL'] = 'http://127.0.0.1:' + os.environ['AGENT_CONTEXT_PROXY_PORT']
         if not (os.environ.get('LANGFUSE_PUBLIC_KEY') and os.environ.get('LANGFUSE_SECRET_KEY')):
             home = Path(os.environ.get('AGENT_CONTEXT_HOME') or str(Path.home()))
@@ -114,10 +140,12 @@ class CorrelatedTracer:
         values['agent_context.agent'] = os.environ.get('AGENT_CONTEXT_AGENT', 'unknown')
         values['agent_context.host'] = os.environ.get('AGENT_CONTEXT_HOST', 'unknown')
         values['agent_context.runtime'] = os.environ.get('AGENT_CONTEXT_RUNTIME', 'native')
-        values['agent_context.compressor'] = 'headroom' if os.environ.get('AGENT_CONTEXT_COMPRESSOR') == 'native' else 'supercompress'
+        from .providers import provider_name
+        values['agent_context.compressor'] = provider_name()
         values['langfuse.trace.tags'] = ['agent:' + values['agent_context.agent'], 'host:' + values['agent_context.host'], 'runtime:' + values['agent_context.runtime'], 'component:compression']
         if values.get('session.id'):
             values['langfuse.session.id'] = values['session.id']
+            values['agent_context.native_session_missing'] = False
         # Compression token estimates are not generation usage or monetary savings.
         return self.delegate.start_as_current_span(name, attributes=values)
 
@@ -141,7 +169,8 @@ class RequestIdentity:
                     turn = metadata.get('turn_id') or turn
             except ValueError:
                 pass
-        valid = lambda value: isinstance(value, str) and bool(re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', value))
+        # Hermes native turn IDs contain session:task:turn components.
+        valid = lambda value: isinstance(value, str) and bool(re.fullmatch(r'[a-zA-Z0-9_:-]{1,128}', value))
         session = session if valid(session) else None
         turn = turn if valid(turn) else None
         values = {'agent_context.request_id': uuid.uuid4().hex,

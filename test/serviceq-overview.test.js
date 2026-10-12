@@ -22,7 +22,7 @@ test('absence and stale healthy samples remain unknown; missing reports are gaps
 test('compression skips and failures are disjoint; missing outcome never becomes a false error; no private metadata escapes', () => {
   const result = overview({ compression: [
     row({ metadata: meta({ 'compression.outcome': 'compressed', 'compression.input_chars': 100, 'compression.output_chars': 50 }) }),
-    row({ metadata: meta({ 'compression.outcome': 'ineligible', 'compression.input_chars': 40, 'compression.output_chars': 40 }) }),
+    row({ metadata: meta({ 'compression.outcome': 'passthrough', 'compression.input_chars': 40, 'compression.output_chars': 40 }) }),
     row({ level: 'ERROR', reason: 'SECRET', metadata: { ...meta({ 'compression.outcome': 'timeout' }), private_key: 'SECRET' } }),
     row({ metadata: {} })
   ] }, now);
@@ -33,7 +33,7 @@ test('compression skips and failures are disjoint; missing outcome never becomes
   assert.ok(!JSON.stringify(result).includes('SECRET'));
 });
 test('known compression failures at DEFAULT level are visible; unknown outcomes remain observation gaps', () => {
-  const failures = ['bridge_unavailable', 'bridge_failed', 'missing_current_query', 'timeout', 'missing_key', 'key_conflict', 'request_failed', 'invalid_response', 'fallback'];
+  const failures = ['neural_unavailable', 'bridge_unavailable', 'bridge_failed', 'missing_current_query', 'timeout', 'missing_key', 'key_conflict', 'request_failed', 'invalid_response', 'fallback'];
   const result = overview({ compression: [
     ...failures.map(outcome => row({ metadata: meta({ 'compression.outcome': outcome }) })),
     row({ metadata: meta({ 'compression.outcome': 'future_or_SECRET' }) }),
@@ -74,4 +74,16 @@ test('Langfuse boolean updater flags and legacy strings agree; absent flags rema
     const result = overview({ health: [row({ service: 'updater', agent: 'none', metadata: meta({ 'update.enabled': flag }) })] }, now);
     assert.equal(result.hosts.find(h => h.id === 'windows/native').update.enabled, expected);
   }
+});
+
+test('native WebSocket counters retain separate units and missing measurements remain null', () => {
+  const result = overview({ health: [row({ metadata: meta({ 'monitor.codex_ws_frames_attempted_total': 5, 'monitor.codex_ws_frames_failed_total': 0, 'monitor.codex_ws_frame_bytes_before_sum': 12000, 'monitor.codex_ws_frame_elapsed_max_ms': 500 }) })] }, now);
+  const agent = result.hosts.find(h => h.id === 'windows/native').agents[0];
+  assert.equal(agent.proxy[0].metrics.codex_ws_frames_attempted_total, 5);
+  assert.equal(agent.proxy[0].metrics.codex_ws_frames_failed_total, 0);
+  assert.equal(agent.proxy[0].metrics.codex_ws_frames_compressed_total, null);
+  assert.equal(agent.compression, null);
+  assert.equal(agent.activity, null);
+  const missing = overview({ health: [row({ state: 'warning', reason: 'native_stats_unavailable' })] }, now);
+  assert.ok([...missing.issues, ...missing.gaps].some(i => i.detail.includes('счётчики Headroom недоступны')));
 });

@@ -16,7 +16,7 @@ export function createGateway(config, { request = fetch, now = Date.now, release
   if (typeof config.stateDir !== 'string' || !path.isAbsolute(config.stateDir)) throw new Error('Unsupported gateway state directory');
   if (!/^[a-zA-Z0-9-]{1,39}$/.test(config.organization) || !/^[a-zA-Z0-9._-]{1,100}$/.test(config.clientId) || config.team && !/^[a-zA-Z0-9_-]{1,100}$/.test(config.team)) throw new Error('Unsupported gateway GitHub configuration');
   const destination = new URL(config.langfuse?.base_url);
-  if (destination.protocol !== 'https:' || destination.username || destination.password || destination.pathname !== '/' || destination.search || destination.hash || !/^pk-lf-[A-Za-z0-9_-]{16,}$/.test(config.langfuse?.public_key) || !/^sk-lf-[A-Za-z0-9_-]{16,}$/.test(config.langfuse?.secret_key) || !/^sc_[A-Za-z0-9_]{20,}$/.test(config.supercompressKey)) throw new Error('Unsupported gateway service configuration');
+  if (destination.protocol !== 'https:' || destination.username || destination.password || destination.pathname !== '/' || destination.search || destination.hash || !/^pk-lf-[A-Za-z0-9_-]{16,}$/.test(config.langfuse?.public_key) || !/^sk-lf-[A-Za-z0-9_-]{16,}$/.test(config.langfuse?.secret_key) || config.supercompressKey !== undefined && !/^sc_[A-Za-z0-9_]{20,}$/.test(config.supercompressKey)) throw new Error('Unsupported gateway service configuration');
   const stateFile = path.join(config.stateDir, 'devices.json');
   fs.mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
   fs.chmodSync(config.stateDir, 0o700);
@@ -166,11 +166,12 @@ export function createGateway(config, { request = fetch, now = Date.now, release
           let response;
           compressing++;
           try {
-            response = await request('https://www.supercompress.dev/api/v1/compress', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.supercompressKey, 'Idempotency-Key': requestId }, body: JSON.stringify({ context: body.context, query: body.query, session_id: sha(device.id + '\0' + body.session_id), request_id: requestId, ccr: true, mode: 'compiler', coding_agent: body.coding_agent, source: 'agent-context' }), signal: AbortSignal.timeout(10000), redirect: 'error' });
+            if (!config.supercompressKey) return failure(410, 'cloud_compression_retired');
+            response = await request('https://www.supercompress.dev/api/v1/compress', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-API-Key': config.supercompressKey, 'Idempotency-Key': requestId }, body: JSON.stringify({ context: body.context, query: body.query, session_id: sha(device.id + '\0' + body.session_id), request_id: requestId, mode: 'neural', coding_agent: body.coding_agent, source: 'agent-context' }), signal: AbortSignal.timeout(10000), redirect: 'error' });
           } finally { compressing--; }
           if (!response.ok) return failure(502, 'compressor_unavailable');
           const result = await response.json();
-          return Response.json(Object.fromEntries(['compressed_text', 'compressed_context', 'compressed', 'original_tokens', 'kept_tokens', 'compressed_tokens'].filter(key => typeof result[key] === 'string' || Number.isFinite(result[key])).map(key => [key, result[key]])));
+          return Response.json(Object.fromEntries(['compressed_text', 'compressed_context', 'compressed', 'original_tokens', 'kept_tokens', 'compressed_tokens', 'mode', 'neural_keep_fallback'].filter(key => typeof result[key] === 'string' || Number.isFinite(result[key]) || (key === 'neural_keep_fallback' && typeof result[key] === 'boolean')).map(key => [key, result[key]])));
         }
         if (req.method === 'POST' && url.pathname === '/api/public/otel/v1/traces') {
           if (!rate('telemetry:' + device.id, 120)) return failure(429, 'rate_limited');
@@ -190,7 +191,7 @@ export function createGateway(config, { request = fetch, now = Date.now, release
             const host = attrs.find(attr => attr.key === 'agent_context.host')?.value?.stringValue;
             if (host != null && !label(host)) return failure(400, 'invalid_identity');
             span.attributes = attrs.filter(attr => !['langfuse.user.id', 'user.id', 'langfuse.trace.tags', 'agent_context.device', 'agent_context.user'].includes(attr.key));
-            span.attributes.push({ key: 'langfuse.user.id', value: { stringValue: device.user } }, { key: 'agent_context.device', value: { stringValue: device.id } }, { key: 'agent_context.user', value: { stringValue: device.user } }, { key: 'langfuse.trace.tags', value: { arrayValue: { values: [...tags.filter(tag => typeof tag.stringValue === 'string' && !/^(user|device):/.test(tag.stringValue)), { stringValue: 'user:' + device.user }, { stringValue: 'device:' + device.id }] } } });
+            span.attributes.push({ key: 'user.id', value: { stringValue: device.user } }, { key: 'langfuse.user.id', value: { stringValue: device.user } }, { key: 'agent_context.device', value: { stringValue: device.id } }, { key: 'agent_context.user', value: { stringValue: device.user } }, { key: 'langfuse.trace.tags', value: { arrayValue: { values: [...tags.filter(tag => typeof tag.stringValue === 'string' && !/^(user|device):/.test(tag.stringValue)), { stringValue: 'user:' + device.user }, { stringValue: 'device:' + device.id }] } } });
             ids.push(span.traceId.toLowerCase());
             if (ids.length > 1000) return failure(413, 'span_limit');
             // Namespace trace IDs so a device cannot append to/read another device or legacy trace.

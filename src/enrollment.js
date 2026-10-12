@@ -3,6 +3,8 @@ import path from 'node:path';
 import { root } from './core.js';
 import { atomicSecretWrite } from './private-file.js';
 
+export const teamGateway = 'https://langfuse.ufobe.com/api/public/agent-context';
+
 export function gatewayURL(value) {
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !['/', '/api/public/agent-context'].includes(url.pathname.replace(/\/$/, '') || '/')) throw new Error('Unsupported gateway URL; HTTPS gateway required');

@@ -1,0 +1,49 @@
+[
+  {
+    "case": "function-string",
+    "status": 200,
+    "before_chars": 74944,
+    "after_chars": 2748,
+    "changed": true,
+    "required_error_retained": true,
+    "user_query_unchanged": true,
+    "call_id_preserved": true,
+    "elapsed_ms": 67
+  },
+  {
+    "case": "custom-string",
+    "status": 200,
+    "before_chars": 74944,
+    "after_chars": 1666,
+    "changed": true,
+    "required_error_retained": true,
+    "user_query_unchanged": true,
+    "call_id_preserved": true,
+    "elapsed_ms": 34
+  },
+  {
+    "case": "custom-typed",
+    "status": 200,
+    "before_chars": 74978,
+    "after_chars": 1700,
+    "changed": true,
+    "required_error_retained": true,
+    "user_query_unchanged": true,
+    "call_id_preserved": true,
+    "elapsed_ms": 31
+  },
+  {
+    "case": "custom-exec-json",
+    "status": 200,
+    "before_chars": 77096,
+    "after_chars": 1062,
+    "changed": true,
+    "required_error_retained": false,
+    "user_query_unchanged": true,
+    "call_id_preserved": true,
+    "elapsed_ms": 10,
+    "inner_json_replaced_by_summary": true,
+    "error_and_exit_hidden_inline": true,
+    "recovery_semantically_exact": true
+  }
+]

@@ -31,7 +31,7 @@ export async function runChild(command, args, input, env = {}) {
 async function verifyAutomatic(agent) {
   const configured = doctor().agents[agent] === 'configured';
   const service = await serviceHealth(agent) ? 'ready' : 'unavailable';
-  const result = await compress({ context: sample(), query: 'Summarize the observations and preserve the exact ERROR line.', session: `verify-${crypto.randomUUID()}`, agent: names[agent] });
+  const result = service === 'unavailable' ? { compressed_text: sample(), skipped: 'service_unavailable' } : await compress({ context: sample(), query: 'Summarize the observations and preserve the exact ERROR line.', session: `verify-${crypto.randomUUID()}`, agent: names[agent] });
   const { compressed_text, ...metadata } = result;
   const report = { agent, mode: 'automatic', configured, service, ...metadata, criticalRetained: compressed_text.includes('ERROR ECONNREFUSED db.internal:5432'), retrieval: 'not_applicable' };
   // Hermes has no retrieval MCP; Codex and Claude expose headroom_retrieve.
@@ -52,7 +52,7 @@ async function verifyAutomatic(agent) {
     }
   }
   report.passed = configured && service === 'ready' && !result.skipped && report.criticalRetained && report.retrieval !== 'unavailable';
-  report.proof = 'owned_service_bridge_and_retrieval_not_model_session';
+  report.proof = 'owned_service_local_probe_and_retrieval_not_model_session';
   return report;
 }
 export async function verify(agent) {

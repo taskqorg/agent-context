@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {enqueueCodexExport,processCodexExports,nativeExportStats} from '../src/native-export.js';
+import {root,version} from '../src/core.js';
+const profile=fs.mkdtempSync(path.join(os.tmpdir(),'contextq-native-export-'));
+process.env.AGENT_CONTEXT_HOME=profile;
+const source=path.join(profile,'.codex/sessions/fixture.jsonl');fs.mkdirSync(path.dirname(source),{recursive:true});
+const lines=[{type:'session_meta',payload:{id:'native-session'}},...['earlier','current'].flatMap(turn=>[{type:'event_msg',payload:{type:'task_started',turn_id:turn}},{type:'response_item',payload:{type:'message',content:[{type:'input_text',text:turn+' exact literal'}]}},{type:'event_msg',payload:{type:'task_complete',turn_id:turn}}])];
+fs.writeFileSync(source,lines.map(x=>JSON.stringify(x)).join('\n')+'\n');
+test('R9: Stop only queues; retry preserves job, worker exports one exact turn and acknowledges once',async()=>{
+ const input={transcript_path:source,turn_id:'current'};
+ assert.deepEqual(enqueueCodexExport(input),enqueueCodexExport(input));assert.equal(nativeExportStats().queue_batches,1);
+ const collector=async()=>({base_url:'http://127.0.0.1:18787',public_key:'synthetic',secret_key:'synthetic'});
+ await processCodexExports({collector,run:async()=>{throw new Error('fixture unavailable')}});
+ assert.equal(nativeExportStats().queue_batches,1);
+ let calls=0;
+ await processCodexExports({collector,now:Date.now()+10000,run:async(command,args,options)=>{
+  calls++;assert.equal(options.env.LANGFUSE_FLUSH_AT,'1');assert.equal(JSON.parse(options.env.LANGFUSE_CODEX_METADATA)['agent_context.exporter_version'], version);const payload=JSON.parse(options.input),text=fs.readFileSync(payload.transcript_path,'utf8');
+  assert.equal(payload.turn_id,'current');assert.ok(text.includes('current exact literal'));assert.ok(!text.includes('earlier exact literal'));assert.ok(text.includes('native-session'));
+  fs.writeFileSync(payload.transcript_path+'.langfuse','current\n');
+ }});
+ assert.equal(calls,1);assert.equal(nativeExportStats().queue_batches,0);assert.equal(fs.readFileSync(source+'.langfuse','utf8'),'current\n');
+ enqueueCodexExport(input);await processCodexExports({run:async()=>assert.fail('acknowledged turn must not be exported twice')});
+ assert.equal(nativeExportStats().queue_batches,0);
+ assert.throws(()=>enqueueCodexExport({transcript_path:path.join(profile,'secret.json')}));
+ fs.rmSync(profile,{recursive:true,force:true});
+});

@@ -4,9 +4,18 @@ import json
 import re
 
 query = ContextVar('agent_context_query', default='')
-# Per-request (per WS frame) wall-clock budget for all paid compression calls together.
-REQUEST_BUDGET_SECONDS = 20.0
-deadline = ContextVar('agent_context_deadline', default=None)
+
+
+def request_tool_result_ids(request):
+    messages = request.get('messages', []) if isinstance(request, dict) else []
+    if not isinstance(messages, list) or not messages:
+        return []
+    latest = messages[-1]
+    if not isinstance(latest, dict) or latest.get('role') != 'user' or not isinstance(latest.get('content'), list):
+        return []
+    # Claude's native exporter records tool_id; link the current request without inventing a turn ID.
+    ids = [block.get('tool_use_id') for block in latest['content'] if isinstance(block, dict) and block.get('type') == 'tool_result']
+    return list(dict.fromkeys(value for value in ids if isinstance(value, str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', value)))[:64]
 
 
 def current_query(body):
@@ -34,7 +43,6 @@ class CurrentRequest:
         if scope['type'] not in {'http', 'websocket'}:
             return await self.app(scope, receive, send)
         token = query.set('')
-        deadline_token = deadline.set([0.0])
         from .observability import identity
         identity_token = identity.set(dict(identity.get()))
         body = bytearray()
@@ -49,9 +57,6 @@ class CurrentRequest:
                     body.extend(message.get('body', b''))
                 if not message.get('more_body'):
                     payload = body
-            if payload:
-                import time
-                deadline.get()[0] = time.monotonic() + REQUEST_BUDGET_SECONDS
             if payload and len(payload) > 2_000_000:
                 query.set('')
             if payload and len(payload) <= 2_000_000:
@@ -71,8 +76,12 @@ class CurrentRequest:
                         except ValueError:
                             pass
                     ids = dict(identity.get())
+                    ids.pop('agent_context.request_tool_result_ids', None)
+                    tool_ids = request_tool_result_ids(request)
+                    if tool_ids:
+                        ids['agent_context.request_tool_result_ids'] = tool_ids
                     for key, source in [('session.id', native.get('thread_id') or native.get('session_id')), ('agent_context.turn_id', native.get('turn_id'))]:
-                        if isinstance(source, str) and re.fullmatch(r'[a-zA-Z0-9_-]{1,128}', source):
+                        if isinstance(source, str) and re.fullmatch(r'[a-zA-Z0-9_:-]{1,128}', source):
                             ids[key] = source
                             ids['agent_context.native_session_missing' if key == 'session.id' else 'agent_context.native_turn_missing'] = False
                     identity.set(ids)
@@ -86,5 +95,4 @@ class CurrentRequest:
             return await self.app(scope, capture, send)
         finally:
             query.reset(token)
-            deadline.reset(deadline_token)
             identity.reset(identity_token)
