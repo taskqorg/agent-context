@@ -1,11 +1,11 @@
 {
-  "version": "0.4.14",
+  "version": "0.4.15",
   "files": {
     "bin/agent-context.js": "993e7ad44dbea8c35e21a9d8c0693aaae9bdeba5b025d2ac487b7d4713c46b56",
     "bin/headroom-compress.js": "47f44b5a91c047eb9e9f95aeb25c9d25a0c4f1bba509ac022b5eafdce7ed75fe",
     "src/automatic.js": "c4389eebc7dc03a57e9991b010633b9e27b60b643eb476c781b9de6e94b52942",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "249ad612eec0549f044f39b406d59ccb00291d76e26809005740d5f24a14f128",
+    "src/core.js": "1520ad7c85fa2aea6ed08eb55b27b93b4117e6f9a53c48f8aabe5a1705caead8",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "a53ddc3151034e9b07f1caefacdc4a1c447ed202a13f70498635dfd3f0531295",
     "src/enrollment.js": "d65a89bf1bd4ad2ae429b05e11fdc3637e190841999438cb01fa3663aa152104",
@@ -50,7 +50,7 @@
     "integrations/headroom/agent_context_headroom/proxy.py": "91a0e6058ea2343bc24562006d41e7136e7cb8f0b212959dd14f8c4affb32957",
     "integrations/headroom/agent_context_headroom/observability.py": "2c838bd2266e3c963a72b0ab5075338e1a45bf4167e642adc48830651d916ec3",
     "integrations/headroom/agent_context_headroom/request_context.py": "a4a7491b92cf8eeda5058ffad470f11be6da64703d963ac73a3bd3ed1f6237b1",
-    "integrations/headroom/agent_context_headroom/collector.py": "5fb1432d9c1c1be0e2f0d2b6ef320d999eadf04b338cd915f1cb3f61e16fe69d",
+    "integrations/headroom/agent_context_headroom/collector.py": "c640b918e1e4fa126ad22bcdf89a409dfa8a6ae2bdd5dd66e445adc28c03aaab",
     "scripts/headroom-benchmark.py": "3c57cf489b0bf71f712a59caa8beca15c9417476b9870e1c76c3ea5eda4c3b79",
     "scripts/headroom-claude.py": "2d5f1ab34cc3027ce114f8a70fd1f3bfe5581287f0e2851fbe568c200266b700",
     "scripts/headroom-hermes.py": "f6901cb4fecb5b3e913b3d51367a3f7bbe7aba41fff0d9f3d1f26111f5ae0f71",

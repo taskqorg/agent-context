@@ -20,6 +20,56 @@ spec.loader.exec_module(collector)
 
 
 class CollectorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sender_open_failure_retains_packet_and_periodic_retry_recovers(self):
+        from fastapi import FastAPI
+        import httpx
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            device = dict(gateway='https://gateway.invalid', device='d' * 32,
+                          token='acd_' + 'e' * 64, enrolled=True,
+                          public_key='fixture-public', secret_key='fixture-secret')
+            target = home / '.agent-context/telemetry-outbox' / device['device'] / 'codex'
+            target.mkdir(parents=True)
+            packet = target / 'retained.json'
+            data = b'{"resourceSpans":[]}'
+            packet.write_bytes(data)
+            attempts = []
+            recovered = asyncio.Event()
+            real_open, real_client = Path.open, httpx.AsyncClient
+            async def receive(request):
+                attempts.append(request.content)
+                return httpx.Response(200, json={})
+            def denied_once(path, *args, **kwargs):
+                if path == target / 'sender.lock' and not recovered.is_set():
+                    raise PermissionError('fixture-private-error')
+                return real_open(path, *args, **kwargs)
+            original_sleep = asyncio.sleep
+            async def retry_delay(delay):
+                self.assertEqual(delay, 5)
+                if not recovered.is_set():
+                    self.assertEqual(packet.read_bytes(), data)
+                    self.assertEqual(attempts, [])
+                    self.assertEqual(app.state.agent_context_collector_status(),
+                                     {'failures': 1, 'lastError': 'queue_unreadable'})
+                    recovered.set()
+                await original_sleep(0.01)
+            with patch.dict(os.environ, {'AGENT_CONTEXT_AGENT': 'codex'}), \
+                 patch.object(collector, 'collector_config', return_value=(home, device)):
+                app = FastAPI()
+                self.assertTrue(collector.attach_collector(app))
+                with patch.object(Path, 'open', denied_once), \
+                     patch.object(collector.httpx, 'AsyncClient', lambda **kw: real_client(transport=httpx.MockTransport(receive), **kw)), \
+                     patch.object(collector.asyncio, 'sleep', retry_delay):
+                    async with app.router.lifespan_context(app):
+                        for _ in range(100):
+                            if not packet.exists():
+                                break
+                            await original_sleep(0.01)
+                        self.assertFalse(packet.exists())
+                        self.assertEqual(attempts, [data])
+                        self.assertEqual(app.state.agent_context_collector_status(),
+                                         {'failures': 1, 'lastError': None})
+
     def test_sender_lease_is_exclusive_and_released_on_failure(self):
         from agent_context_headroom.collector import sender_lease
         with tempfile.TemporaryDirectory() as directory:
