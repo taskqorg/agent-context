@@ -1,57 +1,27 @@
-# Agent Context
+# agentq
 
-Разработка по спецификации: [раздел спецификаций](docs/spec/README.md), [правила написания](docs/spec/AUTHORING.md), [спецификация продукта](docs/spec/PRODUCT.md). Спецификация — draft; проверенные возможности отмечены отдельно.
+agentq installs, routes and observes context optimization for Codex, Claude Code and Hermes on one host. One static binary per OS; no Node, npm or toolchain on the host. Decisions: [agentq.md](agentq.md). Product outcomes: [docs/spec/PRODUCT.md](docs/spec/PRODUCT.md).
 
-Автоматическое **локальное** сжатие результатов инструментов для Codex, Claude Code и Hermes. Headroom обрабатывает JSON, логи и другие структурированные форматы; встроенный TextCrusher выбирает важные предложения в обычном тексте. Облачный компрессор, его ключи, плата за сжатие и скачивание весов нейрокомпрессора не нужны. Исходники проходят без сокращения, пользовательский запрос сохраняется.
+## Install through an agent
 
-Один npm-пакет ставит своё Python-окружение, настраивает выбранных агентов, диагностику и автообновления. Поддерживаемые платформы установщика: macOS (Intel/Apple Silicon), Windows x64 и Linux/WSL (x64/ARM64, glibc 2.28+). Системные Node.js 22+, npm, Git и Python 3.11–3.13 с `venv`/`ensurepip` нужны заранее; при онбординге агент помогает их установить. Интернет нужен для первичной установки зависимостей, обновлений и обычной работы модели агента.
+Paste into a supported agent:
 
-Онбординг через чат: `agent-context onboard` находит готовые профили и недостающие зависимости. `agent-context onboard --yes` настраивает выбранных агентов, локальное сжатие, телеметрию и мониторинг. Сохранённый доступ используется повторно; новому устройству предлагается один GitHub-вход в команду. Сервисные ключи сотрудникам не нужны. Другой gateway задаётся через `--gateway <HTTPS URL>`. Сжатие остаётся локальным и не зависит от доступности Langfuse. Процедура: [INSTALL.md](INSTALL.md#короткий-сценарий-в-чате).
+> Install agentq from https://github.com/taskqorg/agentq. Read INSTALL.md, run onboarding, and report what works and what still needs setup.
 
-**0.3.0 — кандидат локального режима.** Квалификация на одной ОС не доказывает работу на остальных. Переход с 0.2.x требует явной миграции, работающие профили автоматически не переводятся. Старый маршрут сжатия на gateway сохранён для прежних клиентов; новые клиенты его не вызывают.
+Native Windows and WSL are separate installs. Procedure: [INSTALL.md](INSTALL.md).
 
-## Установить через агента
+## Commands
 
-Вставьте в любой из поддерживаемых агентов:
+- `agentq onboard` finds ready agents and a legacy install; writes nothing. `agentq onboard --yes [codex|claude|hermes..]` applies config edits, installs the service and prints what to verify by a real turn.
+- `agentq langfuse` reads the Langfuse host and keys from hidden stdin into protected storage. `agentq telemetry status|verify` shows the queue and checks delivery.
+- `agentq service status`, `agentq update [--check]`, `agentq selftest` check the install.
+- `agentq doctor [--fix]` is decided (agentq.md § 1) and not shipped yet; until then use `service status` and `telemetry status`.
+- `agentq uninstall --dry-run`, then `agentq uninstall`, restores owned edits and removes the service and install folder.
 
-> Установи сжатие из https://github.com/taskqorg/agentq. Прочитай INSTALL.md, проведи онбординг, проверь конфликты и сообщи, что работает и что ещё требует настройки.
+Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases), one `agentq-<ver>-<os>-<arch>` binary per platform plus `SHA256SUMS`.
 
-Агент проверит среду, настроит установленных агентов и проверит сервисы. Windows и WSL настраиваются отдельно; расположение проекта не меняет среду агента.
+## Legacy Node package
 
-Для подготовленной среды одна команда:
+The Node package `@alexkirs/agent-context` (`bin/`, `src/`, `agent-context` CLI, gateway) is legacy under [agentq.md § 10](agentq.md#10-legacy-node-install). `agentq onboard --yes` removes it through its own uninstall; `agentq uninstall --legacy` does the same alone. Its code stays here until a separate task removes it.
 
-```sh
-npm exec --yes --ignore-scripts --package=github:taskqorg/agentq -- agent-context onboard --yes
-```
-
-Автообновления принимают совместимые стабильные patch-релизы. Фоновая проверка — раз в час; при существующем командном подключении уведомление о релизе ускоряет проверку. Активные клиенты не прерываются. Подробная процедура: [INSTALL.md](INSTALL.md).
-
-## Удалить через агента
-
-> Полностью удали Agent Context по процедуре INSTALL.md: останови его сервисы, убери интеграции, восстанови мои настройки и удали локальные файлы пакета. Не удаляй входы агентов и общие ключи сервисов.
-
-Сначала закройте другие агентские сессии, использующие сжатие. Из установленного CLI либо подготовленного checkout:
-
-```sh
-agent-context uninstall --dry-run
-agent-context uninstall
-```
-
-Без глобального CLI: `node ~/.agent-context/launcher.mjs uninstall` (в Windows агент подставит путь своего профиля). Для прежних версий без этой команды используйте `node bin/agent-context.js uninstall` из текущего checkout.
-
-Удаление откатывает всю сохранённую историю установки, сохраняет более поздние изменения других настроек, удаляет наши хуки/MCP/плагин, приватное окружение Python, версии, кэш, инциденты, резервные копии и global npm-пакет. При конфликте или занятом сервисе останавливается с объяснением; принудительного удаления нет. Общие ключи SuperCompress/Langfuse и авторизация агентов остаются. Затем перезапустите агентские соединения.
-
-## Проверка и восстановление
-
-```sh
-agent-context doctor --fix --live
-agent-context update status
-```
-
-Doctor исправляет только принадлежащие пакету регистрации и сервисы. Сжатие при ошибках сохраняет исходный результат. Успешный doctor подтверждает здоровье сервисов; реальную экономию проверяют отдельным агентским вызовом.
-
-Онбординг предупреждает о другом сжатии. Публичные инциденты содержат только разрешённые метаданные, без запросов, исходного текста и ключей; relay и его GitHub App выведены из работы: отчёты остаются в локальной очереди, `agent-context incidents show` показывает, что уйдёт; `incidents enable --gh` — отправка от вашего GitHub-аккаунта; `setup --no-report` отключает отправку. Бинарник agentq отправляет инциденты через coreq от вашего GitHub-входа, без входа хранит их локально ([agentq.md § 7](agentq.md#7-incidents-via-coreq)).
-
-[Интеграции и ограничения](docs/INTEGRATION-DETAILS.md) · [Дистрибуция](DISTRIBUTION.md) · [Инциденты](docs/INCIDENTS.md)
-
-Кандидат нового врапера: [ревью и проект](docs/WRAPPER-DESIGN.md), [общий provider benchmark](https://github.com/taskqorg/agentq/blob/9612eeefcff773edd9c959f093fb76cf56acbc2c/docs/provider-comparison-2026-10-12.json). Рабочие установки автоматически этим кандидатом не заменяются.
+Shared rules: [specq](https://github.com/taskqorg/specq).

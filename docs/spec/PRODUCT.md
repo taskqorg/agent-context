@@ -1,8 +1,6 @@
 # Agent Context — internal organization package
 
-Delivery: [minimal interim rollout](INCREMENTAL-ROLLOUT.md); clean-build experiment remains separate.
-
-Revision: 2. Status: **draft for approval; new-build contract**. [Agent workflow](AGENT-DEVELOPMENT.md) · [Acceptance](VERIFICATION.md).
+Revision: 2. Product outcomes; decisions and the requirement map live in [agentq.md](../../agentq.md) § 11. [Acceptance](VERIFICATION.md).
 
 ## Purpose
 
@@ -25,6 +23,6 @@ Install once per machine/runtime. Manage our agents' optimization, updates and t
 
 ## Evidence and limits
 
-Our experiments support noisy-command reduction and selective retrieval. They do **not** prove a released combined recipe or universal net savings. Tokenade saved input on noisy Claude tests but caused extra JSON reading; its live Codex probe did not compress. Keep [experiment reports](PUBLIC-BENCHMARKS.md) and [Tokenade findings](TOKENADE-QUALIFICATION.md) as evidence, not architecture inherited from old code.
+Our experiments support noisy-command reduction and selective retrieval. They do **not** prove a released combined recipe or universal net savings. Tokenade saved input on noisy Claude tests but caused extra JSON reading; its live Codex probe did not compress. The experiment reports stay in git history before taskqorg/agentq#62.
 
-Technology, initial operating limits and rollout policy belong in a short approved implementation plan. New code must meet this contract; old product deletion/deployment is a separate authorized step.
+Technology, operating limits and rollout policy live in [agentq.md](../../agentq.md). New code must meet this contract; old product deletion/deployment is a separate authorized step.
