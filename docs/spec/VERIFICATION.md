@@ -26,3 +26,16 @@ Paired baseline/candidate tasks use the same model/auth/client, frozen inputs an
 Reuse selected LongBench/RULER cases and official scorers for content quality; use a few executable coding/terminal tasks for task success. Do not run full research benchmarks on every deploy.
 
 Quality, latency, resource and savings budgets must be agreed before engine selection/release. No code-level test suite or numeric target inherited from the old implementation.
+
+## Resource sample qualification
+
+Procedure for the live task (#86) on each authorized host, at most 30 minutes per host; contract: [agentq.md § 6 Resource samples](../../agentq.md#resource-samples). Linux and macOS now; Windows and WSL after #85. An untested host is reported as untested, never as passed.
+
+1. Install the candidate release; record OS and version, `agentq --version` and the release commit as the producer revision.
+2. `agentq telemetry verify` passes.
+3. Wait four buckets (20 minutes). From the Langfuse public API list traces named `agentq.resource` since the install; keep those whose `agentq.installation` equals `<install>/data/installation`. Pass: at least three consecutive buckets, one trace each, start times 300 ± 30 s apart.
+4. Within 60 s of one sample, read native values. Linux: `vmstat 300 2` (us + sy + st over the same interval), `free -b` (total, available), `df -B1 /`. macOS: `top -l 2 -s 300 -n 0` CPU usage, Activity Monitor Memory Used, `diskutil apfs list` for the `/` container. Pass: CPU within 5 points, memory within 2 % of total, disk total exact and free within 1 GiB.
+5. Privacy: the exported attributes hold no username, home path or volume name.
+6. `agentq service restart`: the next bucket holds one sample, CPU known or `warmup`; no bucket holds two traces.
+
+Record per host: OS, producer revision, three trace IDs, exported and native values, verdict. A graph claim needs at least three samples.

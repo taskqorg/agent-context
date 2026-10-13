@@ -4,6 +4,7 @@ mod engines;
 mod legacy;
 mod mcp;
 mod onboard;
+mod resource;
 mod routing;
 mod telemetry;
 
