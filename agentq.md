@@ -30,7 +30,7 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 | `agentq update [--check]`, `agentq selftest` | coreq update steps; selftest checks the binary, built-in fixtures and engine pins. |
 | `agentq service install\|run\|pause\|resume\|status\|restart\|stop\|uninstall\|list` | coreq service (§ 5). |
 | `agentq uninstall [--dry-run]` | § 9. |
-| `agentq uninstall --legacy [--dry-run]` | § 10: runs the legacy install's own uninstall; none left: `already removed`. |
+| `agentq uninstall --legacy [--dry-run]` | § 10: removes the legacy install; none left: `already removed`. |
 
 - Output: one line per outcome; errors `Error: <problem>` then `Next: <action>`, at most 2 lines. `--json` prints the same data as JSON.
 - Dropped from the Node CLI: `install`, `rollback`, `set-key`, `provider`, `headroom`, `gateway`, `monitor`, `proxy`, `retrieval`, `probe`, `plugin-path`, `verify`, `connect`, `set-langfuse`, `lifecycle`, `native-hook`, `tools`, `incidents report|enable|disable`. Their duties live in the commands above or are dropped in § 11.
@@ -110,8 +110,10 @@ Dashboard duties (fleet view, versions, last seen, health, usage, incidents, acc
 ## 10. Legacy Node install
 
 - `onboard` detects `~/.agent-context` and the global npm package `@alexkirs/agent-context`. The install is `<legacy>/launcher.mjs`: a folder without it (a still-running legacy process recreates `incidents/` and `machine-id.json`) counts as removed. `onboard`, `doctor` and `uninstall --legacy` name the pids of processes whose command line holds `<legacy>/`; Windows reports none.
-- `uninstall --legacy [--dry-run]` runs `node <legacy>/launcher.mjs uninstall [--dry-run]`, which removes the npm package, launcher, services and journaled config edits; `<legacy>` is `$AGENT_CONTEXT_HOME/.agent-context`, else `~/.agent-context`.
-- `onboard --yes` with a legacy install first runs its own `node ~/.agent-context/launcher.mjs uninstall --dry-run`, shows the result, and on consent runs `uninstall`; then applies § 4. A refusal or a missing Node stops onboarding with the legacy message; agentq never deletes legacy files itself.
+- `uninstall --legacy [--dry-run]` removes the legacy install without Node; `<legacy>` is `$AGENT_CONTEXT_HOME/.agent-context`, else `~/.agent-context`, and its parent is the home of the configs it edited. The Node journals (`<legacy>/backups/*/journal.json`) give the file list only, limited to the known Codex, Claude Code and Hermes files: a user edit made after the journal never blocks.
+  - Each listed file is copied to `<legacy>/config-backup/` (a rerun keeps the first copy), then only legacy entries are stripped: hooks and MCP servers that name `launcher.mjs` or `agent-context`, env values routed to the legacy proxy ports, Codex `model_provider = "agent_context"` and `[model_providers.agent_context]`, Hermes `supercompress` and `agent-context` plugin entries, instruction marker blocks. The Hermes `plugins/agent-context` files are removed.
+  - The `contextq-monitor` launch agent, Windows task or systemd unit is unloaded, the global npm package `@alexkirs/agent-context` removed, and `<legacy>` moved to `<legacy>.retired-<YYYY-MM-DD>`, so the backup ends in its `config-backup/`. Running legacy proxy pids are listed and left for the user.
+- `onboard --yes` with a legacy install runs `uninstall --legacy` without a prompt (`--yes` is the consent), then applies § 4. A failure stops onboarding with its message.
 - Kept names: MCP server `agent_context`, tool names, provider id `agent_context`, instruction markers. Existing relay-filed issues and Langfuse traces stay.
 - The relay worker and its GitHub App are retired: the code is gone from this repository, the owner deletes the deployed Worker and the App. Node clients that still default to the relay keep reports in their local queue.
 - Final npm version: `npm-final/` is the package `@alexkirs/agent-context` 0.5.0; every invocation prints the migration instruction to stderr and exits 1, nothing else, no install scripts. The owner publishes it as a release asset without `recipe.json`, so the legacy updater never selects it and `uninstall --legacy` keeps working.
