@@ -16,7 +16,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -60,17 +60,15 @@ fn main() {
             Ok(store) => println_code(&format!("langfuse: keys saved in {store}; the service sends on its next pass")),
             Err(e) => fail(&format!("langfuse: {e}"), "run `agentq langfuse` and enter the host, public key and secret key"),
         },
-        ["telemetry", "status", ..] => {
-            let q = telemetry::status(&t.install.join("data"), now());
-            let keys = if telemetry::load(&t.install.join("data")).is_some() { "set" } else { "missing" };
-            let oldest = q["oldest_age"].as_u64().map_or("none".into(), |s| format!("{s} s"));
-            let last = q["last_delivery"].as_u64().map_or("never".into(), |t| format!("{} s ago", now().saturating_sub(t)));
-            println_code(&format!("telemetry: pending {}, oldest {oldest}, last delivery {last}, dropped {}, keys {keys}, error: {}", q["pending"], q["dropped"], q["error"].as_str().unwrap_or("none")))
-        }
-        ["telemetry", "verify", ..] => match telemetry::verify(&t.install.join("data")) {
-            Ok(id) => println_code(&format!("telemetry: verified trace {id}")),
-            Err(e) => fail(&format!("telemetry verify: {e}"), "check the keys with `agentq langfuse` and the network, then retry"),
+        ["telemetry", "status", ..] => println_code(&telemetry_line(&t)),
+        ["telemetry", "verify", ..] => match telemetry::load(&t.install.join("data")) {
+            None => fail("telemetry verify: no Langfuse keys", "run `agentq langfuse`"),
+            Some(k) => match telemetry::verify(&t.install.join("data"), &k, 20, Duration::from_secs(3)) {
+                Ok(id) => println_code(&format!("telemetry: verified trace {id}")),
+                Err(e) => fail(&format!("telemetry verify: {e}"), "404: Langfuse has not ingested it yet, retry later; 401: run `agentq langfuse`"),
+            },
         },
+        ["doctor"] => doctor(&t),
         ["uninstall"] => uninstall(&t, false),
         ["uninstall", "--dry-run"] => uninstall(&t, true),
         ["uninstall", "--legacy"] => legacy(&legacy_dir(), false).unwrap_or_else(|e| fail(&e.0, &e.1)),
@@ -78,6 +76,43 @@ fn main() {
         _ => fail(&format!("unknown command `{}`", args.join(" ")), &format!("usage: {USAGE}")),
     };
     std::process::exit(code);
+}
+
+fn telemetry_line(t: &Tool) -> String {
+    let q = telemetry::status(&t.install.join("data"), now());
+    let keys = if telemetry::load(&t.install.join("data")).is_some() { "set" } else { "missing" };
+    let oldest = q["oldest_age"].as_u64().map_or("none".into(), |s| format!("{s} s"));
+    let last = q["last_delivery"].as_u64().map_or("never".into(), |t| format!("{} s ago", now().saturating_sub(t)));
+    format!("telemetry: pending {}, oldest {oldest}, last delivery {last}, dropped {}, keys {keys}, error: {}", q["pending"], q["dropped"], q["error"].as_str().unwrap_or("none"))
+}
+
+/// agentq.md § 1: read-only install, service, engines, owned edits, telemetry and legacy state; exit 1 on a problem.
+fn doctor(t: &Tool) -> i32 {
+    let mut ok = true;
+    let mut line = |good: bool, l: String| {
+        ok &= good;
+        println!("{l}");
+    };
+    match t.current() {
+        Some(v) => line(true, format!("install: {} current {v}", t.install.display())),
+        None => line(false, format!("install: none at {}; run `agentq onboard --yes`", t.install.display())),
+    }
+    match read_status(t, 3 * PASS) {
+        Some(s) => line(true, format!("service: running {} pid {}", s["version"].as_str().unwrap_or("?"), s["pid"])),
+        None => line(false, format!("service: unknown (no status.json newer than {} s); run `agentq service install`", 3 * PASS)),
+    }
+    for l in engines::check(&t.install) {
+        line(!l.contains("unavailable"), l);
+    }
+    let owned = std::fs::read_to_string(journal(t)).ok().and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok()).map_or(0, |j| j.len());
+    line(true, format!("owned edits: {owned}"));
+    let tel = telemetry_line(t);
+    line(tel.contains("keys set"), tel);
+    let old = legacy_dir();
+    let pids = legacy_pids(&old);
+    let installed = old.join("launcher.mjs").exists();
+    line(!installed && pids.is_empty(), format!("legacy: {}{}", if installed { "installed; run `agentq uninstall --legacy`" } else { "removed" }, running(&pids)));
+    if ok { 0 } else { 1 }
 }
 
 fn println_code(line: &str) -> i32 {
@@ -222,19 +257,24 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
         println!("{a}: {} {}", if ready.contains(&a) { "ready" } else { "not found" }, onboard::root(a).display());
     }
     let old = legacy_dir();
-    if old.exists() {
-        println!("legacy: {} found", old.display());
+    // a still-running legacy process recreates the folder with incidents/ and machine-id.json only: not an install
+    let installed = old.join("launcher.mjs").exists();
+    let pids = running(&legacy_pids(&old));
+    if installed {
+        println!("legacy: {} found{pids}", old.display());
+    } else if !pids.is_empty() {
+        println!("legacy: removed{pids}");
     }
     if !yes {
         return 0;
     }
-    if old.exists() {
+    if installed {
         legacy(&old, true).unwrap_or_else(|e| fail(&e.0, &e.1));
         eprint!("Remove the legacy install shown above? [y/N] ");
         let mut answer = String::new();
         let _ = std::io::stdin().read_line(&mut answer);
         if answer.trim() != "y" || legacy(&old, false) != Ok(0) {
-            fail("legacy install still present", "run `agentq uninstall --legacy`, then `agentq onboard --yes`");
+            fail(&format!("legacy install still present{}", running(&legacy_pids(&old))), "run `agentq uninstall --legacy`, then `agentq onboard --yes`");
         }
     }
     let agents: Vec<&str> = if picked.is_empty() { ready } else { picked.into_iter().filter(|a| ready.contains(a)).collect() };
@@ -245,6 +285,7 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
         Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
     }
     service_cmd(t, "install");
+    doctor(t);
     println_code(&format!("verify: start a new {} session and call agent_context search_document", agents.join(", ")))
 }
 
@@ -273,12 +314,12 @@ fn legacy_dir() -> PathBuf {
 /// agentq.md § 10: the legacy install removes itself (npm package, launcher, services, journaled edits); agentq never
 /// deletes its files.
 fn legacy(dir: &Path, dry: bool) -> Result<i32, (String, String)> {
-    if !dir.exists() {
+    let launcher = dir.join("launcher.mjs");
+    if !launcher.exists() {
         // ponytail: a global npm package left without ~/.agent-context stays; `npm uninstall -g @alexkirs/agent-context` removes it
-        println!("legacy: already removed");
+        println!("legacy: already removed{}", running(&legacy_pids(dir)));
         return Ok(0);
     }
-    let launcher = dir.join("launcher.mjs");
     let mut c = Command::new("node");
     c.arg(&launcher).arg("uninstall");
     if dry {
@@ -286,6 +327,17 @@ fn legacy(dir: &Path, dry: bool) -> Result<i32, (String, String)> {
     }
     let s = c.status().map_err(|e| (format!("legacy uninstall needs Node: {e}"), format!("install Node, then run `node {} uninstall`", launcher.display())))?;
     Ok(s.code().unwrap_or(1))
+}
+
+/// Pids of processes whose command line holds `<legacy>/`, as the legacy launcher, proxies and MCP servers do.
+/// ponytail: `pgrep` only; Windows reports none until a host needs it there.
+fn legacy_pids(dir: &Path) -> Vec<String> {
+    let o = Command::new("pgrep").arg("-f").arg(format!("{}/", dir.display())).output();
+    o.map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect()).unwrap_or_default()
+}
+
+fn running(pids: &[String]) -> String {
+    if pids.is_empty() { String::new() } else { format!("; legacy processes still running: pids {}", pids.join(" ")) }
 }
 
 #[cfg(test)]
@@ -309,5 +361,21 @@ mod tests {
         assert!(!d.exists());
         assert_eq!(legacy(&d, false), Ok(0), "second run: no-op");
         let _ = std::fs::remove_file(args);
+    }
+
+    /// #64 A3: a running legacy process recreated the folder with leftovers only: removed, and its pid is named.
+    #[cfg(unix)]
+    #[test]
+    fn legacy_leftovers_name_running_pids() {
+        let d = std::env::temp_dir().join(format!("agentq-leftover-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("incidents")).unwrap();
+        std::fs::write(d.join("machine-id.json"), "{}").unwrap();
+        let mut p = Command::new("sh").args(["-c", "sleep 30; true"]).arg(d.join("launcher.mjs")).spawn().unwrap();
+        assert_eq!(legacy_pids(&d), vec![p.id().to_string()]);
+        assert_eq!(legacy(&d, false), Ok(0), "no launcher: nothing to uninstall");
+        let _ = p.kill();
+        let _ = p.wait();
+        assert!(legacy_pids(&d).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
