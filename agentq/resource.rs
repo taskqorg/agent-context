@@ -455,7 +455,7 @@ mod tests {
     }
 
     fn reading(cpu: Result<Ticks, String>) -> Reading {
-        Reading { cpu, memory: Ok((8 << 30, 3 << 30)), disks: Ok(vec![disk("/", Ok((100, 30, 60))), disk("/home/alice/Private Vault", Err("statvfs: permission denied".into()))]) }
+        Reading { cpu, memory: Ok((8 << 30, 3 << 30)), disks: Ok(vec![disk(os::root(), Ok((100, 30, 60))), disk("/home/alice/Private Vault", Err("statvfs: permission denied".into()))]) }
     }
 
     fn sampler(d: &Path, cpu: Result<Ticks, String>, at: Instant) -> Sampler {
