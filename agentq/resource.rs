@@ -85,7 +85,7 @@ impl Sampler {
     }
 
     /// The `agentq.resource.*` attributes of one reading; it becomes the next CPU baseline.
-    fn sample(&mut self, r: Reading, mono: Instant, ns: u128) -> Map<String, Value> {
+    pub(crate) fn sample(&mut self, r: Reading, mono: Instant, ns: u128) -> Map<String, Value> {
         let mut a = Map::new();
         let mut put = |k: &str, v: Value| a.insert(format!("agentq.resource.{k}"), v);
         let (mono0, ns0, cpu0) = std::mem::replace(&mut self.prev, (mono, ns, r.cpu.clone()));
@@ -440,11 +440,11 @@ mod os {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn dir(name: &str) -> std::path::PathBuf {
+    pub(crate) fn dir(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("agentq-res-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
@@ -454,11 +454,11 @@ mod tests {
         Disk { mount: mount.into(), fstype: "ext4".into(), stat }
     }
 
-    fn reading(cpu: Result<Ticks, String>) -> Reading {
+    pub(crate) fn reading(cpu: Result<Ticks, String>) -> Reading {
         Reading { cpu, memory: Ok((8 << 30, 3 << 30)), disks: Ok(vec![disk(os::root(), Ok((100, 30, 60))), disk("/home/alice/Private Vault", Err("statvfs: permission denied".into()))]) }
     }
 
-    fn sampler(d: &Path, cpu: Result<Ticks, String>, at: Instant) -> Sampler {
+    pub(crate) fn sampler(d: &Path, cpu: Result<Ticks, String>, at: Instant) -> Sampler {
         Sampler { key: key(d), bucket: 0, prev: (at, 1_000_000_000_000, cpu) }
     }
 

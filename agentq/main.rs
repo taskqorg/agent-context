@@ -6,6 +6,7 @@ mod mcp;
 mod onboard;
 mod resource;
 mod routing;
+mod snapshot;
 mod telemetry;
 
 use coreq::{Tool, service, status, update, write_atomic};
@@ -317,6 +318,7 @@ fn serve(t: &Tool) -> ! {
         let mut s = status::common(t, &host(), PROJECT, now(), error.clone(), None);
         s["queue"] = telemetry::status(&t.install.join("data"), now());
         s["agents"] = routing::agents(&t.install.join("data"));
+        s["engines"] = engines::status(&t.install);
         match write_atomic(&status_path(t), &serde_json::to_string_pretty(&s).unwrap_or_default()) {
             // ponytail: healthy after the first written status; add real checks when the service owns ports (§ 5)
             Ok(()) => {
@@ -347,6 +349,7 @@ fn selftest(t: &Tool) -> i32 {
         ("self copy skip", std::env::current_exe().is_ok_and(|me| copy_unless_same(&me, &me) == Ok(false))),
         ("json bom", onboard::selftest()),
         ("single service run", single_instance_selftest()),
+        ("snapshot", snapshot::project("i", "linux", None, None, 0)["resource"]["unknown"] == "no sample yet"),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
