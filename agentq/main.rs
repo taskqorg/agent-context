@@ -1,8 +1,9 @@
-//! agentq: update, service, status, MCP, engines, onboarding, hooks and uninstall on coreq (agentq.md § 1, § 2, § 3, § 4, § 5, § 9, § 10).
+//! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
 mod engines;
 mod mcp;
 mod onboard;
+mod telemetry;
 
 use coreq::{Tool, service, status, update, write_atomic};
 use serde_json::Value;
@@ -15,7 +16,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -55,6 +56,21 @@ fn main() {
             let _ = std::io::read_to_string(std::io::stdin());
             println_code("{}")
         }
+        ["langfuse"] => match telemetry::read_keys().and_then(|k| telemetry::save(&t.install.join("data"), &k)) {
+            Ok(store) => println_code(&format!("langfuse: keys saved in {store}; the service sends on its next pass")),
+            Err(e) => fail(&format!("langfuse: {e}"), "run `agentq langfuse` and enter the host, public key and secret key"),
+        },
+        ["telemetry", "status", ..] => {
+            let q = telemetry::status(&t.install.join("data"), now());
+            let keys = if telemetry::load(&t.install.join("data")).is_some() { "set" } else { "missing" };
+            let oldest = q["oldest_age"].as_u64().map_or("none".into(), |s| format!("{s} s"));
+            let last = q["last_delivery"].as_u64().map_or("never".into(), |t| format!("{} s ago", now().saturating_sub(t)));
+            println_code(&format!("telemetry: pending {}, oldest {oldest}, last delivery {last}, dropped {}, keys {keys}, error: {}", q["pending"], q["dropped"], q["error"].as_str().unwrap_or("none")))
+        }
+        ["telemetry", "verify", ..] => match telemetry::verify(&t.install.join("data")) {
+            Ok(id) => println_code(&format!("telemetry: verified trace {id}")),
+            Err(e) => fail(&format!("telemetry verify: {e}"), "check the keys with `agentq langfuse` and the network, then retry"),
+        },
         ["uninstall"] => uninstall(&t, false),
         ["uninstall", "--dry-run"] => uninstall(&t, true),
         ["uninstall", "--legacy"] => legacy(&legacy_dir(), false).unwrap_or_else(|e| fail(&e.0, &e.1)),
@@ -138,6 +154,8 @@ fn serve(t: &Tool) -> ! {
     // a release with a new engine pin installs it here; status keeps its 30 s pace meanwhile
     let install = t.install.clone();
     std::thread::spawn(move || engines::ensure(&install).iter().for_each(|l| eprintln!("agentq: {l}")));
+    let install = t.install.clone();
+    std::thread::spawn(move || telemetry::sender(&install, PASS));
     let mut checked = 0;
     let mut error = None;
     loop {
@@ -152,7 +170,8 @@ fn serve(t: &Tool) -> ! {
                 Err(e) => Some(format!("update: {e}")),
             };
         }
-        let s = status::common(t, &host(), PROJECT, now(), error.clone(), None);
+        let mut s = status::common(t, &host(), PROJECT, now(), error.clone(), None);
+        s["queue"] = telemetry::status(&t.install.join("data"), now());
         match write_atomic(&status_path(t), &serde_json::to_string_pretty(&s).unwrap_or_default()) {
             // ponytail: healthy after the first written status; add real checks when the service owns ports (§ 5)
             Ok(()) => {
@@ -176,6 +195,7 @@ fn selftest(t: &Tool) -> i32 {
         ("unit commands", !u.load.is_empty() && !u.unload.is_empty() && !u.stop.is_empty()),
         ("status", status::common(t, "h", PROJECT, 1, None, None)["version"] == VERSION),
         ("mcp tools", mcp::tools().as_array().is_some_and(|a| a.len() == 3)),
+        ("telemetry event", telemetry::span("agentq.verify", "selftest", Value::Null, 1, "i", "h")["attributes"].as_array().is_some_and(|a| a.len() == 7)),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();

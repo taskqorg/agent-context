@@ -81,11 +81,13 @@ coreq owns layout, update, launcher, rollback, service units and `status.json`; 
 
 ## 6. Telemetry to Langfuse
 
-- Target: Langfuse project `Agents` over OTLP HTTP. Native exporters (Codex observability plugin, Claude Code Langfuse env, Hermes Langfuse plugin) send to the loopback OTLP port; agentq adds its own events and queues all of them.
-- Team mode: `agentq enroll` gets a device token from the dashq endpoint; the queue posts OTLP there and dashq forwards it with the Langfuse keys. Employees never hold Langfuse secrets; an admin revokes a device in dashq. Standalone mode: `agentq langfuse` keys post straight to Langfuse.
-- agentq events: `agentq.run` (RTK), `agentq.retrieval`, `agentq.installation` (hourly heartbeat of `status.json` fields), `agentq.incident`. Each has schema version, stable event ID, time, stage, installation, host, runtime, profile, agent, package, engine and recipe versions, and native session, turn and tool IDs when known, else a reason. Metadata only; no raw content, keys or paths. Estimates carry an `estimate` label and never count as observed usage.
-- Queue: files under `data/queue/`, one sender, caps 64 MiB and 7 days; overflow drops oldest batches and counts them in `dropped`. An outage never blocks agent work.
-- Secrets live in OS protected storage (Keychain, Credential Manager, Secret Service) or a 0600 file where none exists; never in config, argv, logs or telemetry.
+- Target: Langfuse project `Agents` over OTLP HTTP JSON, `<host>/api/public/otel/v1/traces` with Basic auth. Native exporters (Codex observability plugin, Claude Code Langfuse env, Hermes Langfuse plugin) send to the loopback OTLP port; agentq adds its own events and queues all of them. The loopback OTLP intake is a separate task; until it lands native exporters keep their own configuration.
+- Standalone mode: `agentq langfuse` reads host, public key and secret key (three lines, secret without echo) and the queue posts straight to Langfuse. The host is `https://`, or `http://` on loopback only.
+- Team mode (separate task, after dashq.md decides host push; dashq D1 is read-only today): `agentq enroll` gets a device token from the dashq endpoint; the queue posts OTLP there and dashq forwards it with the Langfuse keys. Employees never hold Langfuse secrets; an admin revokes a device in dashq.
+- agentq events, one OTLP span each, span name = event name: `agentq.run` (RTK, `agentq run`), `agentq.retrieval` (one MCP tool call), `agentq.installation` (hourly heartbeat of `status.json` fields), `agentq.incident` (with § 7). Attributes on every event: `agentq.schema` (1), `agentq.event_id` (also the trace ID, so a resend is idempotent), time (span start), `agentq.stage`, `agentq.installation` (unique ID kept in `data/installation`), `host.name`, `agentq.runtime` (`macos`, `linux`, `wsl`, `windows`), `agentq.version`; engine versions, profile, agent and native session, turn and tool IDs when known, else `agentq.ids_unknown` with a reason. Metadata only: `agentq.run` comes only from a qualified command and names only its runner (`cargo test`, `go test`, `pytest`) and engine (`rtk` or why native), never arguments; no raw content, keys or paths. Estimates carry an `estimate` label and never count as observed usage.
+- dashq reads `agentq.*` observations for its Agents view in its own task; its current reads use the legacy Node names.
+- Queue: one file per event under `data/queue/`, named `<unix seconds>-<event id>.json`; one sender thread in the service posts batches of at most 100 and deletes them after a 2xx; caps 64 MiB and 7 days, enforced on each write and send; overflow drops oldest events and counts them in `dropped`. Writers never wait for the network: an outage, missing keys or an unwritable queue never blocks or fails agent work, and the queue drains on the next successful pass. `agentq telemetry status` prints pending, oldest age, last delivery, dropped and the last error; `verify` queues one `agentq.verify` event, sends now and reads its trace back from the Langfuse public API.
+- Secrets live in OS protected storage (Keychain via `security`, Secret Service via `secret-tool`) or a 0600 file `data/langfuse` where neither tool works (Windows until a Credential Manager binding lands); never in config, argv, logs or telemetry. curl gets them through its stdin config.
 
 ## 7. Incidents via coreq
 
@@ -96,7 +98,7 @@ coreq owns layout, update, launcher, rollback, service units and `status.json`; 
 
 ## 8. State
 
-`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports), `originals/`, `runs/`, `queue/`, `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
+`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports), `installation`, `langfuse` (fallback only, § 6), `originals/`, `runs/`, `queue/` (with `state.json`: last delivery, last error, dropped), `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
 
 Dashboard duties (fleet view, versions, last seen, health, usage, incidents, access control) move to dashq, which reads Langfuse and the heartbeat events. agentq ships no panel and no dashboard JSON.
 

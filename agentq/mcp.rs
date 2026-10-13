@@ -36,6 +36,15 @@ pub fn serve(dir: &Path) -> i32 {
             continue;
         }
         let reply = match serde_json::from_str::<Value>(&line) {
+            Ok(m) if m["method"] == "tools/call" => {
+                let t0 = std::time::Instant::now();
+                let r = handle(dir, &m);
+                // `<install>/data/originals`; the tool name only from the known list (agentq.md § 6)
+                let tool = tools().as_array().into_iter().flatten().find(|t| t["name"] == m["params"]["name"]).map_or(json!("unknown"), |t| t["name"].clone());
+                let ok = r.as_ref().is_some_and(|r| r["result"]["isError"] != true);
+                crate::telemetry::emit(dir.parent().unwrap_or(dir), "agentq.retrieval", "end", json!({"agentq.tool": tool, "agentq.ok": ok, "agentq.duration_ms": t0.elapsed().as_millis() as u64, "agentq.ids_unknown": "MCP calls carry no native IDs"}));
+                r
+            }
             Ok(m) => handle(dir, &m),
             Err(_) => Some(json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": "Invalid JSON"}})),
         };
