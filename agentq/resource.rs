@@ -1,5 +1,5 @@
-//! Host resource samples (agentq.md § 6 Resource samples): CPU, memory and local disks on Linux and macOS, one
-//! `agentq.resource` span per 300 s bucket through the telemetry queue. Windows and WSL probes: #85.
+//! Host resource samples (agentq.md § 6 Resource samples): CPU, memory and local disks on Linux, macOS, Windows and
+//! WSL, one `agentq.resource` span per 300 s bucket through the telemetry queue.
 
 use ring::{digest, hmac, rand::SecureRandom};
 use serde_json::{Map, Value, json};
@@ -126,7 +126,7 @@ impl Sampler {
 
     fn disk(&self, d: &Disk) -> Value {
         let id = hex(hmac::sign(&self.key, format!("{}\0{}", d.mount, d.fstype).as_bytes()).as_ref())[..16].to_string();
-        let role = if d.mount == "/" { "root" } else { "other" };
+        let role = if d.mount == os::root() { "root" } else { "other" };
         match &d.stat {
             Ok((t, f, u)) => json!({"id": id, "role": role, "fstype": d.fstype, "used_bytes": u, "free_bytes": f, "total_bytes": t}),
             Err(e) => json!({"id": id, "role": role, "fstype": d.fstype, "used_bytes": null, "free_bytes": null, "total_bytes": null, "unknown": e}),
@@ -150,6 +150,25 @@ pub fn parse_meminfo(s: &str) -> Result<(u64, u64), String> {
         s.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix(':')?.trim().strip_suffix(" kB")?.trim().parse::<u64>().ok()).map(|v| v * 1024).ok_or(format!("/proc/meminfo: no {k}"))
     };
     Ok((kb("MemTotal")?, kb("MemAvailable")?))
+}
+
+/// WSL 1 has no VM: its `/proc` mirrors the Windows host, which its own installation already reports.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub fn wsl1(osrelease: &str) -> bool {
+    osrelease.contains("Microsoft")
+}
+
+/// Windows `GetSystemTimes` (idle, kernel, user) in 100 ns units; kernel time includes idle.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn system_times(idle: u64, kernel: u64, user: u64) -> Ticks {
+    let busy = kernel.saturating_sub(idle) + user;
+    (busy, kernel + user)
+}
+
+/// `GetLogicalDriveStringsW` buffer: NUL-separated roots such as `C:\`.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn parse_drives(buf: &[u16]) -> Vec<String> {
+    buf.split(|&c| c == 0).filter(|r| !r.is_empty()).map(String::from_utf16_lossy).collect()
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -194,11 +213,27 @@ mod os {
         std::fs::read_to_string(p).map_err(|e| format!("{p}: {}", e.kind()))
     }
 
+    const WSL1: &str = "wsl1 mirrors the Windows host";
+
+    pub fn root() -> &'static str {
+        "/"
+    }
+
+    fn mirrored() -> bool {
+        crate::telemetry::runtime() == "wsl" && file("/proc/sys/kernel/osrelease").is_ok_and(|s| wsl1(&s))
+    }
+
     pub fn cpu() -> Result<Ticks, String> {
+        if mirrored() {
+            return Err(WSL1.into());
+        }
         parse_stat(&file("/proc/stat")?)
     }
 
     pub fn memory() -> Result<(u64, u64), String> {
+        if mirrored() {
+            return Err(WSL1.into());
+        }
         parse_meminfo(&file("/proc/meminfo")?)
     }
 
@@ -227,6 +262,10 @@ mod os {
     fn host() -> libc::mach_port_t {
         static H: std::sync::OnceLock<libc::mach_port_t> = std::sync::OnceLock::new();
         *H.get_or_init(|| unsafe { libc::mach_host_self() })
+    }
+
+    pub fn root() -> &'static str {
+        "/"
     }
 
     pub fn cpu() -> Result<Ticks, String> {
@@ -292,11 +331,100 @@ mod os {
     }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(windows)]
 mod os {
     use super::*;
 
-    const NO: &str = "no sampler on this OS yet (#85)";
+    #[repr(C)]
+    struct MemoryStatusEx {
+        len: u32,
+        load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        rest: [u64; 5],
+    }
+
+    const DRIVE_FIXED: u32 = 3;
+
+    // ponytail: six kernel32 calls declared by hand; the windows-sys crate if more Win32 appears.
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetSystemTimes(idle: *mut u64, kernel: *mut u64, user: *mut u64) -> i32;
+        fn GlobalMemoryStatusEx(m: *mut MemoryStatusEx) -> i32;
+        fn GetLogicalDriveStringsW(len: u32, buf: *mut u16) -> u32;
+        fn GetDriveTypeW(root: *const u16) -> u32;
+        fn GetVolumeInformationW(root: *const u16, name: *mut u16, name_len: u32, serial: *mut u32, max_len: *mut u32, flags: *mut u32, fs: *mut u16, fs_len: u32) -> i32;
+        fn GetDiskFreeSpaceExW(root: *const u16, avail: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+    }
+
+    fn err(call: &str) -> String {
+        format!("{call}: {}", std::io::Error::last_os_error().kind())
+    }
+
+    /// The system drive, `C:\` unless `SystemDrive` says otherwise.
+    pub fn root() -> &'static str {
+        static R: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        R.get_or_init(|| format!("{}\\", std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into()).to_uppercase()))
+    }
+
+    pub fn cpu() -> Result<Ticks, String> {
+        let (mut i, mut k, mut u) = (0u64, 0u64, 0u64);
+        if unsafe { GetSystemTimes(&mut i, &mut k, &mut u) } == 0 {
+            return Err(err("GetSystemTimes"));
+        }
+        Ok(system_times(i, k, u))
+    }
+
+    pub fn memory() -> Result<(u64, u64), String> {
+        let mut m = MemoryStatusEx { len: std::mem::size_of::<MemoryStatusEx>() as u32, load: 0, total_phys: 0, avail_phys: 0, rest: [0; 5] };
+        if unsafe { GlobalMemoryStatusEx(&mut m) } == 0 {
+            return Err(err("GlobalMemoryStatusEx"));
+        }
+        Ok((m.total_phys, m.avail_phys))
+    }
+
+    pub fn disks() -> Result<Vec<Disk>, String> {
+        let mut buf = [0u16; 512];
+        let n = unsafe { GetLogicalDriveStringsW(buf.len() as u32, buf.as_mut_ptr()) } as usize;
+        if n == 0 || n > buf.len() {
+            return Err(err("GetLogicalDriveStringsW"));
+        }
+        Ok(parse_drives(&buf[..n])
+            .into_iter()
+            .filter_map(|mount| {
+                let w: Vec<u16> = mount.encode_utf16().chain([0]).collect();
+                (unsafe { GetDriveTypeW(w.as_ptr()) } == DRIVE_FIXED).then(|| Disk { fstype: fstype(&w), stat: stat(&w), mount: mount.to_uppercase() })
+            })
+            .collect())
+    }
+
+    fn fstype(root: &[u16]) -> String {
+        let mut fs = [0u16; 32];
+        let n = std::ptr::null_mut();
+        if unsafe { GetVolumeInformationW(root.as_ptr(), n, 0, n.cast(), n.cast(), n.cast(), fs.as_mut_ptr(), fs.len() as u32) } == 0 {
+            return "unknown".into();
+        }
+        parse_drives(&fs).into_iter().next().unwrap_or_else(|| "unknown".into())
+    }
+
+    fn stat(root: &[u16]) -> Result<(u64, u64, u64), String> {
+        let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
+        if unsafe { GetDiskFreeSpaceExW(root.as_ptr(), &mut avail, &mut total, &mut free) } == 0 {
+            return Err(err("GetDiskFreeSpaceExW"));
+        }
+        Ok((total, avail, total.saturating_sub(free)))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+mod os {
+    use super::*;
+
+    const NO: &str = "no sampler on this OS";
+
+    pub fn root() -> &'static str {
+        "/"
+    }
 
     pub fn cpu() -> Result<Ticks, String> {
         Err(NO.into())
@@ -360,6 +488,52 @@ mod tests {
         let got = parse_mountinfo(mounts);
         let want = [("/", "ext4"), ("/boot/efi", "vfat"), ("/mnt/snap", "btrfs")];
         assert_eq!(got, want.map(|(m, f)| (m.to_string(), f.to_string())), "local block only, one per device, shortest mount first");
+    }
+
+    /// WSL 2 keeps its own ext4 disks and drops Windows drives; WSL 1 is detected; Windows counters and drive lists.
+    #[test]
+    fn parse_wsl_and_windows_probes() {
+        let wsl = "\
+60 1 8:32 / / rw,relatime - ext4 /dev/sdc rw,discard
+61 60 0:15 / /mnt/wsl rw - tmpfs none rw
+62 60 0:33 / /usr/lib/wsl/drivers ro - 9p drivers ro,aname=drivers
+63 60 8:32 /mnt/wslg/distro /mnt/wslg/distro rw - ext4 /dev/sdc rw
+64 60 0:40 / /mnt/c rw,noatime - 9p C:\\134 rw,aname=drvfs;path=C:\\
+65 60 0:41 / /mnt/d rw,noatime - drvfs D:\\134 rw
+66 60 8:48 / /mnt/wsl/docker-desktop-data rw - ext4 /dev/sdd rw
+";
+        let got = parse_mountinfo(wsl);
+        let want = [("/", "ext4"), ("/mnt/wsl/docker-desktop-data", "ext4")];
+        assert_eq!(got, want.map(|(m, f)| (m.to_string(), f.to_string())), "no Windows drive counted twice");
+        assert!(wsl1("4.4.0-19041-Microsoft\n"));
+        assert!(!wsl1("5.15.153.1-microsoft-standard-WSL2\n"));
+        assert!(!wsl1("6.8.0-45-generic\n"));
+        // 100 ns units: kernel includes idle
+        assert_eq!(system_times(700, 1000, 300), (600, 1300));
+        let buf: Vec<u16> = "C:\\\0D:\\\0\0".encode_utf16().collect();
+        assert_eq!(parse_drives(&buf), ["C:\\", "D:\\"]);
+        assert!(parse_drives(&[0; 8]).is_empty());
+    }
+
+    /// A mount that appears or goes changes the entries of the next sample, never a zero; the others keep their IDs.
+    #[test]
+    fn mount_change() {
+        let d = dir("mount");
+        let t0 = Instant::now();
+        let mut s = sampler(&d, Ok((0, 1)), t0);
+        let disks = |s: &mut Sampler, list: Vec<Disk>, at: u64| -> Vec<Value> {
+            let r = Reading { cpu: Ok((0, 1)), memory: Ok((1, 1)), disks: Ok(list) };
+            let a = s.sample(r, t0 + Duration::from_secs(at), 1_000_000_000_000 + at as u128 * 1_000_000_000);
+            serde_json::from_str::<Vec<Value>>(a["agentq.resource.disks"].as_str().unwrap()).unwrap()
+        };
+        let one = disks(&mut s, vec![disk("/", Ok((100, 30, 60)))], 300);
+        let two = disks(&mut s, vec![disk("/", Ok((100, 30, 60))), disk("/mnt/usb", Ok((50, 50, 0)))], 600);
+        let back = disks(&mut s, vec![disk("/", Ok((100, 20, 70)))], 900);
+        assert_eq!((one.len(), two.len(), back.len()), (1, 2, 1));
+        assert_eq!((one[0]["id"].clone(), back[0]["id"].clone()), (two[0]["id"].clone(), two[0]["id"].clone()));
+        assert_ne!(two[1]["id"], two[0]["id"]);
+        assert_eq!(back[0]["used_bytes"], json!(70));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// Values with units, unknown with reasons, no private path; restart and clock rules.
@@ -433,19 +607,22 @@ mod tests {
     }
 
     /// The real probes on this host: plausible values and the overhead bound of § 6.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn live_probe_overhead() {
         let start = Instant::now();
         let r = read();
         let took = start.elapsed();
         assert!(took < Duration::from_millis(50), "one sample took {took:?}");
+        if std::fs::read_to_string("/proc/sys/kernel/osrelease").is_ok_and(|s| wsl1(&s)) {
+            return assert_eq!(r.cpu, Err("wsl1 mirrors the Windows host".into()));
+        }
         let (b, t) = r.cpu.unwrap();
         assert!(b <= t && t > 0);
         let (total, av) = r.memory.unwrap();
         assert!(total > 0 && av <= total, "{total} {av}");
         let disks = r.disks.unwrap();
-        let root = disks.iter().find(|d| d.mount == "/").expect("root filesystem listed");
+        let root = disks.iter().find(|d| d.mount == os::root()).expect("root filesystem listed");
         let (t, f, u) = root.stat.clone().unwrap();
         assert!(t > 0 && f <= t && u <= t);
         eprintln!("resource sample: {took:?}; memory total {total} available {av}; root total {t} free {f} used {u}; {} filesystems", disks.len());
