@@ -156,3 +156,5 @@ The dashboard template no longer charts process counters or queue ages as Scores
 Those remain available in snapshot metadata and the ServiceQ panel. Existing
 Langfuse dashboards require reprovisioning; existing mixed historical Scores are
 preserved and must be excluded from new operational charts.
+
+The runtime is `src/serviceq-server.js`, covered by the existing stable integrity validator. `scripts/serve-serviceq.js` preserves the server/report entrypoint without expanding the installed validator allowlist.

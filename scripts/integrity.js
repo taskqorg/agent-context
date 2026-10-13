@@ -9,7 +9,8 @@ for (const folder of ['bin', 'src']) for (const name of fs.readdirSync(path.join
   const file = `${folder}/${name}`;
   if (fs.statSync(path.join(dir, file)).isFile()) files[file] = sha(fs.readFileSync(path.join(dir, file)));
 }
-for (const file of extraRuntimeFiles) files[file] = sha(fs.readFileSync(path.join(dir, file)));
+// Stable 0.4.15 rejects this path; its thin entrypoint imports hash-checked src runtime.
+for (const file of extraRuntimeFiles) if (file !== 'scripts/serve-serviceq.js') files[file] = sha(fs.readFileSync(path.join(dir, file)));
 const manifest = `${JSON.stringify({ version, files }, null, 2)}\n`;
 const target = path.join(dir, 'integrity.json');
 if (process.argv.includes('--check')) {
