@@ -4,6 +4,7 @@ mod engines;
 mod legacy;
 mod mcp;
 mod onboard;
+mod routing;
 mod telemetry;
 
 use coreq::{Tool, service, status, update, write_atomic};
@@ -17,7 +18,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -52,6 +53,7 @@ fn main() {
         ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
         ["service", cmd] => service_cmd(&t, cmd),
         ["onboard", rest @ ..] => onboard(&t, rest),
+        ["direct", rest @ ..] => direct(&t, rest),
         // ponytail: no-op `{}` until RTK qualifies commands (§ 3) and the service reports routing (§ 4)
         ["hook", "codex" | "claude" | "hermes", _] => {
             let _ = std::io::read_to_string(std::io::stdin());
@@ -104,6 +106,12 @@ fn doctor(t: &Tool) -> i32 {
     }
     for l in engines::check(&t.install) {
         line(!l.contains("unavailable"), l);
+    }
+    for (a, r) in routing::agents(&t.install.join("data")).as_object().into_iter().flatten() {
+        line(r["routing"] != "unknown", format!("routing: {a} {} ({})", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or("")));
+    }
+    for d in routing::drift(&journal(t)) {
+        line(false, format!("routing: drift: {d} changed since onboard; run `agentq onboard --yes`"));
     }
     let owned = std::fs::read_to_string(journal(t)).ok().and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok()).map_or(0, |j| j.len());
     line(true, format!("owned edits: {owned}"));
@@ -290,12 +298,15 @@ fn serve(t: &Tool) -> ! {
     std::thread::spawn(move || telemetry::sender(&install, PASS));
     let mut checked = 0;
     let mut error = None;
+    let mut workers = vec![];
     loop {
+        routing::supervise(&t.install, &mut workers);
         if now() >= checked + UPDATE_EVERY {
             checked = now();
             error = match update::update(t, false) {
                 Ok(Some(v)) => {
                     eprintln!("agentq: updated to {v}; restarting");
+                    routing::stop(&mut workers);
                     std::process::exit(75);
                 }
                 Ok(None) => None,
@@ -304,6 +315,7 @@ fn serve(t: &Tool) -> ! {
         }
         let mut s = status::common(t, &host(), PROJECT, now(), error.clone(), None);
         s["queue"] = telemetry::status(&t.install.join("data"), now());
+        s["agents"] = routing::agents(&t.install.join("data"));
         match write_atomic(&status_path(t), &serde_json::to_string_pretty(&s).unwrap_or_default()) {
             // ponytail: healthy after the first written status; add real checks when the service owns ports (§ 5)
             Ok(()) => {
@@ -376,15 +388,38 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
         legacy(&old, false);
     }
     let agents: Vec<&str> = if picked.is_empty() { ready } else { picked.into_iter().filter(|a| ready.contains(a)).collect() };
+    // engines first: routing points an agent at the loopback port only when headroom can serve it
+    service_cmd(t, "install");
     let exe = t.install.join(t.exe_name());
-    let wants: Vec<_> = agents.iter().flat_map(|a| onboard::wants(a, &onboard::root(a), &onboard::claude_json(), &exe)).collect();
+    let mut wants: Vec<_> = agents.iter().flat_map(|a| onboard::wants(a, &onboard::root(a), &onboard::claude_json(), &exe)).collect();
+    for a in agents.iter().filter(|a| routing::ROUTED.contains(a)) {
+        match engines::headroom_exe(&t.install).ok_or("headroom unavailable".to_string()).and_then(|_| routing::fix_port(&t.install.join("data"), a)) {
+            Ok(port) => wants.extend(onboard::routing_wants(a, &onboard::root(a), port)),
+            Err(e) => println!("routing: {a} direct: {e}"),
+        }
+    }
     match onboard::apply(&wants, &journal(t)) {
         Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
         Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
     }
-    service_cmd(t, "install");
     doctor(t);
     println_code(&format!("verify: start a new {} session and call agent_context search_document", agents.join(", ")))
+}
+
+/// agentq.md § 1: remove routing edits only; MCP, hooks and telemetry stay. Files only, so it works without the service.
+fn direct(t: &Tool, args: &[&str]) -> i32 {
+    if let Some(a) = args.iter().find(|a| !onboard::AGENTS.contains(a)) {
+        fail(&format!("unknown agent `{a}`"), &format!("usage: {USAGE}"));
+    }
+    let agents = if args.is_empty() { &onboard::AGENTS[..] } else { args };
+    match onboard::restore(&journal(t), false, Some(agents)) {
+        Ok(lines) if lines.is_empty() => println_code(&format!("direct: {} already direct", agents.join(", "))),
+        Ok(lines) => {
+            lines.iter().for_each(|l| println!("{l}"));
+            println_code("direct: done; `agentq onboard --yes` routes again")
+        }
+        Err(e) => fail(&format!("direct: {e}"), "fix the file, then run `agentq direct` again"),
+    }
 }
 
 /// agentq.md § 9: restore owned edits, remove the service unit and the install folder.
@@ -392,7 +427,7 @@ fn uninstall(t: &Tool, dry: bool) -> i32 {
     if !t.install.exists() {
         return println_code("uninstall: already removed");
     }
-    onboard::restore(&journal(t), dry).unwrap_or_else(|e| fail(&format!("uninstall: {e}"), "fix the file, then run `agentq uninstall` again")).iter().for_each(|l| println!("{l}"));
+    onboard::restore(&journal(t), dry, None).unwrap_or_else(|e| fail(&format!("uninstall: {e}"), "fix the file, then run `agentq uninstall` again")).iter().for_each(|l| println!("{l}"));
     if dry {
         return println_code(&format!("would remove: service unit, {}", t.install.display()));
     }
