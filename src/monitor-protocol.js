@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { sha } from './core.js';
 import {nativeExportCodes} from './native-export.js';
+import {validateNativeFailure} from './native-failure.js';
 
 export const codexWsMetrics = ['frames_attempted_total', 'frames_compressed_total', 'frames_failed_total', 'frame_bytes_before_sum', 'frame_bytes_after_sum', 'frame_tokens_saved_sum', 'frame_elapsed_average_ms', 'frame_elapsed_max_ms'];
 export const monitorMetrics = ['active_connections', 'queue_batches', 'queue_bytes', 'queue_oldest_seconds', 'compressed', 'passthrough', 'compression_failed', 'input_chars', 'output_chars', 'last_activity_age_seconds', 'compression_calls', 'compression_total_ms', 'compression_max_ms', 'last_compression_age_seconds', 'native_rtk_calls', 'native_rtk_input_estimate', 'native_rtk_output_estimate', 'native_rtk_nonzero_exits', 'retiring_connections', 'retiring_seconds', 'stage_failures', 'worker_slots', 'telemetry_send_failures', ...codexWsMetrics.map(key => 'codex_ws_' + key)];
@@ -22,8 +23,12 @@ export function validateMonitor(value, now = Date.now()) {
   const seen = new Set();
   for (const service of value.services) {
     const key = service.service + ':' + (service.agent || 'none');
-    if (!exact(service, ['service', 'agent', 'state', 'reason', 'metrics', 'version', 'retiringVersion', 'targetVersion']) || !services.includes(service.service) || !['none', 'codex', 'claude-code', 'hermes'].includes(service.agent) || !states.includes(service.state) || !reasons.includes(service.reason) || !exact(service.metrics, monitorMetrics) || seen.has(key)) throw new Error('Invalid monitoring service');
+    if (!exact(service, ['service', 'agent', 'state', 'reason', 'metrics', 'version', 'retiringVersion', 'targetVersion', 'nativeFailure']) || !services.includes(service.service) || !['none', 'codex', 'claude-code', 'hermes'].includes(service.agent) || !states.includes(service.state) || !reasons.includes(service.reason) || !exact(service.metrics, monitorMetrics) || seen.has(key)) throw new Error('Invalid monitoring service');
     for(const key of ['version','retiringVersion','targetVersion']) if(service[key]!==undefined&&!/^\d+\.\d+\.\d+$/.test(service[key])) throw new Error('Invalid service version');
+    if (service.nativeFailure !== undefined) {
+      if (service.service !== 'contextq' || service.agent !== 'codex') throw new Error('Invalid native failure source');
+      validateNativeFailure(service.nativeFailure, Date.parse(value.at));
+    }
     seen.add(key);
     for (const metric of Object.values(service.metrics)) if (!Number.isFinite(metric) || metric < 0 || metric > Number.MAX_SAFE_INTEGER) throw new Error('Invalid monitoring metric');
   }
@@ -32,7 +37,7 @@ export function validateMonitor(value, now = Date.now()) {
   }
   return value;
 }
-const attr = (key, value) => ({ key, value: Array.isArray(value) ? { arrayValue: { values: value.map(stringValue => ({ stringValue })) } } : typeof value === 'number' ? { doubleValue: value } : { stringValue: String(value) } });
+const attr = (key, value) => ({ key, value: Array.isArray(value) ? { arrayValue: { values: value.map(stringValue => ({ stringValue })) } } : typeof value === 'number' ? { doubleValue: value } : typeof value === 'boolean' ? { boolValue: value } : { stringValue: String(value) } });
 export function monitorExport(packet, { device = 'local', user, now = Date.now() } = {}) {
   validateMonitor(packet, now);
   const traceId = sha('monitor\0' + device + '\0' + packet.id).slice(0, 32);
@@ -43,7 +48,7 @@ export function monitorExport(packet, { device = 'local', user, now = Date.now()
   for (const service of packet.services) {
     const key = service.service + '.' + service.agent;
     const tags = ['service:' + service.service, 'agent:' + service.agent, 'state:' + service.state];
-    const healthSpan = span(key, packet.at, 'service.health.' + key, service.state === 'error' ? 'ERROR' : service.state === 'ok' ? 'DEFAULT' : 'WARNING', service.reason, tags, [...(service.version ? [attr('agent_context.proxy.version', service.version)] : []), ...(service.retiringVersion?[attr('agent_context.proxy.retiring_version',service.retiringVersion)]:[]), ...(service.targetVersion?[attr('agent_context.proxy.target_version',service.targetVersion)]:[]), ...Object.entries(service.metrics).map(([k, v]) => attr('agent_context.monitor.' + k, v))]);
+    const healthSpan = span(key, packet.at, 'service.health.' + key, service.state === 'error' ? 'ERROR' : service.state === 'ok' ? 'DEFAULT' : 'WARNING', service.reason, tags, [...(service.version ? [attr('agent_context.proxy.version', service.version)] : []), ...(service.retiringVersion?[attr('agent_context.proxy.retiring_version',service.retiringVersion)]:[]), ...(service.targetVersion?[attr('agent_context.proxy.target_version',service.targetVersion)]:[]), ...(service.nativeFailure ? Object.entries(service.nativeFailure).filter(([,v])=>v!==null).map(([k,v])=>attr('agent_context.native_failure.'+k,v)) : []), ...Object.entries(service.metrics).map(([k, v]) => attr('agent_context.monitor.' + k, v))]);
     healthSpan.traceId = sha(traceId + key).slice(0, 32); spans.push(healthSpan);
     // Delayed snapshots stay historical; replay must not turn a stale health sample into a fresh score.
     if (now - Date.parse(packet.at) <= 600000) for (const [name, value] of Object.entries(service.state === 'unknown' ? {} : { health: service.state === 'ok' ? 1 : 0 })) scores.push({ id: sha(traceId + '\0' + key + '\0' + name), traceId: healthSpan.traceId, observationId: sha(key).slice(0, 16), name: key + '.' + name, value, dataType: 'NUMERIC', environment: 'production' });

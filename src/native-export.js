@@ -5,9 +5,12 @@ import {execFile} from 'node:child_process';
 import {home,root,atomicWrite,sha,tryLock,version} from './core.js';
 import {recordIncident} from './incidents.js';
 import {atomicSecretWrite} from './private-file.js';
+import {captureProcessFailure,nativeFailureReceipt,validateNativeFailure} from './native-failure.js';
 const execute=(command,args,{input,...options})=>new Promise((resolve,reject)=>{
+  const started=performance.now();
   const child=execFile(command,args,options,(error,stdout,stderr)=>{
     if(error&&/\bcode:\s*413\b/.test(stderr)) error.exportStatus=413;
+    if(error) error.nativeProcessFailure=captureProcessFailure(error,stdout,stderr,performance.now()-started);
     error?reject(error):resolve({stdout});
   });
   child.stdin.on('error',()=>{});child.stdin.end(input);
@@ -16,6 +19,19 @@ const directory=()=>path.join(root(),'native-hook-outbox');
 export const codexExporterPath=()=>path.join(home(),'.codex/plugins/cache/codex-observability-plugin/tracing/0.4.2/dist/index.mjs');
 const files=()=>fs.existsSync(directory())?fs.readdirSync(directory()).filter(n=>/^[a-f0-9]{64}\.json$/.test(n)):[];
 export const nativeExportCodes = ['payload_too_large','concurrency_limit','timeout','collector_unavailable','snapshot_unavailable','unacknowledged','process_failed','unknown'];
+export function nativeExportLastFailure() {
+  let latest=null;
+  for(const name of files()) {
+    const job=JSON.parse(fs.readFileSync(path.join(directory(),name)));
+    if(!job.failure) continue;
+    try {
+      const failure=validateNativeFailure(job.failure);
+      if(failure.jobId!==job.id) continue;
+      if(!latest||failure.at>latest.at) latest=failure;
+    }catch {/* Old or invalid receipts never become invented diagnostics. */}
+  }
+  return latest;
+}
 const retryDelay = attempts => Math.min(300000,1000*2**Math.min(attempts,9));
 export function nativeExportDiagnostics(now=Date.now()) {
   const metrics=Object.fromEntries(nativeExportCodes.map(code=>['native_export_'+code,0]));
@@ -146,7 +162,7 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
       if(job.attempts) atomicWrite(path.join(directory(),'recovery.status'),JSON.stringify({at:Date.now(),version}));
       fs.unlinkSync(jobFile);
     }catch(error) {
-      atomicWrite(jobFile,JSON.stringify({...job,lastAttempt:now,attempts:job.attempts+1,diagnostic:exportFailure(error,stage)}));
+      atomicWrite(jobFile,JSON.stringify({...job,lastAttempt:now,attempts:job.attempts+1,diagnostic:exportFailure(error,stage),failure:nativeFailureReceipt(error,stage,job.id,version)}));
       recordIncident({component:'telemetry',operation:'native_export',category:'delivery_failed',agent:'codex'});
     }
   }catch {
