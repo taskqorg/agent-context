@@ -17,10 +17,11 @@ if(allowed){
  const size=(chunk,encoding)=>typeof chunk==='string'?Buffer.byteLength(chunk,typeof encoding==='string'?encoding:'utf8'):chunk?.byteLength||0;
  const original=http.request;http.request=function(...args){const req=original.apply(this,args);
   if(req.method!=='POST'||req.path!=='/api/public/otel/v1/traces'||req.getHeader('host')!=='127.0.0.1:'+port)return req;
-  const r={start:performance.now(),body:0,finish:null,response:null,status:null,duration:null,timeout:false,socket:null,socketStart:0};count++;last=r;
+  const r={start:performance.now(),body:0,finish:null,response:null,status:null,duration:null,timeout:false,socket:null,socketStart:0,chunks:0,span:null};count++;last=r;
   const add=(chunk,encoding)=>{try{r.body+=size(chunk,encoding);maxBody=Math.max(maxBody||0,r.body);}catch{}};
-  const write=req.write,end=req.end;req.write=function(...args){add(args[0],args[1]);return write.apply(this,args);};
-  req.end=function(...args){try{if(r.body===0&&Buffer.isBuffer(args[0])&&req.getHeader('content-type')==='application/x-protobuf'&&!req.getHeader('content-encoding')){const p=spans(args[0]);if(p){maxSpan=Math.max(maxSpan||0,p.max);maxSpans=Math.max(maxSpans||0,p.count);}}}catch{}add(args[0],args[1]);return end.apply(this,args);};
+  const inspect=chunk=>{try{if(!size(chunk))return;r.chunks++;r.span=r.chunks===1&&Buffer.isBuffer(chunk)&&req.getHeader('content-type')==='application/x-protobuf'&&!req.getHeader('content-encoding')?spans(chunk):null;}catch{r.span=null;}};
+  const write=req.write,end=req.end;req.write=function(...args){inspect(args[0]);add(args[0],args[1]);return write.apply(this,args);};
+  req.end=function(...args){inspect(args[0]);if(r.span){maxSpan=Math.max(maxSpan||0,r.span.max);maxSpans=Math.max(maxSpans||0,r.span.count);}add(args[0],args[1]);return end.apply(this,args);};
   req.once('socket',socket=>{r.socket=socket;r.socketStart=socket.bytesWritten;});
   req.once('finish',()=>{r.finish=ms(r);});req.once('timeout',()=>{r.timeout=true;timed=r;});
   req.once('response',res=>{r.response=ms(r);r.status=res.statusCode;if(res.statusCode>=400)failed=r;});

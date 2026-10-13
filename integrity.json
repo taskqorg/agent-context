@@ -25,7 +25,7 @@
     "src/monitor.js": "d3a0c05524800ef9d9fa886574b09f9693d87719c1b5aef168959cb25c5a0332",
     "src/native-export.js": "dbb9e15016081c7a0817ab50dc01ee9ec830d20d4f61ac6af728be6ab0703198",
     "src/native-failure.js": "3b71988b7c76309eb911b7dc7362abfb09a590018fab458ebfc0a76b2d1a1f92",
-    "src/native-http-observer.cjs": "ea5412dc31ce3c56869db93f9133c6d1af988538cb534fe0c8292af0060d28e8",
+    "src/native-http-observer.cjs": "d91db96b155f740c9362dc344deec63d77614d4a6e49bf67957bcabe253f487d",
     "src/native-tools.js": "69c77fb0dc7dc5d3ece328f455ad5ff83158f06a6b9362c397a31e3ccb8de97b",
     "src/onboarding.js": "5e91023bde17f4d40e61b3aaa57325c0ad45a414c90450e7337e77d19685efe3",
     "src/private-file.js": "b7075dc745d61f40e41970b36f78521fe4b1a4d0a1c8c2c66033e69002b395e5",
