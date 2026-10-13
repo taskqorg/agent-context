@@ -1,5 +1,7 @@
 # ServiceQ v1 — 0.2.5
 
+> **Superseded by [dashq](https://github.com/taskqorg/dashq)** at `https://dash.ufobe.com`, behind the same Langfuse Access guard (agentq.md § 8). Use `dashq report` instead of `--report`. This page stays until the `/serviceq` panel is removed.
+
 Shared Langfuse project `Agents` (`tight-hermes`), dashboard `ServiceQ`.
 
 ## Operational overview
