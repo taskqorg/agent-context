@@ -21,3 +21,7 @@ A user request to remove agentq allows this step.
 2. Run `agentq uninstall --dry-run` and show what it restores and removes.
 3. Run `agentq uninstall`. It restores owned edits whose value is unchanged, keeps later foreign edits and reports conflicts, removes the service, engines, data and install folder. Logins, shared keys and exported history stay. A second run prints `already removed`.
 4. A legacy Node install is removed by `agentq uninstall --legacy [--dry-run]`, which runs its own uninstall.
+
+## DashQ connection target
+
+Accepted, pending implementation: [ENROLLMENT](docs/spec/ENROLLMENT.md). Once qualified, use `agentq enroll <https-url>` and approve once in the browser (headless: link/code elsewhere). The command verifies a real dashboard snapshot. No file/key copying or repeated onboarding; use connection status and disconnect for recovery. Do not advertise this path as available before its release gate passes.
