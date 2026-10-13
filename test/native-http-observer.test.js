@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import http from 'node:http';import crypto from 'node:crypto';import {execFile} from 'node:child_process';import {createRequire} from 'node:module';import {fileURLToPath} from 'node:url';import {validateSdkTransport,captureProcessFailure,nativeFailureReceipt} from '../src/native-failure.js';
-const {spans}=createRequire(import.meta.url)('../src/native-http-observer.cjs');
+const {spans,jsonSpans}=createRequire(import.meta.url)('../src/native-http-observer.cjs');
 const varint=n=>{const a=[];do{const b=n%128;n=Math.floor(n/128);a.push(b|(n?128:0));}while(n);return Buffer.from(a);};
 const field=(n,b)=>Buffer.concat([varint(n*8+2),varint(b.length),b]);
 const proto=(...entries)=>field(1,field(2,Buffer.concat(entries.map(b=>field(2,b)))));
@@ -34,10 +34,16 @@ test('FD1 ordinary export failure reads fresh bounded transport receipt and pres
  const profile=fs.mkdtempSync(path.join(os.tmpdir(),'contextq-http-parent-'));process.env.AGENT_CONTEXT_HOME=profile;
  const {enqueueCodexExport,processCodexExports,nativeExportLastFailure,nativeExportStats}=await import('../src/native-export.js');
  const sdk=path.join(profile,'.codex/plugins/cache/codex-observability-plugin/tracing/0.4.2/dist/index.mjs');fs.mkdirSync(path.dirname(sdk),{recursive:true});
- const body=proto(field(9,Buffer.alloc(900,3)));
+ const span={attributes:[{key:'fixture',value:{stringValue:'я'.repeat(900)}}]};const body=Buffer.from(JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[span]}]}]}));
  const server=http.createServer(async(req,res)=>{for await(const b of req){}res.writeHead(413).end();});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;
- const script=`import http from 'node:http';const req=http.request(process.env.LANGFUSE_CODEX_BASE_URL+'/api/public/otel/v1/traces',{method:'POST',headers:{'content-type':'application/x-protobuf'}},res=>{res.resume();res.on('end',()=>{console.error('[langfuse-codex] error during flush/shutdown: OTLPExporterError: fixture\\n  code: 413,');process.exitCode=1;});});const {Readable}=await import('node:stream');Readable.from([Buffer.from('${body.toString('base64')}','base64')]).pipe(req);`;
+ const script=`import http from 'node:http';const req=http.request(process.env.LANGFUSE_CODEX_BASE_URL+'/api/public/otel/v1/traces',{method:'POST',headers:{'content-type':'application/json'}},res=>{res.resume();res.on('end',()=>{console.error('[langfuse-codex] error during flush/shutdown: OTLPExporterError: fixture\\n  code: 413,');process.exitCode=1;});});const {Readable}=await import('node:stream');Readable.from([Buffer.from('${body.toString('base64')}','base64')]).pipe(req);`;
  fs.writeFileSync(sdk,script);const source=path.join(profile,'.codex/sessions/fixture.jsonl');fs.mkdirSync(path.dirname(source),{recursive:true});fs.writeFileSync(source,[{type:'session_meta',payload:{id:'fixture'}},{type:'event_msg',payload:{type:'task_started',turn_id:'fixture'}},{type:'event_msg',payload:{type:'task_complete',turn_id:'fixture'}}].map(v=>JSON.stringify(v)).join('\n')+'\n');
  try{enqueueCodexExport({transcript_path:source,turn_id:'fixture'});await processCodexExports({collector:async()=>({base_url:'http://127.0.0.1:'+port,public_key:'fixture',secret_key:'fixture'})});const value=nativeExportLastFailure();assert.equal(value.httpStatus,413);assert.equal(value.sdkResponseStatus,413);assert.equal(value.sdkMaxBodyBytes,body.length);assert.equal(value.sdkMaxSpans,1);assert.equal(value.sdkRequests,1);assert.equal(nativeExportStats().queue_batches,1);assert.equal(fs.existsSync(source+'.langfuse'),false);
  }finally{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));fs.rmSync(profile,{recursive:true,force:true});}
+});
+
+test('FD1 JSON sizing measures canonical UTF8 spans without normalizing values or unsafe integer representations',()=>{
+ const span={traceId:'a'.repeat(32),spanId:'b'.repeat(16),startTimeUnixNano:'1791860000000000001',attributes:[{key:'fixture',value:{stringValue:'я'.repeat(700000)}}]},body=Buffer.from(JSON.stringify({resourceSpans:[{scopeSpans:[{spans:[span,span]}]}]}));const before=crypto.createHash('sha256').update(body).digest('hex');
+ assert.deepEqual(jsonSpans(body),{count:2,max:Buffer.byteLength(JSON.stringify(span))});assert.equal(crypto.createHash('sha256').update(body).digest('hex'),before);
+ for(const b of [Buffer.from('{ "resourceSpans":[] }'),Buffer.from('{"resourceSpans":[],"n":9007199254740993}'),Buffer.from('{'),Buffer.from('{"resourceSpans":[{}]}'),Buffer.alloc(8*1024*1024+1)])assert.equal(jsonSpans(b),null);
 });
