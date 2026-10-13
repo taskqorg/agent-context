@@ -26,3 +26,5 @@ Install once per machine/runtime. Manage our agents' optimization, updates and t
 Our experiments support noisy-command reduction and selective retrieval. They do **not** prove a released combined recipe or universal net savings. Tokenade saved input on noisy Claude tests but caused extra JSON reading; its live Codex probe did not compress. The experiment reports stay in git history before taskqorg/agentq#62.
 
 Technology, operating limits and rollout policy live in [agentq.md](../../agentq.md). New code must meet this contract; old product deletion/deployment is a separate authorized step.
+
+Accepted integration control interface: [CONFIGURATION A1–A5](CONFIGURATION.md), implementing R1/R4/R5/R7/R9 without model/provider/permission management.

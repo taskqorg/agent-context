@@ -11,3 +11,5 @@ Accepted target under [agentq.md](../../agentq.md), PRODUCT R5/R9/R10. [Shared s
 - Protected per-installation credentials and revoke state are excluded from queue pruning and update cleanup. Never migrate a credential into another installation or runtime.
 - C3's owner-accepted credential lifetime exception is observation-only. No task actions, remote execution or shared employee secrets.
 - Release requires installed desktop/headless and storage/service qualification on macOS, Linux, native Windows and WSL, plus E1–E10 applicable to AgentQ. Existing resource qualification is reused; no fake workload or invented chart samples.
+
+Accepted additive profile projection and separate configuration capability: [A1–A5](CONFIGURATION.md). Existing observation grants never gain mutation authority automatically.
