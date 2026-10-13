@@ -4,7 +4,7 @@
 
 ## Что делает сотрудник
 
-Даёт агенту постоянную ссылку https://github.com/taskqorg/agent-context/blob/main/INSTALL.md и адрес gateway команды после квалификации/публикации. Агент объясняет передачу данных, устанавливает закреплённую версию и вызывает `connect`, затем `setup`. Пользователь один раз подтверждает вход на https://github.com/login/device. Секреты сервисов не запрашиваются. Нативные разрешения на hooks остаются обычной отдельной проверкой агента.
+Даёт агенту постоянную ссылку https://github.com/taskqorg/agentq/blob/main/INSTALL.md и адрес gateway команды после квалификации/публикации. Агент объясняет передачу данных, устанавливает закреплённую версию и вызывает `connect`, затем `setup`. Пользователь один раз подтверждает вход на https://github.com/login/device. Секреты сервисов не запрашиваются. Нативные разрешения на hooks остаются обычной отдельной проверкой агента.
 
 Кандидат должен распространяться по полному проверенному commit SHA; moving main до публикации не содержит обещанной схемы. Автоматическое обновление 0.1.x → 0.2.0 требует явной миграции. Для рассмотренного существующего профиля агент использует `setup --migrate`; без этого переход minor отказывает. Подписанные автоматические patch-обновления этот запрет не обходят. Проверка прежнего bootstrap и возможность package rollback сохраняются; downgrade через `--migrate` запрещён.
 
@@ -14,7 +14,7 @@ Package rollback на версию без gateway/collector отказывает
 
 ## Однократная настройка владельца
 
-1. Зарегистрировать OAuth App организации: https://github.com/organizations/taskqorg/settings/applications/new . Имя `Agent Context`; homepage `https://github.com/taskqorg/agent-context`; callback `https://github.com/taskqorg/agent-context` (Device Flow callback не использует). Включить **Enable Device Flow** и **Token expiration**. Нужен только публичный **Client ID**; Client Secret для этой схемы не нужен.
+1. Зарегистрировать OAuth App организации: https://github.com/organizations/taskqorg/settings/applications/new . Имя `Agent Context`; homepage `https://github.com/taskqorg/agentq`; callback `https://github.com/taskqorg/agentq` (Device Flow callback не использует). Включить **Enable Device Flow** и **Token expiration**. Нужен только публичный **Client ID**; Client Secret для этой схемы не нужен.
 2. Разрешить приложение в организации, включая её ограничения OAuth/SSO. Scope `read:org` используется для проверки активного членства. По умолчанию доступ имеет организация `taskqorg`; при необходимости ограничить конкретной GitHub team через её slug в серверном config.
 3. На FRA создать закрытый JSON config 0600 вне репозитория: `clientId`, `organization`, необязательный `team`, абсолютный `stateDir`, `port:18880`, `langfuse:{public_key,secret_key,base_url}` и `supercompressKey`. Ключи берутся из существующих локальных закрытых профилей FRA программно; не вводятся в чат/argv. Проверка конфигурации отказывает неполным/некорректным значениям. Не используйте device credentials вместо серверных project keys.
 4. Запуск: `node <qualified checkout>/bin/agent-context.js gateway serve <private config path>`. Listener привязан только к `127.0.0.1`. Один процесс владеет stateDir. Сервис запускается под отдельным непривилегированным пользователем; config и state доступны только ему. `devices.json` хранит хеши device tokens и GitHub access/refresh tokens scope read:org и сроки их действия для повторной проверки членства; этот файл — секрет и не входит в диагностику/репозиторий.

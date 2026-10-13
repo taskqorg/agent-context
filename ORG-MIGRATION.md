@@ -1,6 +1,6 @@
 # Organization layout and TaskQ migration
 
-`taskqorg/agent-context` owns executable context adapters and their installation, verification, releases and rollback. A separate proposed `taskqorg/agent-guidelines` should own original, reusable development policies and versioned adoption recipes. Do not redistribute third-party Caveman or other plugin content without checking its license; reference upstream instead. Project-specific decisions stay in each project's canonical contracts. Do not copy secrets, private incident logs or host inventories into public repositories.
+`taskqorg/agentq` owns executable context adapters and their installation, verification, releases and rollback. A separate proposed `taskqorg/agent-guidelines` should own original, reusable development policies and versioned adoption recipes. Do not redistribute third-party Caveman or other plugin content without checking its license; reference upstream instead. Project-specific decisions stay in each project's canonical contracts. Do not copy secrets, private incident logs or host inventories into public repositories.
 
 TaskQ repository transfer is deferred. This document authorizes no queue start or transfer by itself.
 

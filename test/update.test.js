@@ -33,7 +33,7 @@ function fixture({ badDigest = false, qualified = true, next = nextPatch, extra 
     fetcher: async url => {
       calls++;
       assert.equal(new URL(url).hostname, 'github.com', 'updates must never consume REST API quota');
-      if (url.endsWith('recipe.json.sig')) assert.equal(url, `https://github.com/taskqorg/agent-context/releases/download/v${next}/recipe.json.sig`);
+      if (url.endsWith('recipe.json.sig')) assert.equal(url, `https://github.com/taskqorg/agentq/releases/download/v${next}/recipe.json.sig`);
       return new Response(url.endsWith('recipe.json') ? recipe : url.endsWith('recipe.json.sig') ? signature : bytes);
     },
     preparer: async (archive, stage, expected) => {

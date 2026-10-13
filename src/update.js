@@ -8,7 +8,7 @@ import { atomicWrite, root, home, sha, version, acquireTransaction } from './cor
 
 export const extraRuntimeFiles = ['scripts/serve-serviceq.js', 'integrations/hermes/agent-context/plugin.yaml', 'integrations/hermes/agent-context/__init__.py', 'integrations/headroom/pyproject.toml', 'integrations/headroom/agent_context_headroom/__init__.py', 'integrations/headroom/agent_context_headroom/plain.py', 'integrations/headroom/agent_context_headroom/activity.py', 'integrations/headroom/agent_context_headroom/proxy.py', 'integrations/headroom/agent_context_headroom/observability.py', 'integrations/headroom/agent_context_headroom/request_context.py', 'integrations/headroom/agent_context_headroom/collector.py', 'scripts/headroom-benchmark.py', 'scripts/headroom-claude.py', 'scripts/headroom-hermes.py', 'scripts/headroom-live.py', 'scripts/headroom-qualify.py', 'scripts/local-smoke.mjs', 'scripts/headroom-fixture.js', 'integrations/headroom/agent_context_headroom/providers.py', 'integrations/headroom/agent_context_headroom/provider_headroom.py', 'integrations/headroom/agent_context_headroom/provider_supercompress.py', 'integrations/headroom/agent_context_headroom/provider_scaledown.py', 'integrations/headroom/agent_context_headroom/provider_benchmark.py'];
 const source = fileURLToPath(new URL('../', import.meta.url));
-export const repository = 'taskqorg/agent-context';
+export const repository = 'taskqorg/agentq';
 // Reviewed 0.1.6 bootstrap, also installed over legacy 0.1.3 on Windows.
 const hardenedLegacyLauncher = '58010bbde95c55e4c04f3c11ebe26497ef5b024f0d09193625203ce66125d51c';
 const json = value => `${JSON.stringify(value, null, 2)}\n`;

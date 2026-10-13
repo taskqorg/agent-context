@@ -2,7 +2,7 @@
 
 Agent Context is developer tooling: a local integration layer for coding agents' context management. It is independent of game/application code, TaskQ queue orchestration and LangGraph services. New integrations belong here only when they share the same local lifecycle and supported agent adapter contract.
 
-Canonical source: https://github.com/taskqorg/agent-context
+Canonical source: https://github.com/taskqorg/agentq
 
 ## Release
 
@@ -19,13 +19,13 @@ Recommended project declaration, once a manifest-aware updater is implemented:
 ```json
 {
   "schema": 1,
-  "repository": "taskqorg/agent-context",
+  "repository": "taskqorg/agentq",
   "compatible": "0.1.x",
   "updateChannel": "stable"
 }
 ```
 
-The project manifest remains a design contract, not a consumed file. Version 0.1.5 implements user-level automatic stable patch updates through the fixed taskqorg/agent-context source; project-specific compatibility arbitration is not implemented.
+The project manifest remains a design contract, not a consumed file. Version 0.1.5 implements user-level automatic stable patch updates through the fixed taskqorg/agentq source; project-specific compatibility arbitration is not implemented.
 
 One updater per OS user checks approved stable releases hourly through the persistent monitor, including idle hosts. The monitor holds an outbound HTTPS long poll to the team gateway; publishing and signing an approved stable release wakes connected hosts. A new version notification can trigger one early check; retries retain backoff and explicit disable is respected. MCP/hook startup also provides the hourly fallback. Install candidates in an immutable version directory, verify the archive digest and compatibility, run isolated self-tests, then atomically select that version through a stable launcher. Keep the previous package and config transaction for rollback. Retain all older runtime directories: busy proxies can still invoke their compression bridges after several updates. Current MCP sessions retain their loaded version until a supported reload; never kill active clients automatically.
 

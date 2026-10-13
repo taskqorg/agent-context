@@ -20,8 +20,8 @@ const policy = () => {
 };
 export function incidentPolicy(enabled, transport = 'relay') {
   if (!['relay', 'gh'].includes(transport)) throw new Error('Choose relay or gh');
-  atomicWrite(path.join(root(), 'incident-policy.json'), JSON.stringify({ schema: 2, enabled, transport, destination: 'taskqorg/agent-context' }));
-  return { enabled, transport, destination: transport === 'gh' ? 'taskqorg/agent-context (your GitHub account)' : 'anonymous relay' };
+  atomicWrite(path.join(root(), 'incident-policy.json'), JSON.stringify({ schema: 2, enabled, transport, destination: 'taskqorg/agentq' }));
+  return { enabled, transport, destination: transport === 'gh' ? 'taskqorg/agentq (your GitHub account)' : 'anonymous relay' };
 }
 export function recordIncident({ component, operation, category, agent = 'unknown' }) {
   // Public fields are constructed, never redacted from exception text or raw logs.
@@ -124,7 +124,7 @@ async function deliver(run) {
       const packet = publicPacket(item);
       const marker = `incident-v1:${packet.fingerprint}`;
       const options = { timeout: 15000, maxBuffer: 100000, windowsHide: true };
-      const search = await run('gh', ['issue', 'list', '--repo', 'taskqorg/agent-context', '--state', 'all', '--search', `in:body "${marker}"`, '--limit', '20', '--json', 'number,state,body,url'], options);
+      const search = await run('gh', ['issue', 'list', '--repo', 'taskqorg/agentq', '--state', 'all', '--search', `in:body "${marker}"`, '--limit', '20', '--json', 'number,state,body,url'], options);
       const matches = JSON.parse(search.stdout);
       const sameEvent = matches.find(x => x.body?.includes(packet.event_id));
       const open = matches.find(x => x.state === 'OPEN' && x.body?.includes(marker));
@@ -138,17 +138,17 @@ async function deliver(run) {
       const body = `<!-- ${marker} -->\n<!-- event:${packet.event_id} -->\nInfrastructure incident; intake only, no execution authority.\n\n\`\`\`json\n${JSON.stringify(packet, null, 2)}\n\`\`\`\n\nCounts are local observations, not unique users or exact global totals. No raw logs or credentials attached.\n`;
       const bodyFile = path.join(directory(), packet.fingerprint + '.public.txt'); atomicWrite(bodyFile, body);
       let url = match?.url;
-      if (url && !/^https:\/\/github\.com\/taskqorg\/agent-context\/issues\/\d+$/.test(url)) throw new Error('Invalid issue destination');
+      if (url && !/^https:\/\/github\.com\/taskqorg\/agentq\/issues\/\d+$/.test(url)) throw new Error('Invalid issue destination');
       if (waiting && !sameEvent) { results.push({ fingerprint: item.fingerprint, status: 'needs_reconciliation' }); continue; }
       if (!match) {
         // Persist before create: an unknown response must be reconciled, never blindly retried.
         updateDelivery(item, { state: 'create_unknown', unknown_at: new Date().toISOString() });
-        const created = await run('gh', ['issue', 'create', '--repo', 'taskqorg/agent-context', '--title', `[incident] ${packet.component}: ${packet.category}`, '--body-file', bodyFile], options);
+        const created = await run('gh', ['issue', 'create', '--repo', 'taskqorg/agentq', '--title', `[incident] ${packet.component}: ${packet.category}`, '--body-file', bodyFile], options);
         url = created.stdout.trim();
-        if (!/^https:\/\/github\.com\/taskqorg\/agent-context\/issues\/\d+$/.test(url)) throw new Error('Unknown create outcome');
+        if (!/^https:\/\/github\.com\/taskqorg\/agentq\/issues\/\d+$/.test(url)) throw new Error('Unknown create outcome');
       } else if (!sameEvent || item.state === 'reported') {
         updateDelivery(item, { state: 'comment_unknown', unknown_at: new Date().toISOString() });
-        await run('gh', ['issue', 'comment', String(match.number), '--repo', 'taskqorg/agent-context', '--body-file', bodyFile], options);
+        await run('gh', ['issue', 'comment', String(match.number), '--repo', 'taskqorg/agentq', '--body-file', bodyFile], options);
       }
       updateDelivery(item, { state: 'reported', issue_url: url, last_reported: new Date().toISOString(), reported_occurrences: item.occurrences });
       results.push({ fingerprint: item.fingerprint, status: 'reported', url });

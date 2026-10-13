@@ -12,7 +12,7 @@ Anonymous intake for `agent-context incidents report`. Clients hold no secrets.
 
 ## Deploy (owner)
 
-1. Create a GitHub App: repository permission **Issues: read & write** only; install it on `taskqorg/agent-context` only.
+1. Create a GitHub App: repository permission **Issues: read & write** only; install it on `taskqorg/agentq` only.
 2. Create label `incident` in the repository.
 3. `cd relay && npx wrangler deploy`
 4. Set `GITHUB_APP_ID`, `GITHUB_INSTALLATION_ID` in `wrangler.toml` vars; `npx wrangler secret put GITHUB_APP_PRIVATE_KEY` (PKCS#8 PEM: `openssl pkcs8 -topk8 -nocrypt -in app.pem`) and `npx wrangler secret put SOURCE_SALT` (random string).

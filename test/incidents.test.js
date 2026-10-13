@@ -33,7 +33,7 @@ test('reporting is opt-in until disclosed setup; unknown create is reconciled an
   calls = [];
   const recovered = await reportIncidents(async (_cmd, args) => {
     calls.push(args);
-    return { stdout: JSON.stringify([{ number: 42, state: 'OPEN', body: `incident-v1:${item.fingerprint} event:${item.event_id}`, url: 'https://github.com/taskqorg/agent-context/issues/42' }]) };
+    return { stdout: JSON.stringify([{ number: 42, state: 'OPEN', body: `incident-v1:${item.fingerprint} event:${item.event_id}`, url: 'https://github.com/taskqorg/agentq/issues/42' }]) };
   });
   assert.equal(recovered.results[0].status, 'reported'); assert.equal(calls.length, 1);
   const file = path.join(root(), 'incidents', item.fingerprint + '.json');
@@ -75,7 +75,7 @@ test('gh unknown create is reconciled after a day: found event becomes reported 
   const file = path.join(root(), 'incidents', item.fingerprint + '.json');
   fs.writeFileSync(file, JSON.stringify({ ...item, state: 'create_unknown', unknown_at: '2020-01-01T00:00:00Z' }));
   const calls = [];
-  await reportIncidents(async (_cmd, args) => { calls.push(args[1]); return { stdout: JSON.stringify([{ number: 7, state: 'OPEN', body: `incident-v1:${item.fingerprint} event:${item.event_id}`, url: 'https://github.com/taskqorg/agent-context/issues/7' }]) }; });
+  await reportIncidents(async (_cmd, args) => { calls.push(args[1]); return { stdout: JSON.stringify([{ number: 7, state: 'OPEN', body: `incident-v1:${item.fingerprint} event:${item.event_id}`, url: 'https://github.com/taskqorg/agentq/issues/7' }]) }; });
   assert.ok(!calls.includes('create'));
   assert.equal(JSON.parse(fs.readFileSync(file)).state, 'reported');
 });

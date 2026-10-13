@@ -2,7 +2,7 @@
 // and opens/updates one GitHub issue per fingerprint once enough machines report it.
 // Secrets live only here: GITHUB_APP_ID, GITHUB_INSTALLATION_ID, GITHUB_APP_PRIVATE_KEY (PKCS#8 PEM), SOURCE_SALT.
 
-const REPO = 'taskqorg/agent-context';
+const REPO = 'taskqorg/agentq';
 const COMPONENTS = ['core', 'installer', 'updater', 'proxy', 'compressor', 'telemetry', 'agent-adapter'];
 const AGENTS = ['codex', 'claude-code', 'hermes', 'headroom', 'unknown'];
 const MACHINE_THRESHOLD = 3; // unique machines before a public issue appears

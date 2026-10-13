@@ -4,7 +4,7 @@ One managed package for agent integration, compression, telemetry and recovery. 
 
 Сведения о квалификации 0.1.11 и прежних ручных адаптерах. Текущая установка/удаление: [INSTALL.md](../INSTALL.md).
 
-Public source: https://github.com/taskqorg/agent-context. Release/adoption and future update policy: [DISTRIBUTION.md](../DISTRIBUTION.md). Compatible qualified stable patch updates are checked on agent startup, at most daily.
+Public source: https://github.com/taskqorg/agentq. Release/adoption and future update policy: [DISTRIBUTION.md](../DISTRIBUTION.md). Compatible qualified stable patch updates are checked on agent startup, at most daily.
 
 ## Install
 
@@ -99,7 +99,7 @@ Sources: [SuperCompress agents](https://docs.supercompress.dev/coding-agents), [
 
 Installation seeds a private version directory and a stable launcher under `~/.agent-context`. Agent startup schedules one bounded background check at most daily. No daemon, task queue or app restart is involved. Existing sessions keep their loaded version; new launches use the selected version. A Node installation with npm is required for staging updates.
 
-Only stable releases from `taskqorg/agent-context` with matching GitHub SHA256 asset digests and a qualified `recipe.json` are eligible. The recipe must match the platform, all three client qualifications and launcher/adapter contract 1. The archive is installed with lifecycle scripts disabled and passes integrity plus isolated tests before atomic activation. A failed check keeps the old version. Minor/major changes require a migration. Downloaded releases are trusted maintainer code; digest checks establish integrity, not independent code review.
+Only stable releases from `taskqorg/agentq` with matching GitHub SHA256 asset digests and a qualified `recipe.json` are eligible. The recipe must match the platform, all three client qualifications and launcher/adapter contract 1. The archive is installed with lifecycle scripts disabled and passes integrity plus isolated tests before atomic activation. A failed check keeps the old version. Minor/major changes require a migration. Downloaded releases are trusted maintainer code; digest checks establish integrity, not independent code review.
 
 ```sh
 agent-context update status
