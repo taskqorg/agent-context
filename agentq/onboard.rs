@@ -74,6 +74,14 @@ fn load(journal: &Path) -> Vec<Value> {
     std::fs::read_to_string(journal).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
+/// `orig` copies configs that may hold env secrets: owner-only, gone with the install folder on uninstall.
+fn save(journal: &Path, j: &[Value]) -> Result<(), String> {
+    write_atomic(journal, &serde_json::to_string_pretty(j).unwrap_or_default())?;
+    #[cfg(unix)]
+    std::fs::set_permissions(journal, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| format!("{}: {e}", journal.display()))?;
+    Ok(())
+}
+
 fn entry(key: &[String], kind: &str, after: Value) -> Value {
     json!({"key": key, "kind": kind, "before": null, "after": after})
 }
@@ -118,10 +126,7 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
                 if let Some(d) = journal.parent() {
                     std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
                 }
-                write_atomic(journal, &serde_json::to_string_pretty(&j).unwrap_or_default())?;
-                // `orig` copies configs that may hold env secrets: owner-only, gone with the install folder on uninstall
-                #[cfg(unix)]
-                std::fs::set_permissions(journal, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| format!("{}: {e}", journal.display()))?;
+                save(journal, &j)?;
                 write_atomic(f, &text)?;
                 let bom = if old.as_deref().is_some_and(|o| o.starts_with(BOM) && !text.starts_with(BOM)) { "; UTF-8 BOM stripped" } else { "" };
                 out.push(format!("edited: {} ({n} owned keys{bom})", f.display()));
@@ -168,7 +173,7 @@ pub fn restore(journal: &Path, dry: bool, routing: Option<&[&str]>) -> Result<Ve
         for i in done {
             j.remove(i);
         }
-        write_atomic(journal, &serde_json::to_string_pretty(&j).unwrap_or_default())?;
+        save(journal, &j)?;
     }
     Ok(out)
 }
@@ -470,6 +475,8 @@ mod tests {
         assert!(direct.starts_with(orig) && direct.contains("[mcp_servers.agent_context]") && !direct.contains("model_provider"), "{direct}");
         assert_eq!(crate::routing::state("codex", &d, Some(41234)).0, "direct");
         assert_eq!(load(&journal).len(), 3, "MCP and hook entries stay");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         assert!(restore(&journal, false, Some(&["codex"])).unwrap().is_empty(), "repeat is safe");
 
         apply(&all(), &journal).unwrap();
