@@ -67,6 +67,12 @@ pub fn headroom_exe(install: &Path) -> Option<PathBuf> {
     dir.join("ready").exists().then(|| venv_bin(&dir, "headroom"))
 }
 
+/// `status.json` `engines`: each pin and whether its checked install is present; no process runs (30 s pace).
+pub fn status(install: &Path) -> serde_json::Value {
+    let state = |ok: bool| if ok { "ready" } else { "unavailable" };
+    serde_json::json!({"rtk": {"version": RTK, "state": state(rtk_path(install).exists())}, "headroom": {"version": HEADROOM, "state": state(headroom_exe(install).is_some())}})
+}
+
 /// Read-only `doctor` lines: each engine's checked version, else why not.
 pub fn check(install: &Path) -> Vec<String> {
     let hr = match headroom_exe(install) {
