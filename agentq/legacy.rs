@@ -368,6 +368,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&h);
         let dir = h.join(".agent-context");
         let l = dir.join("launcher.mjs").display().to_string();
+        // JSON and TOML basic strings: Windows backslashes must be escaped.
+        let q = serde_json::to_string(&l).unwrap();
+        let le = &q[1..q.len() - 1];
         let w = |f: &str, t: &str| {
             let p = h.join(f);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -378,10 +381,10 @@ mod tests {
         w(".agent-context/services/claude.json", r#"{"pid": 4242, "childPid": 4243}"#);
         w("Library/LaunchAgents/com.taskqorg.contextq-monitor.plist", "");
         w(".config/systemd/user/agent-context-monitor.service", "");
-        w(".claude/settings.json", &format!("{{\n  \"env\": {{\n    \"ANTHROPIC_BASE_URL\": \"http://127.0.0.1:18788\",\n    \"MINE\": \"edited later\"\n  }},\n  \"hooks\": {{\n    \"SessionStart\": [\n      {{\n        \"hooks\": [\n          {{\n            \"command\": \"'node' '{l}' lifecycle claude\"\n          }}\n        ]\n      }}\n    ],\n    \"Stop\": [\n      {{\n        \"hooks\": [\n          {{\n            \"command\": \"mine\"\n          }}\n        ]\n      }}\n    ]\n  }}\n}}\n"));
-        w(".claude.json", &format!("{{\n  \"mcpServers\": {{\n    \"agent_context\": {{\n      \"command\": \"node\",\n      \"args\": [\"{l}\", \"tools\", \"mcp\", \"claude\"]\n    }},\n    \"mine\": {{\n      \"command\": \"x\"\n    }}\n  }}\n}}\n"));
+        w(".claude/settings.json", &format!("{{\n  \"env\": {{\n    \"ANTHROPIC_BASE_URL\": \"http://127.0.0.1:18788\",\n    \"MINE\": \"edited later\"\n  }},\n  \"hooks\": {{\n    \"SessionStart\": [\n      {{\n        \"hooks\": [\n          {{\n            \"command\": \"'node' '{le}' lifecycle claude\"\n          }}\n        ]\n      }}\n    ],\n    \"Stop\": [\n      {{\n        \"hooks\": [\n          {{\n            \"command\": \"mine\"\n          }}\n        ]\n      }}\n    ]\n  }}\n}}\n"));
+        w(".claude.json", &format!("{{\n  \"mcpServers\": {{\n    \"agent_context\": {{\n      \"command\": \"node\",\n      \"args\": [\"{le}\", \"tools\", \"mcp\", \"claude\"]\n    }},\n    \"mine\": {{\n      \"command\": \"x\"\n    }}\n  }}\n}}\n"));
         w(".codex/langfuse.json", "{\n  \"base_url\": \"http://127.0.0.1:18787\",\n  \"agent_context_base_url\": \"https://lf.example\",\n  \"public_key\": \"pk\"\n}\n");
-        w(".codex/config.toml", &format!("model_provider = \"agent_context\"\nmodel = \"edited later\"\n\n[mcp_servers.mine]\ncommand = \"x\"\n\n[model_providers.agent_context]\nbase_url = \"http://127.0.0.1:18787/v1\"\n\n[mcp_servers.agent_context]\ncommand = \"node\"\nargs = [\"{l}\", \"tools\", \"mcp\", \"codex\"]\n\n[mcp_servers.agent_context.tools.index_document]\napproval_mode = \"approve\"\n"));
+        w(".codex/config.toml", &format!("model_provider = \"agent_context\"\nmodel = \"edited later\"\n\n[mcp_servers.mine]\ncommand = \"x\"\n\n[model_providers.agent_context]\nbase_url = \"http://127.0.0.1:18787/v1\"\n\n[mcp_servers.agent_context]\ncommand = \"node\"\nargs = [\"{le}\", \"tools\", \"mcp\", \"codex\"]\n\n[mcp_servers.agent_context.tools.index_document]\napproval_mode = \"approve\"\n"));
         w(".codex/AGENTS.md", "# Mine\n\n<!-- agent-context:start -->\n# Agent Context\n<!-- agent-context:end -->\n");
         w(".hermes/config.yaml", &format!("model: edited later\nplugins:\n  enabled:\n    - agent-context\n  entries:\n    agent-context:\n      settings:\n        launcher: {l}\nmcp_servers:\n  supercompress:\n    command: node\n    args:\n      - /n/@alexkirs/agent-context/bin/agent-context.js\n  mine:\n    command: x\n  agent_context:\n    command: node\n    args:\n      - {l}\n"));
         w(".hermes/.env", "MINE=1\nHERMES_LANGFUSE_BASE_URL=http://127.0.0.1:18790\n");
