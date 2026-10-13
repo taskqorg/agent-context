@@ -32,7 +32,7 @@ pub fn runtime() -> &'static str {
 }
 
 /// Unique installation ID, created on first use.
-fn installation(data: &Path) -> String {
+pub fn installation(data: &Path) -> String {
     let p = data.join("installation");
     match std::fs::read_to_string(&p) {
         Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
@@ -44,9 +44,10 @@ fn installation(data: &Path) -> String {
     }
 }
 
-/// One OTLP span with the common attributes; the event ID is also the trace ID, so a resend is idempotent.
+/// One OTLP span with the common attributes; the event ID is also the trace ID, so a resend is idempotent. A 32-hex
+/// `agentq.event_id` in `attrs` is kept (resource samples), else a new one is made.
 pub fn span(name: &str, stage: &str, attrs: Value, at_ns: u128, installation: &str, host: &str) -> Value {
-    let id = crate::mcp::new_id().replace('-', "");
+    let id = attrs["agentq.event_id"].as_str().filter(|i| i.len() == 32).map_or_else(|| crate::mcp::new_id().replace('-', ""), String::from);
     let mut a = json!({"agentq.schema": SCHEMA, "agentq.event_id": id, "agentq.stage": stage, "agentq.installation": installation, "host.name": host, "agentq.runtime": runtime(), "agentq.version": env!("CARGO_PKG_VERSION")});
     if let (Some(m), Value::Object(x)) = (a.as_object_mut(), attrs) {
         m.extend(x);
@@ -58,6 +59,7 @@ pub fn span(name: &str, stage: &str, attrs: Value, at_ns: u128, installation: &s
         .map(|(k, v)| {
             let v = match v {
                 Value::Bool(b) => json!({"boolValue": b}),
+                Value::Number(n) if n.is_f64() => json!({"doubleValue": n}),
                 Value::Number(n) => json!({"intValue": n}),
                 Value::String(s) => json!({"stringValue": s}),
                 v => json!({"stringValue": v.to_string()}),
@@ -68,15 +70,28 @@ pub fn span(name: &str, stage: &str, attrs: Value, at_ns: u128, installation: &s
     json!({"traceId": id, "spanId": &id[16..], "name": name, "kind": 1, "startTimeUnixNano": at_ns.to_string(), "endTimeUnixNano": at_ns.to_string(), "attributes": attributes})
 }
 
+pub fn now_ns() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+}
+
 /// Queue one event; never waits for the network and never fails the caller. Returns the event ID when written.
 pub fn emit(data: &Path, name: &str, stage: &str, attrs: Value) -> Option<String> {
-    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    emit_at(data, name, stage, attrs, now_ns())
+}
+
+/// `emit` at a given time; a queued event with the same ID is replaced, so the queue keeps one file per ID.
+pub fn emit_at(data: &Path, name: &str, stage: &str, attrs: Value, ns: u128) -> Option<String> {
     let s = span(name, stage, attrs, ns, &installation(data), &crate::host());
     let id = s["traceId"].as_str()?.to_string();
     let q = queue(data);
     std::fs::create_dir_all(&q).ok()?;
-    write_atomic(&q.join(format!("{}-{id}.json", ns / 1_000_000_000)), &s.to_string()).ok()?;
-    prune(&q, (ns / 1_000_000_000) as u64);
+    let file = q.join(format!("{}-{id}.json", ns / 1_000_000_000));
+    write_atomic(&file, &s.to_string()).ok()?;
+    for (_, p, _) in prune(&q, (ns / 1_000_000_000) as u64) {
+        if p != file && p.to_string_lossy().ends_with(&format!("-{id}.json")) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
     Some(id)
 }
 
@@ -295,11 +310,16 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
     res
 }
 
-/// The service's one sender: hourly `agentq.installation`, then a send pass every `every` seconds.
+/// The service's one sender: hourly `agentq.installation`, a resource sample per bucket on Linux and macOS, then a
+/// send pass every `every` seconds.
 pub fn sender(install: &Path, every: u64) -> ! {
     let data = install.join("data");
     let mut beat = 0;
+    let mut sampler = matches!(runtime(), "linux" | "macos").then(|| crate::resource::Sampler::new(&data));
     loop {
+        if let Some(s) = &mut sampler {
+            s.tick(&data);
+        }
         let now = crate::now();
         if now >= beat + HEARTBEAT {
             beat = now;
