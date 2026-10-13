@@ -1,7 +1,7 @@
 //! Owned config edits for Codex, Claude Code and Hermes with the ownership journal (agentq.md § 4, § 8, § 9).
 //!
-//! ponytail: MCP registration and hooks only. Routing, telemetry env, the Hermes plugin and the instruction block
-//! join when the service owns the loopback ports (§ 5); writing them earlier points agents at a dead port.
+//! ponytail: MCP registration, hooks and Codex routing. Claude Code routing, telemetry env, the Hermes plugin and the
+//! instruction block join with their own tasks.
 
 use coreq::write_atomic;
 use serde_json::{Map, Value, json};
@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 
 pub const AGENTS: [&str; 3] = ["codex", "claude", "hermes"];
 
-/// One owned edit. `.json`: `value` at `key`, or appended to the array there. `.toml`, `.yaml`: a rendered
-/// `mcp_servers.agent_context` block.
+/// One owned edit. `.json`: `value` at `key`, or appended to the array there. `.toml`, `.yaml`: a rendered block at
+/// `key`; a one-part `.toml` key is a top-level `key = value` line. `routing` names the agent of a routing edit.
 pub struct Want {
     file: PathBuf,
     key: Vec<String>,
     value: Value,
     append: bool,
+    routing: Option<String>,
 }
 
 fn home() -> PathBuf {
@@ -41,7 +42,7 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
     let exe = exe.display().to_string();
     let hook = |event: &str| json!({"type": "command", "command": format!("\"{exe}\" hook {agent} {event}"), "timeout": 5});
     let tools: Vec<Value> = crate::mcp::tools().as_array().into_iter().flatten().map(|t| t["name"].clone()).collect();
-    let w = |file: PathBuf, key: &[&str], value: Value, append: bool| Want { file, key: key.iter().map(|k| k.to_string()).collect(), value, append };
+    let w = |file: PathBuf, key: &[&str], value: Value, append: bool| Want { file, key: key.iter().map(|k| k.to_string()).collect(), value, append, routing: None };
     match agent {
         "codex" => vec![
             w(root.join("config.toml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "codex"], "enabled_tools": tools}), false),
@@ -57,6 +58,18 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
     }
 }
 
+/// Codex routing edits to the agent's loopback port (§ 4); `agentq direct` removes only these.
+pub fn routing_wants(agent: &str, root: &Path, port: u16) -> Vec<Want> {
+    let w = |key: &[&str], value: Value| Want { file: root.join("config.toml"), key: key.iter().map(|k| k.to_string()).collect(), value, append: false, routing: Some(agent.into()) };
+    match agent {
+        "codex" => vec![
+            w(&["model_provider"], "agent_context".into()),
+            w(&["model_providers", "agent_context"], json!({"name": "Agent Context", "base_url": crate::routing::base_url(port), "wire_api": "responses", "requires_openai_auth": true, "supports_websockets": true})),
+        ],
+        _ => vec![],
+    }
+}
+
 fn load(journal: &Path) -> Vec<Value> {
     std::fs::read_to_string(journal).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
@@ -69,6 +82,7 @@ fn entry(key: &[String], kind: &str, after: Value) -> Value {
 pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
     let mut out = vec![];
     let mut files: Vec<&Path> = wants.iter().map(|w| w.file.as_path()).collect();
+    files.sort();
     files.dedup();
     for f in files {
         let old = std::fs::read_to_string(f).ok();
@@ -76,7 +90,12 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
         let mut entries = vec![];
         let placed = wants.iter().filter(|w| w.file == f).try_for_each(|w| {
             let (t, e) = place(&text, w)?;
-            entries.extend(e);
+            entries.extend(e.map(|mut e| {
+                if let Some(a) = &w.routing {
+                    e["routing"] = a.as_str().into();
+                }
+                e
+            }));
             text = t;
             Ok::<(), String>(())
         });
@@ -112,12 +131,18 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// Restores journaled edits newest first when the current value is still ours; later foreign edits stay.
-pub fn restore(journal: &Path, dry: bool) -> Result<Vec<String>, String> {
+/// Restores journaled edits newest first when the current value is still ours; later foreign edits stay. `routing`:
+/// only the routing edits of these agents, and the restored ones leave the journal (`agentq direct`).
+pub fn restore(journal: &Path, dry: bool, routing: Option<&[&str]>) -> Result<Vec<String>, String> {
     let mut out = vec![];
     // a dry run restores in memory, so later entries of one file see the earlier ones
     let mut seen: std::collections::HashMap<PathBuf, String> = Default::default();
-    for e in load(journal).iter().rev() {
+    let mut j = load(journal);
+    let mut done = vec![];
+    for (i, e) in j.iter().enumerate().rev() {
+        if routing.is_some_and(|r| !e["routing"].as_str().is_some_and(|a| r.contains(&a))) {
+            continue;
+        }
         let f = PathBuf::from(e["file"].as_str().unwrap_or_default());
         let what = format!("{} {}", f.display(), e["key"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("."));
         let current = seen.get(&f).cloned().or_else(|| std::fs::read_to_string(&f).ok());
@@ -137,6 +162,13 @@ pub fn restore(journal: &Path, dry: bool) -> Result<Vec<String>, String> {
             }
         }
         out.push(format!("{}: {what}", if dry { "would restore" } else { "restored" }));
+        done.push(i);
+    }
+    if routing.is_some() && !dry && !done.is_empty() {
+        for i in done {
+            j.remove(i);
+        }
+        write_atomic(journal, &serde_json::to_string_pretty(&j).unwrap_or_default())?;
     }
     Ok(out)
 }
@@ -232,9 +264,21 @@ fn sep(text: &str) -> &'static str {
     }
 }
 
-/// Appends `[mcp_servers.agent_context]`; JSON strings and arrays are valid TOML values.
+/// Appends `[mcp_servers.agent_context]`; JSON strings and arrays are valid TOML values. A top-level key goes first in
+/// the file, where it cannot fall into a table.
 fn place_toml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     let name = w.key.join(".");
+    if let [k] = &w.key[..] {
+        let line = format!("{k} = {}\n", w.value);
+        let top: Vec<&str> = text.lines().take_while(|l| !l.trim_start().starts_with('[')).collect();
+        if top.iter().any(|l| l.trim() == line.trim()) {
+            return Ok((text.into(), None));
+        }
+        if top.iter().any(|l| l.split('=').next().is_some_and(|x| x.trim() == k)) {
+            return Err(format!("{k} has a foreign value"));
+        }
+        return Ok((format!("{line}{text}"), Some(entry(&w.key, "text", line.into()))));
+    }
     let block = format!("[{name}]\n{}", fields(w).map(|(k, v)| format!("{k} = {v}\n")).collect::<String>());
     if text.contains(&block) {
         return Ok((text.into(), None));
@@ -343,9 +387,9 @@ mod tests {
         assert_eq!(load(&journal).len(), 7);
         assert_eq!(snapshot(&files), edited);
 
-        assert!(restore(&journal, true).unwrap().iter().all(|l| l.starts_with("would restore:")));
+        assert!(restore(&journal, true, None).unwrap().iter().all(|l| l.starts_with("would restore:")));
         assert_eq!(snapshot(&files), edited, "dry run writes nothing");
-        assert!(restore(&journal, false).unwrap().iter().all(|l| l.starts_with("restored:")));
+        assert!(restore(&journal, false, None).unwrap().iter().all(|l| l.starts_with("restored:")));
         assert_eq!(snapshot(&files), before, "uninstall leaves no diff");
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -365,7 +409,7 @@ mod tests {
         let edited = std::fs::read_to_string(d.join("settings.json")).unwrap();
         assert!(edited.starts_with("{\n  \"model\""), "{edited}");
         assert!(selftest());
-        restore(&journal, false).unwrap();
+        restore(&journal, false, None).unwrap();
         assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), orig);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -391,9 +435,55 @@ mod tests {
         let s = d.join("settings.json");
         let edited = std::fs::read_to_string(&s).unwrap().replace("hook claude PreToolUse", "my-hook");
         std::fs::write(&s, &edited).unwrap();
-        let out = restore(&journal, false).unwrap();
+        let out = restore(&journal, false, None).unwrap();
         assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("hooks.PreToolUse")), "{out:?}");
         assert!(std::fs::read_to_string(&s).unwrap().contains("my-hook"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #76 A1: Codex routes to the loopback provider; `direct` removes only the routing edits, onboard routes again,
+    /// uninstall leaves no diff; a foreign provider stops the file.
+    #[test]
+    fn codex_routing_then_direct() {
+        let d = std::env::temp_dir().join(format!("agentq-routing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let cfg = d.join("config.toml");
+        let orig = "model = \"gpt-5\"\n\n[projects.\"/p\"]\ntrust_level = \"trusted\"\n";
+        std::fs::write(&cfg, orig).unwrap();
+        let journal = d.join("owned.json");
+        let all = || -> Vec<Want> {
+            let mut w = wants("codex", &d, &d.join(".claude.json"), Path::new("/x/agentq"));
+            w.extend(routing_wants("codex", &d, 41234));
+            w
+        };
+        apply(&all(), &journal).unwrap();
+        let routed = std::fs::read_to_string(&cfg).unwrap();
+        assert!(routed.starts_with("model_provider = \"agent_context\"\nmodel = \"gpt-5\"\n"), "{routed}");
+        assert!(routed.contains("[model_providers.agent_context]\nname = \"Agent Context\"\nbase_url = \"http://127.0.0.1:41234/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = true\n"), "{routed}");
+        assert_eq!(crate::routing::state("codex", &d, Some(41234)).0, "unknown", "routed config, no worker yet");
+        assert!(crate::routing::drift(&journal).is_empty());
+
+        let out = restore(&journal, false, Some(&["codex"])).unwrap();
+        assert_eq!(out.len(), 2, "{out:?}");
+        let direct = std::fs::read_to_string(&cfg).unwrap();
+        assert!(direct.starts_with(orig) && direct.contains("[mcp_servers.agent_context]") && !direct.contains("model_provider"), "{direct}");
+        assert_eq!(crate::routing::state("codex", &d, Some(41234)).0, "direct");
+        assert_eq!(load(&journal).len(), 3, "MCP and hook entries stay");
+        assert!(restore(&journal, false, Some(&["codex"])).unwrap().is_empty(), "repeat is safe");
+
+        apply(&all(), &journal).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), routed, "onboard routes again");
+        // a user who drops the provider line is reported as drift
+        std::fs::write(&cfg, routed.replacen("model_provider = \"agent_context\"\n", "", 1)).unwrap();
+        assert_eq!(crate::routing::drift(&journal).len(), 1);
+        std::fs::write(&cfg, &routed).unwrap();
+        restore(&journal, false, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), orig, "uninstall leaves no diff");
+
+        std::fs::write(&cfg, "model_provider = \"openai\"\n").unwrap();
+        let out = apply(&all(), &d.join("owned2.json")).unwrap();
+        assert!(out[0].starts_with("conflict:") && out[0].contains("model_provider has a foreign value"), "{out:?}");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

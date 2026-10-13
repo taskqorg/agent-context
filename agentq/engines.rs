@@ -61,10 +61,18 @@ pub fn ensure(install: &Path) -> Vec<String> {
     vec![line("rtk", RTK, install_rtk(install)), line("headroom", HEADROOM, install_headroom(install))]
 }
 
+/// The checked headroom, when its install finished.
+pub fn headroom_exe(install: &Path) -> Option<PathBuf> {
+    let dir = engine_dir(install, "headroom", HEADROOM);
+    dir.join("ready").exists().then(|| venv_bin(&dir, "headroom"))
+}
+
 /// Read-only `doctor` lines: each engine's checked version, else why not.
 pub fn check(install: &Path) -> Vec<String> {
-    let hr = engine_dir(install, "headroom", HEADROOM);
-    let hr = if hr.join("ready").exists() { check_version(&venv_bin(&hr, "headroom"), &format!("headroom, version {HEADROOM}")) } else { Err("not installed".into()) };
+    let hr = match headroom_exe(install) {
+        Some(exe) => check_version(&exe, &format!("headroom, version {HEADROOM}")),
+        None => Err("not installed".into()),
+    };
     [("rtk", RTK, check_version(&rtk_path(install), &format!("rtk {RTK}"))), ("headroom", HEADROOM, hr)]
         .into_iter()
         .map(|(name, ver, r)| match r {
