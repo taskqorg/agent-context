@@ -66,6 +66,7 @@ Each edit is recorded in the ownership journal (§ 9) before it is written. Exis
 
 - Legacy entries `supercompress`, `headroom`, `context_mode` MCP servers and launcher-owned hooks are removed only when the journal or the legacy uninstall (§ 10) owns them.
 - Config roots: the client's own env (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `HERMES_HOME`), else the default home folder; project-level overrides are reported, never edited. Native Windows and WSL are separate installs.
+- A JSON config that starts with a UTF-8 BOM is parsed without it; the edit writes it without the BOM and its `edited:` line says `UTF-8 BOM stripped`. Uninstall restores the original bytes, BOM included.
 - Desktop clients that override `ANTHROPIC_BASE_URL` bypass routing; the `SessionStart` hook tells the model so and `doctor` reports it.
 
 ## 5. Install layout and service
@@ -75,6 +76,7 @@ coreq owns layout, update, launcher, rollback, service units and `status.json`; 
 - Install: `~/.local/share/agentq`, Windows `%LOCALAPPDATA%\agentq`: `releases/<ver>/agentq`, `current`, `previous`, launcher `<install>/agentq`, `engines/`, `data/` (§ 8), `status.json`.
 - Release: CI on a `v*` tag builds `agentq-<ver>-<os>-<arch>` for macOS arm64/x64, Windows x64, Linux x64/arm64 (static musl), plus `SHA256SUMS` and `latest.json`; a failing selftest publishes nothing. Trust is HTTPS plus who can push tags; the Node Ed25519 recipe signature and staged rollout are dropped (§ 11).
 - Service: one OS unit per host and runtime (coreq project `host`: `com.agentq.host`, `AgentQ-host`, `agentq-host.service`) runs `<install>/agentq service run` in `<install>`. It owns the loopback ports, headroom workers, OTLP intake, the queue sender, update checks and `status.json`. No other resident process.
+- `service install` copies the running binary to `releases/<ver>/` and to the launcher only where the bytes differ: Windows refuses to overwrite a running exe (os error 32). A running launcher of an older version that cannot be replaced stays and says so; it only reads `current`. `selftest` checks the skip against its own running binary and the BOM strip on a built-in fixture.
 - Update: coreq steps, hourly; a dashq release notice may trigger an early check. An engine pin change starts a new headroom worker on a new port, routes new connections to it, keeps open ones on the old worker, retires the old one after 15 min plus 30 s grace, then kills its process tree with an incident; at most two workers. An `agentq` re-exec waits for no open proxied connection, at most 15 min.
 - `status.json` lives at `<install>/status.json`, written every 30 s; `service status` treats it as unknown after 90 s. It adds to the coreq keys: per agent `routing` (routed, direct, bypassed, unknown), `mcp`, `hooks`, engine versions, queue `{pending, oldest_age, last_delivery, dropped}`, newest incident.
 - Compatibility N/N-1: data in `data/` changes only additively.
