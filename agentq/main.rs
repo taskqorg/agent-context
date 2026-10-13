@@ -69,7 +69,7 @@ fn main() {
             None => fail("telemetry verify: no Langfuse keys", "run `agentq langfuse`"),
             Some(k) => match telemetry::verify(&t.install.join("data"), &k, 20, Duration::from_secs(3)) {
                 Ok(id) => println_code(&format!("telemetry: verified trace {id}")),
-                Err(e) => fail(&format!("telemetry verify: {e}"), "404: Langfuse has not ingested it yet, retry later; 401: run `agentq langfuse`"),
+                Err(e) => fail(&format!("telemetry verify: {e}"), "no observation: Langfuse has not ingested it yet, retry later; 401: run `agentq langfuse`"),
             },
         },
         ["doctor"] => doctor(&t),

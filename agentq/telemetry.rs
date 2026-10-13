@@ -337,17 +337,19 @@ pub fn sender(install: &Path, every: u64) -> ! {
     }
 }
 
-/// `telemetry verify`: queue one event, send now, read its trace back (Langfuse ingests asynchronously). A miss names
-/// the query and its last answer, so a 404 (not ingested yet) differs from a 401 (keys) or a network error.
+/// `telemetry verify`: queue one event, send now, read its span back (Langfuse ingests asynchronously). v2
+/// observations, since Langfuse v4 events-only servers answer 404 on `/api/public/traces`. A miss names the query and
+/// its last answer, so not ingested yet differs from a 401 (keys) or a network error.
 pub fn verify(data: &Path, k: &Keys, tries: u32, wait: Duration) -> Result<String, String> {
     let id = emit(data, "agentq.verify", "verify", json!({"agentq.ids_unknown": "synthetic event"})).ok_or("queue not writable")?;
     send(data, k, crate::now())?;
-    let get = format!("{}/api/public/traces/{id}", k.host);
+    let get = format!("{}/api/public/v2/observations?traceId={id}&limit=1", k.host);
     let mut last = String::new();
     for _ in 0..tries {
         std::thread::sleep(wait);
         match curl(&format!("url = {}\n", quote(&get)), k) {
-            Ok(_) => return Ok(id),
+            Ok(b) if b.contains(&format!("\"traceId\":\"{id}\"")) => return Ok(id),
+            Ok(_) => last = "no observation yet".into(),
             Err(e) => last = e,
         }
     }
@@ -433,8 +435,13 @@ mod tests {
 
     type Seen = Arc<Mutex<Vec<(String, String)>>>;
 
-    /// Loopback Langfuse stand-in: answers 200 and records each request (head, body).
+    /// Loopback Langfuse stand-in: answers 200 and records each request (head, body); a v2 observations read finds
+    /// the span only when `ingested`.
     fn server() -> (String, Seen) {
+        serve(false)
+    }
+
+    fn serve(ingested: bool) -> (String, Seen) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
         let got = Arc::new(Mutex::new(vec![]));
@@ -455,10 +462,11 @@ mod tests {
                 }
                 let mut body = vec![0; len];
                 let _ = r.read_exact(&mut body);
-                // posts land; a read-back finds nothing yet, as before Langfuse ingests
-                let status = if head.starts_with("GET ") { "404 Not Found" } else { "200 OK" };
+                let id = head.split("traceId=").nth(1).and_then(|r| r.split(['&', ' ']).next()).unwrap_or("");
+                let found = if ingested { format!(r#"{{"traceId":"{id}"}}"#) } else { String::new() };
+                let answer = if head.starts_with("GET ") { format!(r#"{{"data":[{found}],"meta":{{}}}}"#) } else { String::new() };
                 g.lock().unwrap().push((head, String::from_utf8_lossy(&body).into_owned()));
-                let _ = (&s).write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+                let _ = (&s).write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{answer}", answer.len()).as_bytes());
             }
         });
         (url, got)
@@ -501,8 +509,19 @@ mod tests {
         let (url, got) = server();
         let k = Keys::parse(&format!("{url} pk sk")).unwrap();
         let e = verify(&d, &k, 2, Duration::ZERO).unwrap_err();
-        assert!(e.contains(&format!("GET {url}/api/public/traces/")) && e.contains("404"), "{e}");
-        assert_eq!(got.lock().unwrap().iter().filter(|r| r.0.starts_with("GET /api/public/traces/")).count(), 2);
+        assert!(e.contains(&format!("GET {url}/api/public/v2/observations?traceId=")) && e.contains("no observation yet"), "{e}");
+        assert_eq!(got.lock().unwrap().iter().filter(|r| r.0.starts_with("GET /api/public/v2/observations?traceId=")).count(), 2);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #80: Langfuse v4 events-only servers drop `/api/public/traces`; verify reads the span from v2 observations.
+    #[test]
+    fn verify_reads_v2_observations() {
+        let d = dir("verify-v2");
+        let (url, _) = serve(true);
+        let k = Keys::parse(&format!("{url} pk sk")).unwrap();
+        let id = verify(&d, &k, 1, Duration::ZERO).unwrap();
+        assert_eq!(id.len(), 32);
         let _ = std::fs::remove_dir_all(d);
     }
 }
