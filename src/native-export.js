@@ -1,16 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
+import {fileURLToPath} from 'node:url';
 import {execFile} from 'node:child_process';
 import {home,root,atomicWrite,sha,tryLock,version} from './core.js';
 import {recordIncident} from './incidents.js';
 import {atomicSecretWrite} from './private-file.js';
-import {captureProcessFailure,nativeFailureReceipt,validateNativeFailure} from './native-failure.js';
+import {captureProcessFailure,nativeFailureReceipt,validateNativeFailure,validateSdkTransport} from './native-failure.js';
 const execute=(command,args,{input,...options})=>new Promise((resolve,reject)=>{
   const started=performance.now();
+  const observation=options.env?.AGENT_CONTEXT_NATIVE_OBSERVER_FILE;
+  if(observation) try{fs.unlinkSync(observation);}catch{}
   const child=execFile(command,args,options,(error,stdout,stderr)=>{
     if(error&&/\bcode:\s*413\b/.test(stderr)) error.exportStatus=413;
     if(error) error.nativeProcessFailure=captureProcessFailure(error,stdout,stderr,performance.now()-started);
+    if(error&&observation) try{const info=fs.lstatSync(observation);if(info.isSymbolicLink()||info.size>4096)throw 0;const {schema,...data}=validateSdkTransport(JSON.parse(fs.readFileSync(observation)));Object.assign(error.nativeProcessFailure,data);}catch{}
     error?reject(error):resolve({stdout});
   });
   child.stdin.on('error',()=>{});child.stdin.end(input);
@@ -151,7 +155,7 @@ export async function processCodexExports({run=execute,now=Date.now(),collector=
       stage='process';
       for(const batch of [128,32,8]) {
         try {
-          await run(process.execPath,[codexExporterPath()],{input:JSON.stringify({transcript_path:snapshot,turn_id:turn}),env:{...env,LANGFUSE_FLUSH_AT:String(batch),LANGFUSE_CODEX_DEBUG:'true',LANGFUSE_CODEX_FAIL_ON_ERROR:'true'},timeout:25000,maxBuffer:65536,windowsHide:true});
+          await run(process.execPath,['--require',fileURLToPath(new URL('./native-http-observer.cjs',import.meta.url)),codexExporterPath()],{input:JSON.stringify({transcript_path:snapshot,turn_id:turn}),env:{...env,AGENT_CONTEXT_NATIVE_OBSERVER_FILE:path.join(snapshotRoot,'transport.json'),AGENT_CONTEXT_NATIVE_OBSERVER_PORT:new URL(config.base_url).port,LANGFUSE_FLUSH_AT:String(batch),LANGFUSE_CODEX_DEBUG:'true',LANGFUSE_CODEX_FAIL_ON_ERROR:'true'},timeout:25000,maxBuffer:65536,windowsHide:true});
           break;
         }catch(error){if(error.exportStatus!==413||batch===8)throw error;}
       }
