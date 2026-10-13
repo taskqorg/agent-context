@@ -396,7 +396,7 @@ mod tests {
         let calls = RefCell::new(vec![]);
         let run = |c: &str, a: &[&str]| {
             calls.borrow_mut().push(format!("{c} {}", a.join(" ")));
-            !a.contains(&"4243")
+            !a.iter().any(|x| x.contains("4243"))
         };
         let dry = remove(&dir, true, "2026-10-13", &run).unwrap();
         assert!(dry.iter().any(|l| l.starts_with("would strip:")), "{dry:?}");
