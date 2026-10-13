@@ -151,10 +151,11 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
         "install" => install_self(t)
             .map(|_| engines::ensure(&t.install).iter().for_each(|l| println!("{l}")))
             .and_then(|_| service::write_unit(&u)).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| service::run_all(&u.load, false)),
-        "restart" => {
+        // the task first: its launcher would restart a killed service run (agentq.md § 5)
+        "restart" => service::run_all(&u.stop, true).and_then(|_| {
             end_tree(t);
-            service::run_all(&u.stop, true).and_then(|_| service::run_all(&u.load, false))
-        }
+            service::run_all(&u.load, false)
+        }).and_then(|_| if cfg!(windows) { one_service_run(t) } else { Ok(()) }),
         "stop" => {
             end_tree(t);
             service::run_all(&u.stop, false)
@@ -164,13 +165,19 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
             service::run_all(&u.unload, true).and_then(|_| std::fs::remove_file(&u.path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string()))
         }
         "status" => {
-            return match read_status(t, 3 * PASS) {
+            let code = match read_status(t, 3 * PASS) {
                 Some(s) => println_code(&format!("service: running {} pid {}, error: {}", s["version"].as_str().unwrap_or("?"), s["pid"], s["error"].as_str().unwrap_or("none"))),
                 None => {
                     println!("service: unknown (no status.json newer than {} s)", 3 * PASS);
                     1
                 }
             };
+            let runs = service_runs(t);
+            if runs.len() > 1 {
+                println!("service: error: {} service run processes, pids {}; run `agentq service restart`", runs.len(), pids(&runs));
+                return 1;
+            }
+            return code;
         }
         _ => fail(&format!("unknown service command `{cmd}`"), &format!("usage: {USAGE}")),
     };
@@ -214,13 +221,64 @@ fn copy_unless_same(me: &Path, dst: &Path) -> Result<bool, String> {
     std::fs::copy(me, dst).map(|_| true).map_err(|e| format!("{}: {e}", dst.display()))
 }
 
-/// `schtasks /End` ends only the launcher; end the service tree too (coreq.md § Service units).
+/// `schtasks /End` ends only the launcher; end every service run tree too, orphans included (agentq.md § 5).
 fn end_tree(t: &Tool) {
-    if cfg!(windows)
-        && let Some(pid) = read_status(t, u64::MAX).and_then(|s| s["pid"].as_u64())
-    {
-        let _ = coreq::quiet(Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"])).output();
+    if cfg!(windows) {
+        for pid in service_runs(t) {
+            let _ = coreq::quiet(Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"])).output();
+        }
     }
+}
+
+/// Windows restart: wait until exactly one service run is live and `status.json` names it (agentq.md § 5).
+fn one_service_run(t: &Tool) -> Result<(), String> {
+    let mut runs = vec![];
+    for _ in 0..3 * PASS {
+        std::thread::sleep(Duration::from_secs(1));
+        runs = service_runs(t);
+        if let [pid] = runs[..]
+            && read_status(t, 3 * PASS).and_then(|s| s["pid"].as_u64()) == Some(pid.into())
+        {
+            return Ok(());
+        }
+    }
+    Err(format!("expected one service run named by status.json after {} s, found pids [{}]", 3 * PASS, pids(&runs)))
+}
+
+/// Live `service run` processes of this install (agentq.md § 5).
+fn service_runs(t: &Tool) -> Vec<u32> {
+    let out = if cfg!(windows) {
+        let ps = format!("Get-CimInstance Win32_Process -Filter \"Name='{}'\" | ForEach-Object {{ \"$($_.ProcessId) $($_.CommandLine)\" }}", t.exe_name());
+        coreq::quiet(Command::new("powershell").args(["-NoProfile", "-Command", &ps])).output()
+    } else {
+        Command::new("ps").args(["-axo", "pid=,args="]).output()
+    };
+    out.map(|o| service_runs_in(&String::from_utf8_lossy(&o.stdout), &t.install.join("releases"))).unwrap_or_default()
+}
+
+/// Pids from `<pid> <command line>` lines that run a binary under `releases` with `service run`; the launcher is not one.
+fn service_runs_in(list: &str, releases: &Path) -> Vec<u32> {
+    let dir = releases.display().to_string().to_lowercase();
+    list.lines()
+        .filter_map(|l| {
+            let (pid, cmd) = l.trim().split_once(' ')?;
+            let cmd = cmd.trim().to_lowercase();
+            if cmd.contains(&dir) && cmd.ends_with("service run") { pid.parse().ok() } else { None }
+        })
+        .collect()
+}
+
+fn pids(p: &[u32]) -> String {
+    p.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")
+}
+
+/// Built-in Windows process list: the launcher and other commands are not service runs (agentq.md § 5).
+fn single_instance_selftest() -> bool {
+    let list = "4120 \"C:\\Users\\u\\AppData\\Local\\agentq\\agentq.exe\" service run\r\n\
+                4188 \"C:\\Users\\u\\AppData\\Local\\agentq\\releases\\0.5.3\\agentq.exe\" service run\r\n\
+                5230 C:\\Users\\u\\AppData\\Local\\agentq\\releases\\0.5.3\\agentq.exe service run\r\n\
+                6001 \"C:\\Users\\u\\AppData\\Local\\agentq\\releases\\0.5.3\\agentq.exe\" service status\r\n";
+    service_runs_in(list, Path::new(r"C:\Users\u\AppData\Local\agentq\releases")) == [4188, 5230]
 }
 
 /// One status pass every 30 s, update check hourly; a new release exits 75 so the unit restarts into it.
@@ -275,6 +333,7 @@ fn selftest(t: &Tool) -> i32 {
         // the running binary is locked on Windows: the installed copy that equals it is read, never overwritten
         ("self copy skip", std::env::current_exe().is_ok_and(|me| copy_unless_same(&me, &me) == Ok(false))),
         ("json bom", onboard::selftest()),
+        ("single service run", single_instance_selftest()),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
@@ -422,6 +481,13 @@ mod tests {
         assert_eq!(copy_unless_same(&me, &dst), Ok(true));
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v2");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #74 A2/A3: two release service runs are counted, the Windows launcher is not.
+    #[test]
+    fn service_runs_skip_launcher() {
+        assert!(single_instance_selftest());
+        assert_eq!(service_runs_in("  77 /h/.local/share/agentq/releases/0.5.3/agentq service run\n", Path::new("/h/.local/share/agentq/releases")), [77]);
     }
 
     /// #64 A3: a running legacy process recreated the folder with leftovers only: removed, and its pid is named.
