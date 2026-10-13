@@ -154,7 +154,9 @@ mod tests {
         assert_eq!(state("codex", &d, Some(p)).0, "routed");
         assert_eq!(state("codex", &d, Some(p.wrapping_add(1))).0, "bypassed");
         drop(l);
-        assert_eq!(state("codex", &d, Some(p)).0, "unknown");
+        // a freed ephemeral port may serve a parallel test: port 1 refuses
+        std::fs::write(d.join("config.toml"), cfg.replace(&base_url(p), &base_url(1))).unwrap();
+        assert_eq!(state("codex", &d, Some(1)).0, "unknown");
         std::fs::write(d.join("config.toml"), format!("[profiles.x]\n{cfg}")).unwrap();
         assert_eq!(state("codex", &d, Some(p)).0, "direct", "a profile key is not the top-level provider");
         let _ = std::fs::remove_dir_all(&d);
