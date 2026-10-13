@@ -44,7 +44,7 @@ test('FD1 actual execFile stdio limit is distinguishable without changing its ca
 
 test('FD1/FD4 gateway rejects unknown fields/values and reader receives the same safe receipt',()=>{
   const now=Date.now(),error=Object.assign(new Error('SECRET'),{code:1});
-  error.nativeProcessFailure=captureProcessFailure(error,'','[langfuse-codex] error during flush/shutdown: Error: Timeout',5);
+  error.nativeProcessFailure={...captureProcessFailure(error,'','[langfuse-codex] error during flush/shutdown: Error: Timeout',5),sdkRequests:1,sdkMaxBodyBytes:9000000,sdkMaxSpanBytes:1200000,sdkRequestFinishMs:1,sdkResponseMs:null,sdkResponseStatus:null,sdkTimedOut:true};
   const value=receipt(error);
   const packet={schema:1,id:'a'.repeat(32),at:new Date(now).toISOString(),host:'windows',runtime:'native',version:'0.4.17',services:[{service:'contextq',agent:'codex',state:'warning',reason:'telemetry_delivery_failed',metrics:{native_export_process_failed:3,native_export_attempts:50,native_export_retry_seconds:14,native_export_recovery_age_seconds:3600},nativeFailure:value}],incidents:[]};
   validateMonitor(packet);
