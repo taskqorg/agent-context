@@ -1,5 +1,5 @@
-# agentq.md § 5 Release: one binary per OS and arch, SHA256SUMS, latest.json. A failing selftest publishes nothing.
-# Pull requests run every step except Publish.
+# agentq.md § 5 Release: one binary per OS and arch, SHA256SUMS, latest.json, build provenance attestations. A failing selftest publishes nothing.
+# Pull requests run every step except Attest and Publish.
 name: release
 on:
   push:
@@ -62,11 +62,12 @@ jobs:
         with:
           name: ${{ matrix.target }}
           path: dist/*
-  publish:
+  describe:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -87,8 +88,29 @@ jobs:
           json.dump({'version': ver, 'files': files}, open('latest.json', 'w'), indent=1)
           PY
           cat latest.json SHA256SUMS
-      - name: Publish
+      - name: Attest
         if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/agentq-*
+            dist/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: dist/*
+  publish:
+    needs: describe
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: dist
+      - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "agentq $GITHUB_REF_NAME"
