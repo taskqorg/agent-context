@@ -1,5 +1,6 @@
-//! agentq: update, service, status, MCP, onboarding, hooks and uninstall on coreq (agentq.md § 1, § 2, § 4, § 5, § 9, § 10).
+//! agentq: update, service, status, MCP, engines, onboarding, hooks and uninstall on coreq (agentq.md § 1, § 2, § 3, § 4, § 5, § 9, § 10).
 
+mod engines;
 mod mcp;
 mod onboard;
 
@@ -14,7 +15,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -45,6 +46,7 @@ fn main() {
             Err(e) => fail(&format!("update: {e}"), "check the network and run `agentq update` again"),
         },
         ["selftest"] => selftest(&t),
+        ["run", "--", cmd @ ..] if !cmd.is_empty() => engines::run(&t.install, &args[2..]),
         ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
         ["service", cmd] => service_cmd(&t, cmd),
         ["onboard", rest @ ..] => onboard(&t, rest),
@@ -90,7 +92,9 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
     let u = service::unit(t, &t.install, PROJECT);
     let res = match cmd {
         "run" => serve(t),
-        "install" => update::install_self(t).and_then(|_| service::write_unit(&u)).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| service::run_all(&u.load, false)),
+        "install" => update::install_self(t)
+            .map(|_| engines::ensure(&t.install).iter().for_each(|l| println!("{l}")))
+            .and_then(|_| service::write_unit(&u)).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| service::run_all(&u.load, false)),
         "restart" => {
             end_tree(t);
             service::run_all(&u.stop, true).and_then(|_| service::run_all(&u.load, false))
@@ -131,6 +135,9 @@ fn end_tree(t: &Tool) {
 
 /// One status pass every 30 s, update check hourly; a new release exits 75 so the unit restarts into it.
 fn serve(t: &Tool) -> ! {
+    // a release with a new engine pin installs it here; status keeps its 30 s pace meanwhile
+    let install = t.install.clone();
+    std::thread::spawn(move || engines::ensure(&install).iter().for_each(|l| eprintln!("agentq: {l}")));
     let mut checked = 0;
     let mut error = None;
     loop {
@@ -169,6 +176,7 @@ fn selftest(t: &Tool) -> i32 {
         ("unit commands", !u.load.is_empty() && !u.unload.is_empty() && !u.stop.is_empty()),
         ("status", status::common(t, "h", PROJECT, 1, None, None)["version"] == VERSION),
         ("mcp tools", mcp::tools().as_array().is_some_and(|a| a.len() == 3)),
+        ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
     if bad.is_empty() {
