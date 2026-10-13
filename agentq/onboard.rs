@@ -100,6 +100,9 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
                     std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
                 }
                 write_atomic(journal, &serde_json::to_string_pretty(&j).unwrap_or_default())?;
+                // `orig` copies configs that may hold env secrets: owner-only, gone with the install folder on uninstall
+                #[cfg(unix)]
+                std::fs::set_permissions(journal, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| format!("{}: {e}", journal.display()))?;
                 write_atomic(f, &text)?;
                 out.push(format!("edited: {} ({n} owned keys)", f.display()));
             }
@@ -306,6 +309,8 @@ mod tests {
         let out = apply(&all(), &journal).unwrap();
         assert!(out.iter().all(|l| l.starts_with("edited:")), "{out:?}");
         assert_eq!(load(&journal).len(), 7, "one journal entry per edit");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         let toml = std::fs::read_to_string(codex.join("config.toml")).unwrap();
         assert!(toml.starts_with("model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n\n[mcp_servers.agent_context]\n"), "{toml}");
         let yaml = std::fs::read_to_string(hermes.join("config.yaml")).unwrap();
