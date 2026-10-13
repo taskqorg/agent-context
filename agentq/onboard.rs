@@ -87,8 +87,11 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
                 for e in &mut entries {
                     e["file"] = f.display().to_string().into();
                 }
-                if old.is_none() {
-                    entries[0]["created"] = true.into();
+                match &old {
+                    None => entries[0]["created"] = true.into(),
+                    // restore writes these bytes back once the doc matches them again
+                    Some(o) if entries[0]["kind"] != "text" => entries[0]["orig"] = o.as_str().into(),
+                    Some(_) => {}
                 }
                 let n = entries.len();
                 let mut j = load(journal);
@@ -114,10 +117,13 @@ pub fn restore(journal: &Path, dry: bool) -> Result<Vec<String>, String> {
         let f = PathBuf::from(e["file"].as_str().unwrap_or_default());
         let what = format!("{} {}", f.display(), e["key"].as_array().into_iter().flatten().filter_map(Value::as_str).collect::<Vec<_>>().join("."));
         let current = seen.get(&f).cloned().or_else(|| std::fs::read_to_string(&f).ok());
-        let Some(text) = current.and_then(|t| unplace(&t, e)) else {
+        let Some(mut text) = current.and_then(|t| unplace(&t, e)) else {
             out.push(format!("conflict: {what} changed since onboard; kept"));
             continue;
         };
+        if let Some(o) = e["orig"].as_str().filter(|o| serde_json::from_str::<Value>(o).ok() == serde_json::from_str(&text).ok()) {
+            text = o.into();
+        }
         seen.insert(f.clone(), text.clone());
         if !dry {
             if e["created"] == true && matches!(text.trim(), "" | "{}") {
@@ -161,9 +167,15 @@ fn unplace(text: &str, e: &Value) -> Option<String> {
     Some(dump(&doc, text))
 }
 
-/// Pretty JSON as Claude Code and Codex write it; a trailing newline only when the original had one.
+/// Pretty JSON with the original's indent (2 spaces for a new file); a trailing newline only when the original had one.
+/// ponytail: indent only; other foreign layout (compact arrays, spacing) is re-pretty while onboarded, restore brings its bytes back.
 fn dump(doc: &Value, orig: &str) -> String {
-    let s = serde_json::to_string_pretty(doc).unwrap_or_default();
+    let indent = orig.lines().nth(1).map(|l| &l[..l.len() - l.trim_start().len()]).filter(|i| !i.is_empty()).unwrap_or("  ");
+    // JSON strings hold no raw newline, so each line's leading spaces are indent only
+    let s = serde_json::to_string_pretty(doc).unwrap_or_default().lines().map(|l| {
+        let t = l.trim_start();
+        indent.repeat((l.len() - t.len()) / 2) + t
+    }).collect::<Vec<_>>().join("\n");
     if orig.is_empty() || orig.ends_with('\n') { s + "\n" } else { s }
 }
 
@@ -272,7 +284,8 @@ mod tests {
             std::fs::create_dir_all(r).unwrap();
         }
         std::fs::write(codex.join("config.toml"), "model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"").unwrap();
-        std::fs::write(claude.join("settings.json"), "{\n  \"model\": \"opus\",\n  \"hooks\": {\n    \"SessionStart\": [\n      {\n        \"hooks\": []\n      }\n    ]\n  }\n}").unwrap();
+        // 4-space indent and a compact array: onboard keeps the indent, uninstall brings back every byte
+        std::fs::write(claude.join("settings.json"), "{\n    \"model\": \"opus\",\n    \"allow\": [\"a\", \"b\"],\n    \"hooks\": {\n        \"SessionStart\": [\n            {\n                \"hooks\": []\n            }\n        ]\n    }\n}").unwrap();
         std::fs::write(claude.join(".claude.json"), "{\n  \"mcpServers\": {\n    \"other\": {}\n  },\n  \"tips\": 3\n}\n").unwrap();
         std::fs::write(hermes.join("config.yaml"), "model: x\nmcp_servers:\n    other:\n        command: y\nplugins: {}\n").unwrap();
         let exe = d.join("install").join("agentq");
@@ -297,7 +310,9 @@ mod tests {
         assert!(toml.starts_with("model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n\n[mcp_servers.agent_context]\n"), "{toml}");
         let yaml = std::fs::read_to_string(hermes.join("config.yaml")).unwrap();
         assert!(yaml.starts_with("model: x\nmcp_servers:\n    agent_context:\n        command: "), "{yaml}");
-        let settings: Value = serde_json::from_str(&std::fs::read_to_string(claude.join("settings.json")).unwrap()).unwrap();
+        let settings = std::fs::read_to_string(claude.join("settings.json")).unwrap();
+        assert!(settings.starts_with("{\n    \"model\": \"opus\",\n    \"allow\": [\n        \"a\","), "{settings}");
+        let settings: Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(settings["hooks"]["SessionStart"].as_array().unwrap().len(), 2, "foreign hook kept");
         assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
         let hooks: Value = serde_json::from_str(&std::fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
