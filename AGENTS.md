@@ -6,4 +6,4 @@ Read [agentq.md](agentq.md) first; a decision change edits it before code. Produ
 
 Install, onboarding or removal at a user's request: [INSTALL.md](INSTALL.md).
 
-Checks: `cargo test --locked`, `cargo run --locked -- selftest`. While the legacy Node package stays (agentq.md § 10): `npm test`, then `npm pack`; test it in an isolated `AGENT_CONTEXT_HOME` and, for CLI uninstall, an isolated `npm_config_prefix`, else it removes the real global npm package. Qualifying a candidate does not authorize deploying it to working profiles or calling it stable.
+Checks: `cargo test --locked`, `cargo run --locked -- selftest`. Test legacy removal (agentq.md § 10) only in an isolated `AGENT_CONTEXT_HOME` and `npm_config_prefix`, else it removes the real global npm package. Qualifying a candidate does not authorize deploying it to working profiles or calling it stable.
