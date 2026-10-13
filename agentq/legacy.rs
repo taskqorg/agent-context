@@ -1,7 +1,6 @@
 //! Legacy Node install removal (agentq.md § 10). The Node journal gives the file list only: a user edit made after
 //! it never blocks. Each file is backed up, then only legacy entries are stripped; the install folder moves aside.
 
-use coreq::write_atomic;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -71,9 +70,10 @@ pub fn remove(dir: &Path, dry: bool, today: &str, run: Run) -> Result<Vec<String
             continue;
         }
         if !dry {
-            let perm = std::fs::metadata(f).map_err(|e| format!("{}: {e}", f.display()))?.permissions();
-            write_atomic(f, &new)?;
-            std::fs::set_permissions(f, perm).map_err(|e| format!("{}: {e}", f.display()))?;
+            // the original mode before the rename: `.hermes/.env` holds keys
+            let tmp = f.with_extension("agentq-tmp");
+            let perm = std::fs::metadata(f).map(|m| m.permissions());
+            perm.and_then(|p| std::fs::write(&tmp, &new).and_then(|_| std::fs::set_permissions(&tmp, p))).and_then(|_| std::fs::rename(&tmp, f)).map_err(|e| format!("{}: {e}", f.display()))?;
         }
         out.push(format!("{}: {}", would("would strip", "stripped"), f.display()));
     }
@@ -385,6 +385,8 @@ mod tests {
         w(".codex/AGENTS.md", "# Mine\n\n<!-- agent-context:start -->\n# Agent Context\n<!-- agent-context:end -->\n");
         w(".hermes/config.yaml", &format!("model: edited later\nplugins:\n  enabled:\n    - agent-context\n  entries:\n    agent-context:\n      settings:\n        launcher: {l}\nmcp_servers:\n  supercompress:\n    command: node\n    args:\n      - /n/@alexkirs/agent-context/bin/agent-context.js\n  mine:\n    command: x\n  agent_context:\n    command: node\n    args:\n      - {l}\n"));
         w(".hermes/.env", "MINE=1\nHERMES_LANGFUSE_BASE_URL=http://127.0.0.1:18790\n");
+        #[cfg(unix)]
+        std::fs::set_permissions(h.join(".hermes/.env"), std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
         w(".hermes/plugins/agent-context/plugin.yaml", "name: agent-context\n");
         w("elsewhere.json", "{\"hooks\": \"launcher.mjs\"}");
         let before: Vec<Option<String>> = files.iter().map(|f| std::fs::read_to_string(f).ok()).collect();
@@ -406,6 +408,8 @@ mod tests {
         assert_eq!(r(".codex/AGENTS.md"), "# Mine\n");
         assert_eq!(r(".hermes/config.yaml"), "model: edited later\nplugins:\n  enabled: []\n  entries: {}\nmcp_servers:\n  mine:\n    command: x\n");
         assert_eq!(r(".hermes/.env"), "MINE=1\n");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(h.join(".hermes/.env")).unwrap().permissions()) & 0o777, 0o600);
         assert!(!h.join(".hermes/plugins/agent-context").exists());
         assert_eq!(r("elsewhere.json"), "{\"hooks\": \"launcher.mjs\"}", "outside the known files: untouched");
         let retired = h.join(".agent-context.retired-2026-10-13");
