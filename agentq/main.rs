@@ -111,8 +111,12 @@ fn doctor(t: &Tool) -> i32 {
     line(tel.contains("keys set"), tel);
     let old = legacy_dir();
     let pids = legacy_pids(&old);
-    let installed = old.join("launcher.mjs").exists();
-    line(!installed && pids.is_empty(), format!("legacy: {}{}", if installed { "installed; run `agentq uninstall --legacy`" } else { "removed" }, running(&pids)));
+    let installed = legacy::installed(&old);
+    let locked = legacy::locked(&old);
+    line(!installed && pids.is_empty() && locked.is_empty(), format!("legacy: {}{}", if installed { "installed; run `agentq uninstall --legacy`" } else { "removed" }, running(&pids)));
+    for f in &locked {
+        println!("legacy: locked {}; stop the legacy processes, then delete {}", f.display(), old.display());
+    }
     if ok { 0 } else { 1 }
 }
 
@@ -222,7 +226,7 @@ fn serve(t: &Tool) -> ! {
     }
 }
 
-/// Built-in fixtures only; writes nothing (coreq.md § Selftest harness).
+/// Built-in fixtures only; writes nothing outside the OS temp dir (coreq.md § Selftest harness).
 fn selftest(t: &Tool) -> i32 {
     let u = service::unit(t, &t.install, PROJECT);
     let checks = [
@@ -233,6 +237,7 @@ fn selftest(t: &Tool) -> i32 {
         ("mcp tools", mcp::tools().as_array().is_some_and(|a| a.len() == 3)),
         ("telemetry event", telemetry::span("agentq.verify", "selftest", Value::Null, 1, "i", "h")["attributes"].as_array().is_some_and(|a| a.len() == 7)),
         ("legacy strip", legacy::selftest()),
+        ("legacy locked", legacy::selftest_locked()),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
@@ -260,7 +265,7 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
     }
     let old = legacy_dir();
     // a still-running legacy process recreates the folder with incidents/ and machine-id.json only: not an install
-    let installed = old.join("launcher.mjs").exists();
+    let installed = legacy::installed(&old);
     let pids = running(&legacy_pids(&old));
     if installed {
         println!("legacy: {} found{pids}", old.display());
@@ -311,7 +316,7 @@ fn legacy_dir() -> PathBuf {
 /// agentq.md § 10: back up and strip legacy config entries, unload the monitor, remove the npm package, move the
 /// folder aside.
 fn legacy(dir: &Path, dry: bool) -> i32 {
-    if !dir.join("launcher.mjs").exists() {
+    if !legacy::installed(dir) {
         println!("legacy: already removed{}", running(&legacy_pids(dir)));
         return 0;
     }
@@ -337,9 +342,16 @@ fn date(secs: u64) -> String {
 }
 
 /// Pids of processes whose command line holds `<legacy>/`, as the legacy launcher, proxies and MCP servers do.
-/// ponytail: `pgrep` only; Windows reports none until a host needs it there.
+/// Windows: PowerShell `Win32_Process`, case-insensitive. ponytail: pids per folder, not per file; Restart Manager
+/// (`RmGetList`) names the holder of each file if a host needs it.
 fn legacy_pids(dir: &Path) -> Vec<String> {
-    let o = Command::new("pgrep").arg("-f").arg(format!("{}/", dir.display())).output();
+    let needle = format!("{}{}", dir.display(), std::path::MAIN_SEPARATOR);
+    let o = if cfg!(windows) {
+        let ps = format!("Get-CimInstance Win32_Process | ? {{ $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.ToLower().Contains('{}') }} | % ProcessId", needle.to_lowercase().replace('\'', "''"));
+        coreq::quiet(Command::new("powershell").args(["-NoProfile", "-Command", &ps])).output()
+    } else {
+        Command::new("pgrep").arg("-f").arg(needle).output()
+    };
     o.map(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect()).unwrap_or_default()
 }
 

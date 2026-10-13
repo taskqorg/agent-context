@@ -90,11 +90,83 @@ pub fn remove(dir: &Path, dry: bool, today: &str, run: Run) -> Result<Vec<String
     });
     out.extend(proxies(dir, run));
     let to = (1..).map(|n| PathBuf::from(format!("{}.retired-{today}{}", dir.display(), if n == 1 { String::new() } else { format!("-{n}") }))).find(|p| !p.exists()).unwrap_or_default();
-    if !dry {
-        std::fs::rename(dir, &to).map_err(|e| format!("move {}: {e}", dir.display()))?;
+    let kept = if dry { vec![] } else { retire(dir, &to)? };
+    if kept.is_empty() {
+        out.push(format!("{}: {} -> {}", would("would move", "moved"), dir.display(), to.display()));
     }
-    out.push(format!("{}: {} -> {}", would("would move", "moved"), dir.display(), to.display()));
+    out.extend(kept);
     Ok(out)
+}
+
+/// Marks a folder that could not move as a whole; its rest is held by running legacy processes.
+pub const RETIRED: &str = ".retired";
+
+/// The install is `launcher.mjs` in a folder not marked retired.
+pub fn installed(dir: &Path) -> bool {
+    dir.join("launcher.mjs").exists() && !dir.join(RETIRED).exists()
+}
+
+/// Files left in a retired folder, the marker excluded.
+pub fn locked(dir: &Path) -> Vec<PathBuf> {
+    fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+        for e in std::fs::read_dir(d).into_iter().flatten().flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) { walk(&e.path(), out) } else if e.file_name() != RETIRED { out.push(e.path()) }
+        }
+    }
+    let mut out = vec![];
+    if dir.join(RETIRED).exists() {
+        walk(dir, &mut out);
+    }
+    out.sort();
+    out
+}
+
+/// Moves `dir` to `to`. Windows refuses while running proxies hold files in it (access denied): then copy what can be
+/// read, remove each copied file and emptied folder that can go, mark the rest with `.retired` and list it.
+fn retire(dir: &Path, to: &Path) -> Result<Vec<String>, String> {
+    let Err(e) = std::fs::rename(dir, to) else { return Ok(vec![]) };
+    fn copy_out(from: &Path, to: &Path) {
+        for e in std::fs::read_dir(from).into_iter().flatten().flatten() {
+            let (p, t) = (e.path(), to.join(e.file_name()));
+            if e.file_type().is_ok_and(|f| f.is_dir()) {
+                copy_out(&p, &t);
+                let _ = std::fs::remove_dir(&p);
+            } else if std::fs::create_dir_all(to).and_then(|_| std::fs::copy(&p, &t)).is_ok() {
+                let _ = std::fs::remove_file(&p);
+            }
+        }
+    }
+    copy_out(dir, to);
+    std::fs::write(dir.join(RETIRED), to.display().to_string()).map_err(|w| format!("move {}: {e}; mark {RETIRED}: {w}", dir.display()))?;
+    let mut out = vec![format!("kept: {} ({e}); copied to {}, the rest is marked {RETIRED}", dir.display(), to.display())];
+    out.extend(locked(dir).iter().map(|f| format!("locked: {}; delete it after the legacy processes stop", f.display())));
+    Ok(out)
+}
+
+/// `selftest` fixture: a legacy folder whose log a running proxy holds is retired, not refused. ponytail: Windows only;
+/// elsewhere an open file never blocks the move.
+pub fn selftest_locked() -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let h = std::env::temp_dir().join(format!("agentq-selftest-{}", std::process::id()));
+        let (dir, to) = (h.join(".agent-context"), h.join(".agent-context.retired"));
+        let _ = std::fs::remove_dir_all(&h);
+        let made = std::fs::create_dir_all(dir.join("logs")).and_then(|_| std::fs::write(dir.join("launcher.mjs"), "")).and_then(|_| std::fs::write(dir.join("logs/proxy.log"), "x"));
+        // FILE_SHARE_READ only: readable, not deletable, as a Node proxy's open log
+        let held = made.and_then(|_| std::fs::OpenOptions::new().read(true).share_mode(1).open(dir.join("logs/proxy.log")));
+        let ok = held.is_ok()
+            && retire(&dir, &to).is_ok_and(|l| l.iter().any(|l| l.starts_with("locked:")))
+            && !installed(&dir)
+            && to.join("launcher.mjs").exists()
+            && to.join("logs/proxy.log").exists()
+            && locked(&dir) == [dir.join("logs").join("proxy.log")];
+        drop(held);
+        let _ = std::fs::remove_dir_all(&h);
+        ok
+    }
+    #[cfg(not(windows))]
+    true
 }
 
 fn journal_files(dir: &Path, home: &Path) -> Vec<PathBuf> {
@@ -359,6 +431,26 @@ mod tests {
     #[test]
     fn selftest_fixture_passes() {
         assert!(selftest());
+        assert!(selftest_locked());
+    }
+
+    /// A move that fails (here: the target exists) copies, removes what it can and marks the folder retired.
+    #[test]
+    fn failed_move_copies_and_marks() {
+        let h = std::env::temp_dir().join(format!("agentq-retire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&h);
+        let (dir, to) = (h.join(".agent-context"), h.join(".agent-context.retired"));
+        std::fs::create_dir_all(dir.join("logs")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(to.join("other"), "").unwrap();
+        std::fs::write(dir.join("launcher.mjs"), "l").unwrap();
+        std::fs::write(dir.join("logs/proxy.log"), "x").unwrap();
+        let out = retire(&dir, &to).unwrap();
+        assert!(out[0].starts_with("kept:"), "{out:?}");
+        assert_eq!(std::fs::read_to_string(to.join("logs/proxy.log")).unwrap(), "x");
+        assert!(to.join("launcher.mjs").exists() && !dir.join("logs").exists());
+        assert!(!installed(&dir) && locked(&dir).is_empty());
+        let _ = std::fs::remove_dir_all(h);
     }
 
     /// A journal whose configs the user edited after install: the edits survive, legacy entries go, nothing blocks.

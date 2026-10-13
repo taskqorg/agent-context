@@ -24,10 +24,10 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 | `agentq mcp <agent>` | Stdio MCP server `agent_context` (§ 2). |
 | `agentq hook <agent> <event>` | Hook handler for § 4 events; JSON on stdin, JSON on stdout; 5 s budget, failure returns `{}`. |
 | `agentq direct [agent..]` | Restore direct provider access: remove routing edits only, keep MCP and telemetry; works when the service is down (PRODUCT R4). `onboard --yes` routes again. |
-| `agentq doctor` | Read-only: install, service, engines, owned edits count, telemetry queue and keys, legacy install and running legacy pids; exit 1 on a problem. Ports and routing drift join when the service owns them (§ 5); `onboard --yes` reapplies owned edits. |
+| `agentq doctor` | Read-only: install, service, engines, owned edits count, telemetry queue and keys, legacy install, running legacy pids and files left in a retired legacy folder; exit 1 on a problem. Ports and routing drift join when the service owns them (§ 5); `onboard --yes` reapplies owned edits. |
 | `agentq telemetry status\|verify [agent]` | Queue backlog and last delivery; `verify` sends one synthetic span and reads it back; a miss names the query and Langfuse's last answer. |
 | `agentq incidents [list\|show]` | Local incident reports and what would be sent (§ 7). |
-| `agentq update [--check]`, `agentq selftest` | coreq update steps; selftest checks the binary, built-in fixtures and engine pins. |
+| `agentq update [--check]`, `agentq selftest` | coreq update steps; selftest checks the binary, built-in fixtures and engine pins; on Windows it retires a locked legacy fixture in the OS temp dir (§ 10). |
 | `agentq service install\|run\|pause\|resume\|status\|restart\|stop\|uninstall\|list` | coreq service (§ 5). |
 | `agentq uninstall [--dry-run]` | § 9. |
 | `agentq uninstall --legacy [--dry-run]` | § 10: removes the legacy install; none left: `already removed`. |
@@ -109,10 +109,11 @@ Dashboard duties (fleet view, versions, last seen, health, usage, incidents, acc
 
 ## 10. Legacy Node install
 
-- `onboard` detects `~/.agent-context` and the global npm package `@alexkirs/agent-context`. The install is `<legacy>/launcher.mjs`: a folder without it (a still-running legacy process recreates `incidents/` and `machine-id.json`) counts as removed. `onboard`, `doctor` and `uninstall --legacy` name the pids of processes whose command line holds `<legacy>/`; Windows reports none.
+- `onboard` detects `~/.agent-context` and the global npm package `@alexkirs/agent-context`. The install is `<legacy>/launcher.mjs`: a folder without it (a still-running legacy process recreates `incidents/` and `machine-id.json`) counts as removed, as does a folder with `<legacy>/.retired`. `onboard`, `doctor` and `uninstall --legacy` name the pids of processes whose command line holds `<legacy>/` (Windows: `<legacy>\`, case-insensitive, read from `Win32_Process`).
 - `uninstall --legacy [--dry-run]` removes the legacy install without Node; `<legacy>` is `$AGENT_CONTEXT_HOME/.agent-context`, else `~/.agent-context`, and its parent is the home of the configs it edited. The Node journals (`<legacy>/backups/*/journal.json`) give the file list only, limited to the known Codex, Claude Code and Hermes files: a user edit made after the journal never blocks.
   - Each listed file is copied to `<legacy>/config-backup/` (a rerun keeps the first copy), then only legacy entries are stripped: hooks and MCP servers that name `launcher.mjs` or `agent-context`, env values routed to the legacy proxy ports, Codex `model_provider = "agent_context"` and `[model_providers.agent_context]`, Hermes `supercompress` and `agent-context` plugin entries, instruction marker blocks. The Hermes `plugins/agent-context` files are removed.
   - The `contextq-monitor` launch agent, Windows task or systemd unit is unloaded, the global npm package `@alexkirs/agent-context` removed, and `<legacy>` moved to `<legacy>.retired-<YYYY-MM-DD>`, so the backup ends in its `config-backup/`. Running legacy proxy pids are listed and left for the user.
+  - When the move fails (Windows: running proxies hold files, access denied), the folder is copied to the retired path, each copied file and emptied folder is removed where it can be, `<legacy>/.retired` names the retired path, and the remaining files are listed as locked; the removal succeeds. `doctor` lists those files and the legacy pids until the user stops the processes and deletes `<legacy>`.
 - `onboard --yes` with a legacy install runs `uninstall --legacy` without a prompt (`--yes` is the consent), then applies § 4. A failure stops onboarding with its message.
 - Kept names: MCP server `agent_context`, tool names, provider id `agent_context`, instruction markers. Existing relay-filed issues and Langfuse traces stay.
 - The relay worker and its GitHub App are retired: the code is gone from this repository, the owner deletes the deployed Worker and the App. Node clients that still default to the relay keep reports in their local queue.
