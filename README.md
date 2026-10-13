@@ -54,4 +54,4 @@ Doctor исправляет только принадлежащие пакету
 
 [Интеграции и ограничения](docs/INTEGRATION-DETAILS.md) · [Дистрибуция](DISTRIBUTION.md) · [Инциденты](docs/INCIDENTS.md)
 
-Кандидат нового врапера: [ревью и проект](docs/WRAPPER-DESIGN.md), [общий provider benchmark](docs/provider-comparison-2026-10-12.json). Рабочие установки автоматически этим кандидатом не заменяются.
+Кандидат нового врапера: [ревью и проект](docs/WRAPPER-DESIGN.md), [общий provider benchmark](https://github.com/taskqorg/agentq/blob/9612eeefcff773edd9c959f093fb76cf56acbc2c/docs/provider-comparison-2026-10-12.json). Рабочие установки автоматически этим кандидатом не заменяются.

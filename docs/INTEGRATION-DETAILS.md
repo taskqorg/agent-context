@@ -111,6 +111,6 @@ agent-context update disable
 
 Package rollback validates and selects the retained previous runtime, then pauses automatic updates. Re-enable only after diagnosing the bad release. `agent-context rollback` is different: it restores the configuration transaction and preserves later edits by refusing drift. Both require client reload for already loaded connections.
 
-Experimental Headroom + SuperCompress subscription tests and isolated commands: [qualification](HEADROOM-QUALIFICATION.md).
+Experimental Headroom + SuperCompress subscription tests and isolated commands: [qualification](https://github.com/taskqorg/agentq/blob/9612eeefcff773edd9c959f093fb76cf56acbc2c/docs/HEADROOM-QUALIFICATION.md).
 
 Incident collection and recovery follow the [shared draft contract](INCIDENTS.md), aligned with TaskQ #612. `incidents report` delivers allowlisted metadata to an anonymous relay by default (server-side deduplication, counters and threshold-based issues; see `relay/`); `incidents enable --gh` instead posts through the user's own GitHub authorization. `incidents show` prints the exact pending packets. Fingerprints group by component, operation, category, agent, platform and release line. `doctor --fix` restores missing owned registrations, restarts owned services and rolls back corrupted managed code when a verified previous version exists. `doctor --live` checks owned proxy health; it is not model proof. Agent-assisted repair and the TaskQ native implementation remain pending.

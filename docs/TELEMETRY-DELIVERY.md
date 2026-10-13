@@ -40,11 +40,11 @@ Generation/tool export и compression пока связываются через
 | routine | SuperCompress | 25405 | 19712 | 89 | 11.43 | 0 |
 | routine | Headroom native | 52729 | 46848 | 157 | 15.23 | 1 |
 
-Все шесть заданий сохранили проверяемые факты. SC сократил input на 4.9% и 6.2%, добавил 3.4–3.8 секунды. Native потребовал восстановления и увеличил input на 68.2% и 94.8%. Один повтор, различающийся тёплый cache; это не устойчивый benchmark, не доказательство экономии денег и не квалификация Windows/Hermes. Отдельная цена вызовов SC не выводилась как generation cost. Полные числовые результаты: [telemetry-compressor-benchmark.json](telemetry-compressor-benchmark.json).
+Все шесть заданий сохранили проверяемые факты. SC сократил input на 4.9% и 6.2%, добавил 3.4–3.8 секунды. Native потребовал восстановления и увеличил input на 68.2% и 94.8%. Один повтор, различающийся тёплый cache; это не устойчивый benchmark, не доказательство экономии денег и не квалификация Windows/Hermes. Отдельная цена вызовов SC не выводилась как generation cost. Полные числовые результаты: [telemetry-compressor-benchmark.json](https://github.com/taskqorg/agentq/blob/9612eeefcff773edd9c959f093fb76cf56acbc2c/docs/telemetry-compressor-benchmark.json).
 
 ## FRA: отдельный кандидат исправления существующего observer
 
-[FRA-TELEMETRY-CANDIDATE.patch](FRA-TELEMETRY-CANDIDATE.patch) исправляет передачу session/tags/environment через `propagate_attributes` на каждом observer event и делает отказ очереди видимым. Исходники взяты из текущего `tight-langfuse` 1.1.0; это отдельный компонент, не новый tracing engine внутри пакета.
+[FRA-TELEMETRY-CANDIDATE.patch](https://github.com/taskqorg/agentq/blob/9612eeefcff773edd9c959f093fb76cf56acbc2c/docs/FRA-TELEMETRY-CANDIDATE.patch) исправляет передачу session/tags/environment через `propagate_attributes` на каждом observer event и делает отказ очереди видимым. Исходники взяты из текущего `tight-langfuse` 1.1.0; это отдельный компонент, не новый tracing engine внутри пакета.
 
 Кандидат запускается из приватного `/tmp` на FRA с существующими локальными credentials. Синтетические события не вызывают модель, не перезапускают gateway и не изменяют рабочий плагин. Результат нужно проверять по observations, а не по exit code worker. Исправление ещё не развёрнуто. Статус worker, скрытый stderr и доставка реальных gateway events требуют отдельной квалификации.
 
