@@ -18,7 +18,7 @@ Native Windows and WSL are separate installs. Procedure: [INSTALL.md](INSTALL.md
 - `agentq doctor [--fix]` is decided (agentq.md § 1) and not shipped yet; until then use `service status` and `telemetry status`.
 - `agentq uninstall --dry-run`, then `agentq uninstall`, restores owned edits and removes the service and install folder.
 
-Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases), one `agentq-<ver>-<os>-<arch>` binary per platform plus `SHA256SUMS`.
+Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases), one `agentq-<ver>-<os>-<arch>` binary per platform plus `SHA256SUMS`. Check a download with `sha256sum -c SHA256SUMS --ignore-missing`; trace it to the workflow run that built it with `gh attestation verify <file> --repo taskqorg/agentq`.
 
 ## Legacy Node package
 
