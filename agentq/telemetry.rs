@@ -310,16 +310,14 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
     res
 }
 
-/// The service's one sender: hourly `agentq.installation`, a resource sample per bucket on Linux and macOS, then a
-/// send pass every `every` seconds.
+/// The service's one sender: hourly `agentq.installation`, a resource sample per bucket, then a send pass every
+/// `every` seconds.
 pub fn sender(install: &Path, every: u64) -> ! {
     let data = install.join("data");
     let mut beat = 0;
-    let mut sampler = matches!(runtime(), "linux" | "macos").then(|| crate::resource::Sampler::new(&data));
+    let mut sampler = crate::resource::Sampler::new(&data);
     loop {
-        if let Some(s) = &mut sampler {
-            s.tick(&data);
-        }
+        sampler.tick(&data);
         let now = crate::now();
         if now >= beat + HEARTBEAT {
             beat = now;
