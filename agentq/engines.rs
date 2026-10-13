@@ -142,9 +142,23 @@ pub fn qualified(cmd: &[String]) -> bool {
     matches!(c.as_slice(), ["pytest", ..] | ["cargo", "test" | "build" | "check"] | ["go", "test"])
 }
 
-/// `agentq run -- <cmd>`: qualified commands through RTK with retained output, others native; exit code kept.
+/// `agentq run -- <cmd>`: qualified commands through RTK with retained output, others native; exit code kept. A
+/// qualified command queues one `agentq.run` event naming only its runner (agentq.md § 6).
 pub fn run(install: &Path, cmd: &[String]) -> i32 {
+    let t0 = std::time::Instant::now();
+    let (code, engine) = exec(install, cmd);
+    if qualified(cmd) {
+        let runner = if cmd[0] == "pytest" { "pytest".into() } else { cmd[..2].join(" ") };
+        let ms = t0.elapsed().as_millis() as u64;
+        crate::telemetry::emit(&install.join("data"), "agentq.run", "end", serde_json::json!({"agentq.command": runner, "agentq.engine": engine, "agentq.rtk_version": RTK, "agentq.exit_code": code, "agentq.duration_ms": ms, "agentq.ids_unknown": "the hook passes no native IDs yet"}));
+    }
+    code
+}
+
+/// Exit code and the engine that ran the command, or why it ran natively.
+fn exec(install: &Path, cmd: &[String]) -> (i32, &'static str) {
     let rtk = rtk_path(install);
+    let mut why = if rtk.exists() { "native" } else { "native: no checked rtk" };
     if qualified(cmd) && rtk.exists() {
         let runs = install.join("data").join("runs");
         let id = crate::mcp::new_id();
@@ -160,27 +174,31 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
                     .env("RTK_TELEMETRY_DISABLED", "1")
                     .env("RTK_SUPPRESS_HOOK_WARNING", "1")
                     .status();
-                // ponytail: no agentq.run event yet; the telemetry queue (§ 6) adds it
                 if let Ok(s) = s {
                     if dir.join("recall.db").exists() {
                         println!("\n[Agent Context original ref: rtk:{id}; use get_original with the hash from RTK's recovery hint. Retention: latest {KEEP} runs, 7 days, 512 MiB.]");
                     }
                     prune(&runs);
-                    return code(s);
+                    return (code(s), "rtk");
                 }
                 eprintln!("agentq: rtk did not start; native command preserved");
                 let _ = std::fs::remove_dir_all(&dir);
+                why = "native: rtk did not start";
             }
-            Err(_) => eprintln!("agentq: sandbox cannot store recovery; native command preserved"),
+            Err(_) => {
+                eprintln!("agentq: sandbox cannot store recovery; native command preserved");
+                why = "native: no writable storage";
+            }
         }
     }
-    match Command::new(&cmd[0]).args(&cmd[1..]).status() {
+    let c = match Command::new(&cmd[0]).args(&cmd[1..]).status() {
         Ok(s) => code(s),
         Err(e) => {
             eprintln!("agentq: {}: {e}", cmd[0]);
             127
         }
-    }
+    };
+    (c, why)
 }
 
 fn code(s: std::process::ExitStatus) -> i32 {
@@ -257,6 +275,23 @@ mod tests {
         assert_eq!(run(&d, &sh), 3);
         assert_eq!(run(&d, &s(&["agentq-no-such-command"])), 127);
         assert!(!d.exists(), "native runs write nothing");
+    }
+
+    /// agentq.md § 6: a qualified command without RTK still runs and queues one event without its arguments.
+    #[test]
+    fn qualified_run_queues_event() {
+        let d = std::env::temp_dir().join(format!("agentq-runev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        // missing pytest exits 127, an installed one rejects the flag; either way nonzero and recorded
+        let c = run(&d, &s(&["pytest", "--agentq-secret-arg"]));
+        assert_ne!(c, 0);
+        let q: Vec<_> = std::fs::read_dir(d.join("data").join("queue")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).collect();
+        assert_eq!(q.len(), 1);
+        let ev = std::fs::read_to_string(q[0].path()).unwrap();
+        assert!(ev.contains("\"agentq.run\"") && ev.contains("native: no checked rtk") && ev.contains("\"pytest\""));
+        assert!(ev.contains(&format!("{{\"intValue\":{c}}}")), "exit code recorded");
+        assert!(!ev.contains("secret-arg"), "no arguments");
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

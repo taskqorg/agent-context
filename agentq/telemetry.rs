@@ -1,0 +1,472 @@
+//! Telemetry to Langfuse (agentq.md § 6): metadata-only `agentq.*` spans as files in `data/queue/`, one sender in the
+//! service, standalone keys in OS protected storage.
+
+use coreq::write_atomic;
+use serde_json::{Value, json};
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+pub const SCHEMA: u64 = 1;
+const CAP_BYTES: u64 = 64 * 1024 * 1024;
+const CAP_AGE: u64 = 7 * 86400;
+const BATCH: usize = 100;
+const HEARTBEAT: u64 = 3600;
+const STORE: &str = "agentq-langfuse";
+
+fn queue(data: &Path) -> PathBuf {
+    data.join("queue")
+}
+
+pub fn runtime() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else if std::env::var_os("WSL_DISTRO_NAME").is_some() || Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists() {
+        "wsl"
+    } else {
+        "linux"
+    }
+}
+
+/// Unique installation ID, created on first use.
+fn installation(data: &Path) -> String {
+    let p = data.join("installation");
+    match std::fs::read_to_string(&p) {
+        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        _ => {
+            let id = crate::mcp::new_id();
+            let _ = std::fs::create_dir_all(data).map_err(|e| e.to_string()).and_then(|_| write_atomic(&p, &id));
+            id
+        }
+    }
+}
+
+/// One OTLP span with the common attributes; the event ID is also the trace ID, so a resend is idempotent.
+pub fn span(name: &str, stage: &str, attrs: Value, at_ns: u128, installation: &str, host: &str) -> Value {
+    let id = crate::mcp::new_id().replace('-', "");
+    let mut a = json!({"agentq.schema": SCHEMA, "agentq.event_id": id, "agentq.stage": stage, "agentq.installation": installation, "host.name": host, "agentq.runtime": runtime(), "agentq.version": env!("CARGO_PKG_VERSION")});
+    if let (Some(m), Value::Object(x)) = (a.as_object_mut(), attrs) {
+        m.extend(x);
+    }
+    let attributes: Vec<Value> = a
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(k, v)| {
+            let v = match v {
+                Value::Bool(b) => json!({"boolValue": b}),
+                Value::Number(n) => json!({"intValue": n}),
+                Value::String(s) => json!({"stringValue": s}),
+                v => json!({"stringValue": v.to_string()}),
+            };
+            json!({"key": k, "value": v})
+        })
+        .collect();
+    json!({"traceId": id, "spanId": &id[16..], "name": name, "kind": 1, "startTimeUnixNano": at_ns.to_string(), "endTimeUnixNano": at_ns.to_string(), "attributes": attributes})
+}
+
+/// Queue one event; never waits for the network and never fails the caller. Returns the event ID when written.
+pub fn emit(data: &Path, name: &str, stage: &str, attrs: Value) -> Option<String> {
+    let ns = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let s = span(name, stage, attrs, ns, &installation(data), &crate::host());
+    let id = s["traceId"].as_str()?.to_string();
+    let q = queue(data);
+    std::fs::create_dir_all(&q).ok()?;
+    write_atomic(&q.join(format!("{}-{id}.json", ns / 1_000_000_000)), &s.to_string()).ok()?;
+    prune(&q, (ns / 1_000_000_000) as u64);
+    Some(id)
+}
+
+/// Queued events oldest first: (unix seconds, path, bytes).
+fn entries(q: &Path) -> Vec<(u64, PathBuf, u64)> {
+    let mut v: Vec<_> = std::fs::read_dir(q)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let at = n.strip_suffix(".json")?.split('-').next()?.parse().ok()?;
+            Some((at, e.path(), e.metadata().ok()?.len()))
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+fn state(q: &Path) -> Value {
+    std::fs::read_to_string(q.join("state.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}))
+}
+
+// ponytail: read-modify-write without a lock; concurrent writers may lose a `dropped` increment. Add a lock file if
+// the count must be exact.
+fn update_state(q: &Path, f: impl FnOnce(&mut Value)) {
+    let mut s = state(q);
+    f(&mut s);
+    let _ = write_atomic(&q.join("state.json"), &s.to_string());
+}
+
+/// Drop events past 7 days, then oldest until the queue fits 64 MiB; count them in `dropped`.
+fn prune(q: &Path, now: u64) -> Vec<(u64, PathBuf, u64)> {
+    let mut v = entries(q);
+    let mut bytes: u64 = v.iter().map(|e| e.2).sum();
+    let mut dropped = 0;
+    v.retain(|(at, p, len)| {
+        if (now.saturating_sub(*at) > CAP_AGE || bytes > CAP_BYTES) && std::fs::remove_file(p).is_ok() {
+            bytes -= len;
+            dropped += 1;
+            return false;
+        }
+        true
+    });
+    if dropped > 0 {
+        update_state(q, |s| s["dropped"] = json!(s["dropped"].as_u64().unwrap_or(0) + dropped));
+    }
+    v
+}
+
+/// `status.json` `queue` and `telemetry status`.
+pub fn status(data: &Path, now: u64) -> Value {
+    let q = queue(data);
+    let (v, s) = (entries(&q), state(&q));
+    json!({"pending": v.len(), "oldest_age": v.first().map(|e| now.saturating_sub(e.0)), "last_delivery": s["last_delivery"], "dropped": s["dropped"].as_u64().unwrap_or(0), "error": s["error"]})
+}
+
+pub struct Keys {
+    pub host: String,
+    public: String,
+    secret: String,
+}
+
+impl Keys {
+    /// `host public secret`; one safe charset keeps them quotable; `https://`, or `http://` on loopback only.
+    pub fn parse(s: &str) -> Result<Keys, String> {
+        let w: Vec<&str> = s.split_whitespace().collect();
+        let [host, public, secret] = w[..] else { return Err("need the host, public key and secret key".into()) };
+        if !w.iter().all(|x| x.chars().all(|c| c.is_ascii_alphanumeric() || "._:/-".contains(c))) {
+            return Err("host and keys take letters, digits and . _ : / - only".into());
+        }
+        let loopback = host.strip_prefix("http://").and_then(|r| r.split(['/', ':']).next()).is_some_and(|h| h == "127.0.0.1" || h == "localhost");
+        if !host.starts_with("https://") && !loopback {
+            return Err("the host must be https:// (http:// only on loopback)".into());
+        }
+        Ok(Keys { host: host.trim_end_matches('/').into(), public: public.into(), secret: secret.into() })
+    }
+
+    fn line(&self) -> String {
+        format!("{} {} {}", self.host, self.public, self.secret)
+    }
+}
+
+/// stdout of a command fed `input` on stdin, when it succeeds.
+fn feed(c: &mut Command, input: &str) -> Option<String> {
+    let mut p = coreq::quiet(c).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    p.stdin.take()?.write_all(input.as_bytes()).ok()?;
+    let o = p.wait_with_output().ok()?;
+    o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+fn os_read() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        feed(Command::new("security").args(["find-generic-password", "-s", STORE, "-a", "agentq", "-w"]), "")
+    } else if cfg!(target_os = "linux") {
+        feed(Command::new("secret-tool").args(["lookup", "service", STORE]), "")
+    } else {
+        None
+    }
+}
+
+fn os_write(line: &str) -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        // `security -i` reads the command from stdin: the secret stays out of argv
+        feed(Command::new("security").arg("-i"), &format!("add-generic-password -U -s {STORE} -a agentq -w \"{line}\"\n")).map(|_| "Keychain")
+    } else if cfg!(target_os = "linux") {
+        feed(Command::new("secret-tool").args(["store", "--label=agentq Langfuse", "service", STORE]), line).map(|_| "Secret Service")
+    } else {
+        None
+    }
+}
+
+// ponytail: Windows uses the per-user file; add a Credential Manager binding (CredRead) when Windows hosts need it.
+fn file_write(data: &Path, line: &str) -> Result<(), String> {
+    std::fs::create_dir_all(data).map_err(|e| e.to_string())?;
+    let p = data.join("langfuse");
+    let mut o = std::fs::OpenOptions::new();
+    o.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
+    let mut f = o.open(&p).map_err(|e| format!("{}: {e}", p.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| e.to_string())?;
+    f.write_all(line.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Keychain or Secret Service, read back to confirm; else `data/langfuse` mode 0600. Returns where the keys went.
+pub fn save(data: &Path, k: &Keys) -> Result<&'static str, String> {
+    if let Some(store) = os_write(&k.line())
+        && os_read().is_some_and(|s| s.trim() == k.line())
+    {
+        let _ = std::fs::remove_file(data.join("langfuse"));
+        return Ok(store);
+    }
+    file_write(data, &k.line()).map(|_| "data/langfuse (mode 0600)")
+}
+
+pub fn load(data: &Path) -> Option<Keys> {
+    os_read().and_then(|s| Keys::parse(&s).ok()).or_else(|| Keys::parse(&std::fs::read_to_string(data.join("langfuse")).ok()?).ok())
+}
+
+/// `agentq langfuse`: three lines from stdin, the secret without echo on a terminal.
+pub fn read_keys() -> Result<Keys, String> {
+    let tty = std::io::stdin().is_terminal();
+    let mut words = vec![];
+    for (prompt, hide) in [("Langfuse host: ", false), ("Public key: ", false), ("Secret key: ", true)] {
+        if tty {
+            eprint!("{prompt}");
+        }
+        let echo = |on: bool| {
+            if hide && tty && cfg!(unix) {
+                let _ = Command::new("stty").arg(if on { "echo" } else { "-echo" }).status();
+            }
+        };
+        echo(false);
+        let mut line = String::new();
+        let r = std::io::stdin().read_line(&mut line);
+        echo(true);
+        if hide && tty {
+            eprintln!();
+        }
+        r.map_err(|e| e.to_string())?;
+        words.push(line.trim().to_string());
+    }
+    Keys::parse(&words.join(" "))
+}
+
+/// curl with the credentials in its stdin config, never in argv (§ 6).
+fn curl(config: &str, k: &Keys) -> Result<String, String> {
+    let mut c = Command::new("curl");
+    c.args(["-sS", "--fail", "--max-time", "30", "-K", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut p = coreq::quiet(&mut c).spawn().map_err(|e| format!("curl: {e}"))?;
+    let cfg = format!("{config}user = {}\n", quote(&format!("{}:{}", k.public, k.secret)));
+    p.stdin.take().ok_or("curl: no stdin")?.write_all(cfg.as_bytes()).map_err(|e| format!("curl: {e}"))?;
+    let o = p.wait_with_output().map_err(|e| format!("curl: {e}"))?;
+    if o.status.success() { Ok(String::from_utf8_lossy(&o.stdout).into_owned()) } else { Err(format!("Langfuse: {}", String::from_utf8_lossy(&o.stderr).trim())) }
+}
+
+fn quote(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// Post queued events in batches of 100, deleting each after a 2xx; the last outcome goes to `state.json`.
+pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
+    let q = queue(data);
+    let body = q.join(format!("body-{}.tmp", std::process::id()));
+    let mut sent = 0;
+    let res = loop {
+        let batch: Vec<_> = prune(&q, now).into_iter().take(BATCH).collect();
+        if batch.is_empty() {
+            break Ok(sent);
+        }
+        let spans: Vec<Value> = batch.iter().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(&e.1).ok()?).ok()).collect();
+        let otlp = json!({"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "agentq"}}]}, "scopeSpans": [{"scope": {"name": "agentq", "version": env!("CARGO_PKG_VERSION")}, "spans": spans}]}]});
+        let posted = std::fs::write(&body, otlp.to_string()).map_err(|e| e.to_string()).and_then(|_| {
+            curl(&format!("url = {}\nheader = \"Content-Type: application/json\"\ndata-binary = {}\n", quote(&format!("{}/api/public/otel/v1/traces", k.host)), quote(&format!("@{}", body.display()))), k)
+        });
+        let _ = std::fs::remove_file(&body);
+        if let Err(e) = posted {
+            break Err(e);
+        }
+        if batch.iter().any(|e| std::fs::remove_file(&e.1).is_err() && e.1.exists()) {
+            break Err("queue: cannot delete sent events".into());
+        }
+        sent += batch.len();
+    };
+    update_state(&q, |s| match &res {
+        Ok(n) => {
+            if *n > 0 {
+                s["last_delivery"] = json!(now);
+            }
+            s["error"] = Value::Null;
+        }
+        Err(e) => s["error"] = json!(e),
+    });
+    res
+}
+
+/// The service's one sender: hourly `agentq.installation`, then a send pass every `every` seconds.
+pub fn sender(install: &Path, every: u64) -> ! {
+    let data = install.join("data");
+    let mut beat = 0;
+    loop {
+        let now = crate::now();
+        if now >= beat + HEARTBEAT {
+            beat = now;
+            let q = status(&data, now);
+            let rtk = if crate::engines::rtk_path(install).exists() { crate::engines::RTK } else { "unavailable" };
+            emit(&data, "agentq.installation", "heartbeat", json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"], "agentq.ids_unknown": "an installation event has no session"}));
+        }
+        match load(&data) {
+            Some(k) => {
+                let _ = send(&data, &k, now);
+            }
+            None => update_state(&queue(&data), |s| s["error"] = json!("no Langfuse keys; run `agentq langfuse`")),
+        }
+        std::thread::sleep(Duration::from_secs(every));
+    }
+}
+
+/// `telemetry verify`: queue one event, send now, read its trace back (Langfuse ingests asynchronously).
+pub fn verify(data: &Path) -> Result<String, String> {
+    let k = load(data).ok_or("no Langfuse keys; run `agentq langfuse`")?;
+    let id = emit(data, "agentq.verify", "verify", json!({"agentq.ids_unknown": "synthetic event"})).ok_or("queue not writable")?;
+    send(data, &k, crate::now())?;
+    let url = format!("url = {}\n", quote(&format!("{}/api/public/traces/{id}", k.host)));
+    for _ in 0..20 {
+        std::thread::sleep(Duration::from_secs(3));
+        if curl(&url, &k).is_ok() {
+            return Ok(id);
+        }
+    }
+    Err(format!("sent {id}, but Langfuse did not return the trace within 60 s"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Read};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("agentq-tel-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    fn attr(s: &Value, k: &str) -> Value {
+        s["attributes"].as_array().unwrap().iter().find(|a| a["key"] == k).map(|a| a["value"].clone()).unwrap_or(Value::Null)
+    }
+
+    /// A1: schema, ID, time, host, runtime, installation and version on every event.
+    #[test]
+    fn event_fields() {
+        let s = span("agentq.run", "end", json!({"agentq.exit_code": 3, "agentq.retained": true}), 5_000_000_000, "inst", "h");
+        for k in ["agentq.schema", "agentq.event_id", "agentq.stage", "agentq.installation", "host.name", "agentq.runtime", "agentq.version"] {
+            assert!(!attr(&s, k).is_null(), "{k}");
+        }
+        assert_eq!(attr(&s, "agentq.schema"), json!({"intValue": SCHEMA}));
+        assert_eq!(attr(&s, "agentq.retained"), json!({"boolValue": true}));
+        assert_eq!(s["traceId"].as_str().unwrap().len(), 32);
+        assert_eq!(s["spanId"].as_str().unwrap().len(), 16);
+        assert_eq!(s["startTimeUnixNano"], "5000000000");
+        assert_ne!(span("x", "end", json!({}), 0, "", "")["traceId"], span("x", "end", json!({}), 0, "", "")["traceId"]);
+        let d = dir("inst");
+        let id = emit(&d, "agentq.verify", "verify", json!({})).unwrap();
+        emit(&d, "agentq.verify", "verify", json!({}));
+        let e = entries(&queue(&d));
+        assert_eq!(e.len(), 2);
+        let first: Value = serde_json::from_str(&std::fs::read_to_string(&e.iter().find(|e| e.1.to_string_lossy().contains(&id)).unwrap().1).unwrap()).unwrap();
+        assert_eq!(attr(&first, "agentq.installation")["stringValue"], std::fs::read_to_string(d.join("installation")).unwrap(), "one installation ID");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// A2: the 7-day and 64 MiB caps drop oldest events first and count them.
+    #[test]
+    fn caps() {
+        let d = dir("caps");
+        let q = queue(&d);
+        std::fs::create_dir_all(&q).unwrap();
+        let now = 100 * 86400;
+        std::fs::write(q.join(format!("{}-old.json", now - CAP_AGE - 1)), "{}").unwrap();
+        let mb = vec![b' '; 1024 * 1024];
+        for i in 0..65 {
+            std::fs::write(q.join(format!("{}-{i:02}.json", now - 100 + i)), &mb).unwrap();
+        }
+        let left = prune(&q, now);
+        assert_eq!(left.len(), 64, "64 MiB fit");
+        assert!(left[0].1.ends_with(format!("{}-01.json", now - 99)), "the old one and the oldest MiB went first");
+        assert_eq!(status(&d, now)["dropped"], 2);
+        assert_eq!(status(&d, now)["pending"], 64);
+        assert_eq!(status(&d, now)["oldest_age"], 99);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn keys() {
+        assert!(Keys::parse("https://lf.example.com/ pk-lf-1 sk-lf-2").is_ok_and(|k| k.host == "https://lf.example.com"));
+        assert!(Keys::parse("http://127.0.0.1:3000 pk sk").is_ok());
+        for bad in ["http://lf.example.com pk sk", "http://localhost.evil.com pk sk", "https://h pk", "https://h pk s\"k", "https://h pk sk extra"] {
+            assert!(Keys::parse(bad).is_err(), "{bad}");
+        }
+        let d = dir("keys");
+        file_write(&d, "https://h pk sk").unwrap();
+        file_write(&d, "https://h2 pk sk").unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("langfuse")).unwrap(), "https://h2 pk sk", "rewrite truncates");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(d.join("langfuse")).unwrap().permissions()) & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    type Seen = Arc<Mutex<Vec<(String, String)>>>;
+
+    /// Loopback Langfuse stand-in: answers 200 and records each request (head, body).
+    fn server() -> (String, Seen) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        let got = Arc::new(Mutex::new(vec![]));
+        let g = got.clone();
+        std::thread::spawn(move || {
+            for s in l.incoming().flatten() {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let (mut head, mut len) = (String::new(), 0);
+                loop {
+                    let mut line = String::new();
+                    if r.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    head.push_str(&line);
+                }
+                let mut body = vec![0; len];
+                let _ = r.read_exact(&mut body);
+                g.lock().unwrap().push((head, String::from_utf8_lossy(&body).into_owned()));
+                let _ = (&s).write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        (url, got)
+    }
+
+    /// A2: an outage keeps the queue and records the error; the next pass drains it in batches with Basic auth.
+    #[test]
+    fn outage_then_drain() {
+        let d = dir("drain");
+        for _ in 0..150 {
+            emit(&d, "agentq.run", "end", json!({"agentq.command": "cargo test"})).unwrap();
+        }
+        let down = Keys::parse("http://127.0.0.1:1 pk-lf-test sk-lf-test").unwrap();
+        assert!(send(&d, &down, crate::now()).is_err());
+        let s = status(&d, crate::now());
+        assert_eq!(s["pending"], 150, "an outage keeps every event");
+        assert!(s["error"].as_str().unwrap().starts_with("Langfuse:"));
+        assert!(s["last_delivery"].is_null());
+
+        let (url, got) = server();
+        let up = Keys::parse(&format!("{url} pk-lf-test sk-lf-test")).unwrap();
+        assert_eq!(send(&d, &up, crate::now()), Ok(150));
+        let s = status(&d, crate::now());
+        assert_eq!((s["pending"].clone(), s["error"].clone()), (json!(0), Value::Null));
+        assert!(s["last_delivery"].is_u64());
+        let got = got.lock().unwrap();
+        assert_eq!(got.len(), 2, "batches of 100");
+        assert!(got[0].0.starts_with("POST /api/public/otel/v1/traces "));
+        assert!(got[0].0.contains("Basic cGstbGYtdGVzdDpzay1sZi10ZXN0"), "Basic pk-lf-test:sk-lf-test");
+        let spans = |b: &str| serde_json::from_str::<Value>(b).unwrap()["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap().len();
+        assert_eq!(spans(&got[0].1) + spans(&got[1].1), 150);
+        assert!(!got[0].1.contains("sk-lf-test"), "no secret in the payload");
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
