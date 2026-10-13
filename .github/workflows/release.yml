@@ -1,8 +1,10 @@
 # agentq.md § 5 Release: one binary per OS and arch, SHA256SUMS, latest.json. A failing selftest publishes nothing.
+# Pull requests run every step except Publish.
 name: release
 on:
   push:
     tags: ['v*']
+  pull_request:
 permissions:
   contents: read
 jobs:
@@ -13,7 +15,7 @@ jobs:
           - os: macos-latest
             triple: aarch64-apple-darwin
             target: macos-aarch64
-          - os: macos-13
+          - os: macos-15-intel
             triple: x86_64-apple-darwin
             target: macos-x86_64
           - os: windows-latest
@@ -37,8 +39,11 @@ jobs:
       - name: Version from tag
         shell: bash
         run: |
-          ver="${GITHUB_REF_NAME#v}"
-          perl -pi -e 'if (!$d && s/^version = ".*"/version = "'"$ver"'"/) { $d = 1 }' Cargo.toml
+          ver=0.0.0-dev
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+            perl -pi -e 'if (!$d && s/^version = ".*"/version = "'"$ver"'"/) { $d = 1 }' Cargo.toml
+          fi
           grep -q "^version = \"$ver\"" Cargo.toml
           echo "VER=$ver" >> "$GITHUB_ENV"
       - run: cargo test --target ${{ matrix.triple }}
@@ -50,6 +55,9 @@ jobs:
           "$bin" selftest
           mkdir dist
           cp "$bin" "dist/agentq-$VER-${{ matrix.target }}${{ matrix.ext }}"
+      - name: Service lifecycle
+        shell: bash
+        run: scripts/service-lifecycle.sh "dist/agentq-$VER-${{ matrix.target }}${{ matrix.ext }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
@@ -66,7 +74,7 @@ jobs:
           merge-multiple: true
       - name: Describe
         run: |
-          ver="${GITHUB_REF_NAME#v}"
+          ver=$(ls dist | sed -n 's/^agentq-\(.*\)-linux-x86_64$/\1/p')
           cd dist
           sha256sum agentq-* > SHA256SUMS
           python3 - "$ver" <<'PY'
@@ -78,7 +86,9 @@ jobs:
                   files[name[len(f'agentq-{ver}-'):].removesuffix('.exe')] = name
           json.dump({'version': ver, 'files': files}, open('latest.json', 'w'), indent=1)
           PY
+          cat latest.json SHA256SUMS
       - name: Publish
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "agentq $GITHUB_REF_NAME"
