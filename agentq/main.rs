@@ -148,7 +148,7 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
     let u = service::unit(t, &t.install, PROJECT);
     let res = match cmd {
         "run" => serve(t),
-        "install" => update::install_self(t)
+        "install" => install_self(t)
             .map(|_| engines::ensure(&t.install).iter().for_each(|l| println!("{l}")))
             .and_then(|_| service::write_unit(&u)).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| service::run_all(&u.load, false)),
         "restart" => {
@@ -178,6 +178,40 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
         Ok(()) => println_code(&format!("service: {cmd} done")),
         Err(e) => fail(&format!("service {cmd}: {e}"), "run `agentq service status`"),
     }
+}
+
+/// coreq `install_self` that skips copies already in place (agentq.md § 5): Windows refuses to overwrite a running exe.
+fn install_self(t: &Tool) -> Result<(), String> {
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    copy_unless_same(&me, &t.release_exe(VERSION))?;
+    let launcher = t.install.join(t.exe_name());
+    match copy_unless_same(&me, &launcher) {
+        // the launcher only reads `current`: an older running one keeps working
+        Err(e) if launcher.exists() => println!("launcher: kept the running one ({e})"),
+        r => r.map(|_| ())?,
+    }
+    match t.current() {
+        Some(c) if !update::newer(VERSION, &c) => {}
+        old => {
+            if let Some(c) = old {
+                write_atomic(&t.install.join("previous"), &c)?;
+            }
+            write_atomic(&t.install.join("current"), VERSION)?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies `me` to `dst` unless `dst` already holds the same bytes; true when it copied.
+fn copy_unless_same(me: &Path, dst: &Path) -> Result<bool, String> {
+    let bytes = std::fs::read(me).map_err(|e| format!("{}: {e}", me.display()))?;
+    if std::fs::read(dst).is_ok_and(|d| d == bytes) {
+        return Ok(false);
+    }
+    if let Some(d) = dst.parent() {
+        std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+    }
+    std::fs::copy(me, dst).map(|_| true).map_err(|e| format!("{}: {e}", dst.display()))
 }
 
 /// `schtasks /End` ends only the launcher; end the service tree too (coreq.md § Service units).
@@ -238,6 +272,9 @@ fn selftest(t: &Tool) -> i32 {
         ("telemetry event", telemetry::span("agentq.verify", "selftest", Value::Null, 1, "i", "h")["attributes"].as_array().is_some_and(|a| a.len() == 7)),
         ("legacy strip", legacy::selftest()),
         ("legacy locked", legacy::selftest_locked()),
+        // the running binary is locked on Windows: the installed copy that equals it is read, never overwritten
+        ("self copy skip", std::env::current_exe().is_ok_and(|me| copy_unless_same(&me, &me) == Ok(false))),
+        ("json bom", onboard::selftest()),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
@@ -368,6 +405,23 @@ mod tests {
         assert_eq!(date(0), "1970-01-01");
         assert_eq!(date(1_791_849_600), "2026-10-13");
         assert_eq!(date(951_782_400), "2000-02-29");
+    }
+
+    /// #71 A1: an installed copy equal to the running binary is not rewritten; a differing one is replaced.
+    #[test]
+    fn self_copy_skips_equal_bytes() {
+        let d = std::env::temp_dir().join(format!("agentq-copy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (me, dst) = (d.join("me"), d.join("releases").join("agentq"));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(&me, "v1").unwrap();
+        assert_eq!(copy_unless_same(&me, &dst), Ok(true));
+        assert_eq!(copy_unless_same(&me, &dst), Ok(false));
+        assert_eq!(copy_unless_same(&me, &me), Ok(false));
+        std::fs::write(&me, "v2").unwrap();
+        assert_eq!(copy_unless_same(&me, &dst), Ok(true));
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v2");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     /// #64 A3: a running legacy process recreated the folder with leftovers only: removed, and its pid is named.

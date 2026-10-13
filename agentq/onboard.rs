@@ -104,7 +104,8 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
                 #[cfg(unix)]
                 std::fs::set_permissions(journal, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| format!("{}: {e}", journal.display()))?;
                 write_atomic(f, &text)?;
-                out.push(format!("edited: {} ({n} owned keys)", f.display()));
+                let bom = if old.as_deref().is_some_and(|o| o.starts_with(BOM) && !text.starts_with(BOM)) { "; UTF-8 BOM stripped" } else { "" };
+                out.push(format!("edited: {} ({n} owned keys{bom})", f.display()));
             }
         }
     }
@@ -124,7 +125,7 @@ pub fn restore(journal: &Path, dry: bool) -> Result<Vec<String>, String> {
             out.push(format!("conflict: {what} changed since onboard; kept"));
             continue;
         };
-        if let Some(o) = e["orig"].as_str().filter(|o| serde_json::from_str::<Value>(o).ok() == serde_json::from_str(&text).ok()) {
+        if let Some(o) = e["orig"].as_str().filter(|o| serde_json::from_str::<Value>(no_bom(o)).ok() == serde_json::from_str(&text).ok()) {
             text = o.into();
         }
         seen.insert(f.clone(), text.clone());
@@ -154,7 +155,7 @@ fn unplace(text: &str, e: &Value) -> Option<String> {
         let a = after.as_str()?;
         return text.contains(a).then(|| text.replacen(a, "", 1));
     }
-    let mut doc: Value = serde_json::from_str(text).ok()?;
+    let mut doc: Value = serde_json::from_str(no_bom(text)).ok()?;
     let key: Vec<&str> = e["key"].as_array()?.iter().filter_map(Value::as_str).collect();
     let (last, path) = key.split_last()?;
     let parent = path.iter().try_fold(&mut doc, |v, k| v.get_mut(*k))?.as_object_mut()?;
@@ -167,7 +168,14 @@ fn unplace(text: &str, e: &Value) -> Option<String> {
     } else {
         return None;
     }
-    Some(dump(&doc, text))
+    Some(dump(&doc, no_bom(text)))
+}
+
+const BOM: char = '\u{feff}';
+
+/// Windows editors may save JSON with a UTF-8 BOM, which serde_json rejects as `expected value at line 1 column 1`.
+fn no_bom(text: &str) -> &str {
+    text.strip_prefix(BOM).unwrap_or(text)
 }
 
 /// Pretty JSON with the original's indent (2 spaces for a new file); a trailing newline only when the original had one.
@@ -184,6 +192,7 @@ pub(crate) fn dump(doc: &Value, orig: &str) -> String {
 
 /// The first missing key gets the whole remaining subtree, so restore removes exactly what onboard created.
 fn place_json(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
+    let text = no_bom(text);
     let mut doc: Value = if text.trim().is_empty() { json!({}) } else { serde_json::from_str(text).map_err(|e| format!("is not JSON: {e}"))? };
     let mut cur = &mut doc;
     for (i, k) in w.key.iter().enumerate() {
@@ -269,6 +278,12 @@ fn place_yaml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     Ok((text, Some(entry(&w.key, "text", after.into()))))
 }
 
+/// Built-in fixture for `selftest`: a Claude settings file saved with a BOM gets the hook and loses the BOM.
+pub fn selftest() -> bool {
+    let w = &wants("claude", Path::new("s"), Path::new("c.json"), Path::new("agentq"))[0];
+    place_json("\u{feff}{}", w).is_ok_and(|(t, e)| t.starts_with("{\n  \"hooks\"") && e.is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,6 +347,26 @@ mod tests {
         assert_eq!(snapshot(&files), edited, "dry run writes nothing");
         assert!(restore(&journal, false).unwrap().iter().all(|l| l.starts_with("restored:")));
         assert_eq!(snapshot(&files), before, "uninstall leaves no diff");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #71 A2: a BOM is reported and stripped, not `is not JSON`; uninstall brings the original bytes back.
+    #[test]
+    fn json_bom_is_stripped_and_restored() {
+        let d = std::env::temp_dir().join(format!("agentq-bom-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let orig = "\u{feff}{\n  \"model\": \"opus\"\n}\n";
+        std::fs::write(d.join("settings.json"), orig).unwrap();
+        let journal = d.join("owned.json");
+        let w: Vec<Want> = wants("claude", &d, &d.join(".claude.json"), Path::new("/x/agentq")).into_iter().take(2).collect();
+        let out = apply(&w, &journal).unwrap();
+        assert!(out[0].starts_with("edited:") && out[0].ends_with("; UTF-8 BOM stripped)"), "{out:?}");
+        let edited = std::fs::read_to_string(d.join("settings.json")).unwrap();
+        assert!(edited.starts_with("{\n  \"model\""), "{edited}");
+        assert!(selftest());
+        restore(&journal, false).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("settings.json")).unwrap(), orig);
         let _ = std::fs::remove_dir_all(&d);
     }
 
