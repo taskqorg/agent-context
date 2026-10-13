@@ -30,6 +30,7 @@ Status: decisions for implementation. The Node package (`@alexkirs/agent-context
 | `agentq update [--check]`, `agentq selftest` | coreq update steps; selftest checks the binary, built-in fixtures and engine pins. |
 | `agentq service install\|run\|pause\|resume\|status\|restart\|stop\|uninstall\|list` | coreq service (§ 5). |
 | `agentq uninstall [--dry-run]` | § 9. |
+| `agentq uninstall --legacy [--dry-run]` | § 10: runs the legacy install's own uninstall; none left: `already removed`. |
 
 - Output: one line per outcome; errors `Error: <problem>` then `Next: <action>`, at most 2 lines. `--json` prints the same data as JSON.
 - Dropped from the Node CLI: `install`, `rollback`, `set-key`, `provider`, `headroom`, `gateway`, `monitor`, `proxy`, `retrieval`, `probe`, `plugin-path`, `verify`, `connect`, `set-langfuse`, `lifecycle`, `native-hook`, `tools`, `incidents report|enable|disable`. Their duties live in the commands above or are dropped in § 11.
@@ -72,9 +73,9 @@ coreq owns layout, update, launcher, rollback, service units and `status.json`; 
 
 - Install: `~/.local/share/agentq`, Windows `%LOCALAPPDATA%\agentq`: `releases/<ver>/agentq`, `current`, `previous`, launcher `<install>/agentq`, `engines/`, `data/` (§ 8), `status.json`.
 - Release: CI on a `v*` tag builds `agentq-<ver>-<os>-<arch>` for macOS arm64/x64, Windows x64, Linux x64/arm64 (static musl), plus `SHA256SUMS` and `latest.json`; a failing selftest publishes nothing. Trust is HTTPS plus who can push tags; the Node Ed25519 recipe signature and staged rollout are dropped (§ 11).
-- Service: one OS unit per host and runtime runs `<install>/agentq service run`. It owns the loopback ports, headroom workers, OTLP intake, the queue sender, update checks and `status.json`. No other resident process.
+- Service: one OS unit per host and runtime (coreq project `host`: `com.agentq.host`, `AgentQ-host`, `agentq-host.service`) runs `<install>/agentq service run` in `<install>`. It owns the loopback ports, headroom workers, OTLP intake, the queue sender, update checks and `status.json`. No other resident process.
 - Update: coreq steps, hourly; a dashq release notice may trigger an early check. An engine pin change starts a new headroom worker on a new port, routes new connections to it, keeps open ones on the old worker, retires the old one after 15 min plus 30 s grace, then kills its process tree with an incident; at most two workers. An `agentq` re-exec waits for no open proxied connection, at most 15 min.
-- `status.json` adds to the coreq keys: per agent `routing` (routed, direct, bypassed, unknown), `mcp`, `hooks`, engine versions, queue `{pending, oldest_age, last_delivery, dropped}`, newest incident.
+- `status.json` lives at `<install>/status.json`, written every 30 s; `service status` treats it as unknown after 90 s. It adds to the coreq keys: per agent `routing` (routed, direct, bypassed, unknown), `mcp`, `hooks`, engine versions, queue `{pending, oldest_age, last_delivery, dropped}`, newest incident.
 - Compatibility N/N-1: data in `data/` changes only additively.
 
 ## 6. Telemetry to Langfuse
@@ -106,6 +107,7 @@ Dashboard duties (fleet view, versions, last seen, health, usage, incidents, acc
 ## 10. Legacy Node install
 
 - `onboard` detects `~/.agent-context` and the global npm package `@alexkirs/agent-context`.
+- `uninstall --legacy [--dry-run]` runs `node <legacy>/launcher.mjs uninstall [--dry-run]`, which removes the npm package, launcher, services and journaled config edits; `<legacy>` is `$AGENT_CONTEXT_HOME/.agent-context`, else `~/.agent-context`.
 - `onboard --yes` with a legacy install first runs its own `node ~/.agent-context/launcher.mjs uninstall --dry-run`, shows the result, and on consent runs `uninstall`; then applies § 4. A refusal or a missing Node stops onboarding with the legacy message; agentq never deletes legacy files itself.
 - Kept names: MCP server `agent_context`, tool names, provider id `agent_context`, instruction markers. Existing relay-filed issues and Langfuse traces stay.
 - The Node code, relay and gateway stay in this repository until a separate task removes them after the hosts moved.

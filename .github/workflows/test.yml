@@ -39,3 +39,17 @@ jobs:
           python -m unittest discover -s integrations/hermes
       - name: Qualify local package and HTTP proxy without service credentials
         run: node scripts/local-smoke.mjs
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      AGENTQ_SELFTEST_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup default stable
+      - run: cargo test --locked
+      - run: cargo run --locked -- selftest
