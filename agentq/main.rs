@@ -1,4 +1,6 @@
-//! agentq: update, service, status and legacy uninstall on coreq (agentq.md § 1, § 5, § 10).
+//! agentq: update, service, status, MCP and legacy uninstall on coreq (agentq.md § 1, § 2, § 5, § 10).
+
+mod mcp;
 
 use coreq::{Tool, service, status, update, write_atomic};
 use serde_json::Value;
@@ -11,7 +13,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq update [--check] | selftest | service install|run|restart|stop|uninstall|status | uninstall --legacy [--dry-run] | --version";
+const USAGE: &str = "agentq update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | uninstall --legacy [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -42,6 +44,7 @@ fn main() {
             Err(e) => fail(&format!("update: {e}"), "check the network and run `agentq update` again"),
         },
         ["selftest"] => selftest(&t),
+        ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
         ["service", cmd] => service_cmd(&t, cmd),
         ["uninstall", "--legacy"] => legacy(&legacy_dir(), false).unwrap_or_else(|e| fail(&e.0, &e.1)),
         ["uninstall", "--legacy", "--dry-run"] | ["uninstall", "--dry-run", "--legacy"] => legacy(&legacy_dir(), true).unwrap_or_else(|e| fail(&e.0, &e.1)),
@@ -156,6 +159,7 @@ fn selftest(t: &Tool) -> i32 {
         ("unit", u.path.file_name().is_some_and(|f| f.to_string_lossy().contains(PROJECT))),
         ("unit commands", !u.load.is_empty() && !u.unload.is_empty() && !u.stop.is_empty()),
         ("status", status::common(t, "h", PROJECT, 1, None, None)["version"] == VERSION),
+        ("mcp tools", mcp::tools().as_array().is_some_and(|a| a.len() == 3)),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
     if bad.is_empty() {
