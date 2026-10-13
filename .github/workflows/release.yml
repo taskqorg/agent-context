@@ -1,0 +1,84 @@
+# agentq.md § 5 Release: one binary per OS and arch, SHA256SUMS, latest.json. A failing selftest publishes nothing.
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            triple: aarch64-apple-darwin
+            target: macos-aarch64
+          - os: macos-13
+            triple: x86_64-apple-darwin
+            target: macos-x86_64
+          - os: windows-latest
+            triple: x86_64-pc-windows-msvc
+            target: windows-x86_64
+            ext: .exe
+          - os: ubuntu-latest
+            triple: x86_64-unknown-linux-musl
+            target: linux-x86_64
+          - os: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-musl
+            target: linux-aarch64
+    runs-on: ${{ matrix.os }}
+    env:
+      AGENTQ_SELFTEST_OFFLINE: '1'
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup default stable && rustup target add ${{ matrix.triple }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Version from tag
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          perl -pi -e 'if (!$d && s/^version = ".*"/version = "'"$ver"'"/) { $d = 1 }' Cargo.toml
+          grep -q "^version = \"$ver\"" Cargo.toml
+          echo "VER=$ver" >> "$GITHUB_ENV"
+      - run: cargo test --target ${{ matrix.triple }}
+      - run: cargo build --release --target ${{ matrix.triple }}
+      - name: Selftest and stage
+        shell: bash
+        run: |
+          bin="target/${{ matrix.triple }}/release/agentq${{ matrix.ext }}"
+          "$bin" selftest
+          mkdir dist
+          cp "$bin" "dist/agentq-$VER-${{ matrix.target }}${{ matrix.ext }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Describe
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          cd dist
+          sha256sum agentq-* > SHA256SUMS
+          python3 - "$ver" <<'PY'
+          import json, os, sys
+          ver = sys.argv[1]
+          files = {}
+          for name in sorted(os.listdir('.')):
+              if name.startswith(f'agentq-{ver}-'):
+                  files[name[len(f'agentq-{ver}-'):].removesuffix('.exe')] = name
+          json.dump({'version': ver, 'files': files}, open('latest.json', 'w'), indent=1)
+          PY
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes "agentq $GITHUB_REF_NAME"
