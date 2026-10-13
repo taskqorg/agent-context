@@ -7,7 +7,13 @@ function spans(buffer){
  };
  let count=0,max=0;try{walk(0,buffer.length,(f,a,b)=>{if(f===1)walk(a,b,(f,a,b)=>{if(f===2)walk(a,b,(f,a,b)=>{if(f===2){count++;max=Math.max(max,b-a);}});});});return {count,max};}catch{return null;}
 }
-module.exports={spans};
+function jsonSpans(buffer){
+ if(buffer.length>8*1024*1024)return null;
+ try{const value=JSON.parse(buffer.toString('utf8'));if(!Buffer.from(JSON.stringify(value)).equals(buffer)||!Array.isArray(value.resourceSpans))return null;let count=0,max=0;
+  for(const resource of value.resourceSpans){if(!Array.isArray(resource.scopeSpans))return null;for(const scope of resource.scopeSpans){if(!Array.isArray(scope.spans))return null;for(const span of scope.spans){if(!span||typeof span!=='object'||Array.isArray(span))return null;count++;max=Math.max(max,Buffer.byteLength(JSON.stringify(span)));}}}return {count,max};
+ }catch{return null;}
+}
+module.exports={spans,jsonSpans};
 const file=process.env.AGENT_CONTEXT_NATIVE_OBSERVER_FILE,port=process.env.AGENT_CONTEXT_NATIVE_OBSERVER_PORT;
 let allowed=false;
 try{const d=path.dirname(file);allowed=path.basename(file)==='transport.json'&&/^snapshot-[A-Za-z0-9]+$/.test(path.basename(d))&&path.basename(path.dirname(d))==='native-hook-outbox'&&!fs.lstatSync(d).isSymbolicLink()&&fs.statSync(d).isDirectory()&&/^\d{1,5}$/.test(port)&&+port>0&&+port<=65535;}catch{}
@@ -19,7 +25,7 @@ if(allowed){
   if(req.method!=='POST'||req.path!=='/api/public/otel/v1/traces'||req.getHeader('host')!=='127.0.0.1:'+port)return req;
   const r={start:performance.now(),body:0,finish:null,response:null,status:null,duration:null,timeout:false,socket:null,socketStart:0,chunks:0,span:null};count++;last=r;
   const add=(chunk,encoding)=>{try{r.body+=size(chunk,encoding);maxBody=Math.max(maxBody||0,r.body);}catch{}};
-  const inspect=chunk=>{try{if(!size(chunk))return;r.chunks++;r.span=r.chunks===1&&Buffer.isBuffer(chunk)&&req.getHeader('content-type')==='application/x-protobuf'&&!req.getHeader('content-encoding')?spans(chunk):null;}catch{r.span=null;}};
+  const inspect=chunk=>{try{if(!size(chunk))return;r.chunks++;r.span=r.chunks===1&&Buffer.isBuffer(chunk)&&!req.getHeader('content-encoding')?(req.getHeader('content-type')==='application/x-protobuf'?spans(chunk):req.getHeader('content-type')==='application/json'?jsonSpans(chunk):null):null;}catch{r.span=null;}};
   const write=req.write,end=req.end;req.write=function(...args){inspect(args[0]);add(args[0],args[1]);return write.apply(this,args);};
   req.end=function(...args){inspect(args[0]);if(r.span){maxSpan=Math.max(maxSpan||0,r.span.max);maxSpans=Math.max(maxSpans||0,r.span.count);}add(args[0],args[1]);return end.apply(this,args);};
   req.once('socket',socket=>{r.socket=socket;r.socketStart=socket.bytesWritten;});

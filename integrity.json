@@ -1,11 +1,11 @@
 {
-  "version": "0.4.20",
+  "version": "0.4.21",
   "files": {
     "bin/agent-context.js": "993e7ad44dbea8c35e21a9d8c0693aaae9bdeba5b025d2ac487b7d4713c46b56",
     "bin/headroom-compress.js": "47f44b5a91c047eb9e9f95aeb25c9d25a0c4f1bba509ac022b5eafdce7ed75fe",
     "src/automatic.js": "c4389eebc7dc03a57e9991b010633b9e27b60b643eb476c781b9de6e94b52942",
     "src/conflicts.js": "f169cef979a8fe5f4987cecdaea662a3167f396590e64b53571cc94023a5ab94",
-    "src/core.js": "49f8a5ffec5fd5d5ff8732e3b14a0b75d13539ba6e288177c5d4dc91ed95fa76",
+    "src/core.js": "3dc692b7db91aebdb2e1d7d877c46402f3c75f600c672013e7a9e70ca24f12b3",
     "src/credentials.js": "db38d011efe06822ec49556b94856bd44a05caa68f27697b4c17dd509aff4d78",
     "src/diagnostics.js": "5500b063adbb45f04910de8c60d74afcc248041880f292de8ecdb564b92f76b7",
     "src/enrollment.js": "d65a89bf1bd4ad2ae429b05e11fdc3637e190841999438cb01fa3663aa152104",
@@ -25,7 +25,7 @@
     "src/monitor.js": "d3a0c05524800ef9d9fa886574b09f9693d87719c1b5aef168959cb25c5a0332",
     "src/native-export.js": "dbb9e15016081c7a0817ab50dc01ee9ec830d20d4f61ac6af728be6ab0703198",
     "src/native-failure.js": "3b71988b7c76309eb911b7dc7362abfb09a590018fab458ebfc0a76b2d1a1f92",
-    "src/native-http-observer.cjs": "d91db96b155f740c9362dc344deec63d77614d4a6e49bf67957bcabe253f487d",
+    "src/native-http-observer.cjs": "7f2acdddf200e6bef4434aede3e4041664dfd2f88a473874dfa292356557ee5c",
     "src/native-tools.js": "69c77fb0dc7dc5d3ece328f455ad5ff83158f06a6b9362c397a31e3ccb8de97b",
     "src/onboarding.js": "5e91023bde17f4d40e61b3aaa57325c0ad45a414c90450e7337e77d19685efe3",
     "src/private-file.js": "b7075dc745d61f40e41970b36f78521fe4b1a4d0a1c8c2c66033e69002b395e5",
