@@ -113,7 +113,9 @@ Dashboard duties (fleet view, versions, last seen, health, usage, incidents, acc
 - `uninstall --legacy [--dry-run]` runs `node <legacy>/launcher.mjs uninstall [--dry-run]`, which removes the npm package, launcher, services and journaled config edits; `<legacy>` is `$AGENT_CONTEXT_HOME/.agent-context`, else `~/.agent-context`.
 - `onboard --yes` with a legacy install first runs its own `node ~/.agent-context/launcher.mjs uninstall --dry-run`, shows the result, and on consent runs `uninstall`; then applies § 4. A refusal or a missing Node stops onboarding with the legacy message; agentq never deletes legacy files itself.
 - Kept names: MCP server `agent_context`, tool names, provider id `agent_context`, instruction markers. Existing relay-filed issues and Langfuse traces stay.
-- The Node code, relay and gateway stay in this repository until a separate task removes them after the hosts moved.
+- The relay worker and its GitHub App are retired: the code is gone from this repository, the owner deletes the deployed Worker and the App. Node clients that still default to the relay keep reports in their local queue.
+- Final npm version: `npm-final/` is the package `@alexkirs/agent-context` 0.5.0; every invocation prints the migration instruction to stderr and exits 1, nothing else, no install scripts. The owner publishes it as a release asset without `recipe.json`, so the legacy updater never selects it and `uninstall --legacy` keeps working.
+- The Node code and gateway stay in this repository until a separate task removes them after the hosts moved.
 
 ## 11. PRODUCT.md map
 

@@ -12,6 +12,10 @@ GitHub releases are sufficient for initial public distribution; publishing to np
 
 User onboarding and full removal are defined in [INSTALL.md](INSTALL.md). Developers clone the public repo, run `npm ci --ignore-scripts`, `npm test`, `npm pack`, then qualify `setup` and `uninstall` in an isolated profile. A project onboarding document links to this one canonical recipe instead of copying hook scripts/config/key instructions into every repository. GitHub source installation is an explicit candidate adoption, separate from stable release qualification.
 
+## Final npm version
+
+The npm package is retired ([agentq.md § 10](agentq.md#10-legacy-node-install)). `npm-final/` holds its last version, 0.5.0: it prints the migration instruction and exits 1. Owner step, after the hosts moved: `npm pack ./npm-final`, then publish the tgz (npm or a release asset) without `recipe.json`, so the legacy updater never selects it.
+
 ## Project pin and automatic updates
 
 Recommended project declaration, once a manifest-aware updater is implemented:
