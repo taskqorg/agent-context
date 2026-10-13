@@ -47,8 +47,9 @@ Status: decisions for implementation. The Node package (`@alexkirs/agent-context
 
 Engine pins (version, per-platform URL, sha256) are built into the binary; no config changes them. An engine downloads into `<install>/engines/<name>-<ver>/` on install and on an update that changes its pin, is checked by sha256 and `--version`, and is never fetched by an install script.
 
-- **RTK.** Prebuilt binary from `rtk-ai/rtk` releases, current pin 0.51.0. `agentq run` passes only commands on the built-in qualified list (test and build runners) to `rtk`; others run natively. Native RTK execution keeps command semantics; no generic post-filter. Raw output of each run is retained for `get_original` (500 runs, 7 days, 512 MiB). Read-only sandbox without writable storage: run natively, no compression.
-- **headroom.** Loopback model proxy for routing and usage observation; its compression stays off. Installed from pinned wheels with hashes into a private venv `<install>/engines/headroom-<ver>/` from Python 3.11–3.13 found on the host (`AGENTQ_PYTHON` overrides). No Python: agents run unrouted, `doctor` says why. It never injects tools, never rewrites transmitted prefixes and never switches provider.
+- Engines install in `service install` before the unit loads and on each `service run` start, so a release with a new pin installs it; an engine already checked is reused. A failed engine never fails the command: its line names the reason and agents keep working without it.
+- **RTK.** Prebuilt binary from `rtk-ai/rtk` releases, current pin 0.51.0. `agentq run` passes only commands on the built-in qualified list (`pytest`, `cargo test|build|check`, `go test`) to `rtk`; others run natively. Native RTK execution keeps command semantics; no generic post-filter. Raw output of each run is retained in `data/runs/<id>/` for `get_original` with ref `rtk:<id>` and the hash of RTK's recovery hint (500 runs, 7 days, 512 MiB). Read-only sandbox without writable storage or no checked RTK: run natively, no compression.
+- **headroom.** Loopback model proxy for routing and usage observation; its compression stays off. Current pin `headroom-ai[proxy]` 0.40.0. Installed with `pip --require-hashes --only-binary :all:` from the lock `agentq/headroom.lock` built into the binary into a private venv `<install>/engines/headroom-<ver>/` from Python 3.11–3.13 found on the host (`AGENTQ_PYTHON` overrides); checked by `headroom --version`. The pin's wheels need macOS 14+ on arm64 and do not exist for macOS x64. No Python or no wheels: agents run unrouted, `doctor` says why. It never injects tools, never rewrites transmitted prefixes and never switches provider.
 - Code, complete JSON, dense constraints and short results pass through (PRODUCT R3). Codex gets no compression hook.
 
 ## 4. Hooks and config edits per runtime
@@ -95,7 +96,7 @@ coreq owns layout, update, launcher, rollback, service units and `status.json`; 
 
 ## 8. State
 
-`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports), `originals/`, `queue/`, `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
+`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports), `originals/`, `runs/`, `queue/`, `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
 
 Dashboard duties (fleet view, versions, last seen, health, usage, incidents, access control) move to dashq, which reads Langfuse and the heartbeat events. agentq ships no panel and no dashboard JSON.
 

@@ -92,11 +92,12 @@ pub fn call(dir: &Path, name: &str, a: &Value) -> Result<Value, String> {
                 Value::Null => 0,
                 v => v.as_u64().ok_or("Invalid offset")? as usize,
             };
-            // ponytail: RTK run refs arrive with the RTK engine (#54); until then none is retained
-            if r.starts_with("rtk:") {
-                return Err(format!("expired: {r} is not retained; rerun the command"));
-            }
-            let (_, content) = read(dir, r)?;
+            let content = if r.starts_with("rtk:") {
+                // `<install>/data/originals`
+                crate::engines::recall(dir.parent().and_then(Path::parent).unwrap_or(dir), r, a["hash"].as_str().unwrap_or(""))?
+            } else {
+                read(dir, r)?.1
+            };
             let chars = content.chars().count();
             let page: String = content.chars().skip(offset).take(PAGE).collect();
             Ok(json!({"ref": r, "original_chars": chars, "offset": offset, "content": page, "next_offset": if offset + PAGE < chars { json!(offset + PAGE) } else { Value::Null }}))
@@ -164,7 +165,7 @@ fn prune(dir: &Path) {
 }
 
 // ponytail: time+pid+counter ids, unique per host; add a random source if refs ever cross hosts
-fn new_id() -> String {
+pub fn new_id() -> String {
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let t = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
