@@ -60,6 +60,20 @@ links remain explicit. Filters do not reconstruct missing native identities.
 Model usage is grouped by the observed model with sample counts for each original
 input/cache/output/reasoning field. Overlapping fields are not summed into an invented
 total. Missing costs remain null; reported cost is not invoice or subscription savings.
+
+## Safe native failure receipts and time
+
+The current problems panel and JSON report expose the last retained native failure
+receipt: job ID, actual wrapper version, stage, typed Node/exit/signal, captured
+output byte counts, elapsed time and known SDK phase/status. Arbitrary messages,
+stacks and stderr/stdout are never persisted or returned. Missing values are null;
+old clients without receipts stay compatible. This is one observed failure, not
+the cause of every pending job. Recovery clears a retained receipt only after the
+existing acknowledgement path removes its job.
+
+Retry/recovery durations explicitly belong to the displayed snapshot time (BKK).
+They are not a live countdown or evidence that a retry has occurred/stalled.
+Gateway validation and ServiceQ must adopt this receipt schema before clients.
 Rollback removes the guarded Caddy route and stops `serviceq-overview.service`.
 
 The monitor reads existing ContextQ proxy health, native telemetry queue metadata,

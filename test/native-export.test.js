@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {enqueueCodexExport,processCodexExports,nativeExportStats,nativeExportDiagnostics} from '../src/native-export.js';
+import {enqueueCodexExport,processCodexExports,nativeExportStats,nativeExportDiagnostics,nativeExportLastFailure} from '../src/native-export.js';
 import {root,version} from '../src/core.js';
 const profile=fs.mkdtempSync(path.join(os.tmpdir(),'contextq-native-export-'));
 process.env.AGENT_CONTEXT_HOME=profile;
@@ -16,9 +16,11 @@ test('R9: Stop only queues; retry preserves job, worker exports one exact turn a
  const hook=spawnSync(process.execPath,['bin/agent-context.js','native-hook','codex'],{input:JSON.stringify(input),encoding:'utf8',env:process.env});
  assert.equal(hook.status,0,hook.stderr);assert.deepEqual(JSON.parse(hook.stdout),{continue:true,suppressOutput:true});
  assert.deepEqual(enqueueCodexExport(input),enqueueCodexExport(input));assert.equal(nativeExportStats().queue_batches,1);
+ assert.equal(nativeExportLastFailure(),null);
  const collector=async()=>({base_url:'http://127.0.0.1:18787',public_key:'synthetic',secret_key:'synthetic'});
  await processCodexExports({collector,run:async()=>{throw new Error('fixture unavailable')}});
  assert.equal(nativeExportStats().queue_batches,1);
+ assert.equal(nativeExportLastFailure().stage,'process');assert.equal(nativeExportLastFailure().version,version);assert.equal(nativeExportLastFailure().exitCode,null);
  let tick=Date.now()+600000;
  for(const [code,options] of [
   ['concurrency_limit',{collector,run:async()=>{throw new Error('Concurrent export limit reached secret-fixture')}}],
@@ -48,6 +50,7 @@ test('R9: Stop only queues; retry preserves job, worker exports one exact turn a
   fs.writeFileSync(payload.transcript_path+'.langfuse','current\n');
  }});
  assert.equal(calls,1);assert.ok(Number.isFinite(nativeExportDiagnostics().native_export_recovery_age_seconds));assert.equal(nativeExportStats().queue_batches,0);assert.equal(fs.readFileSync(source+'.langfuse','utf8'),'current\n');
+ assert.equal(nativeExportLastFailure(),null);
  enqueueCodexExport(input);await processCodexExports({run:async()=>assert.fail('acknowledged turn must not be exported twice')});
  assert.equal(nativeExportStats().queue_batches,0);
  assert.throws(()=>enqueueCodexExport({transcript_path:path.join(profile,'secret.json')}));

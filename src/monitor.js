@@ -1,5 +1,5 @@
 import {flushNativeEvents} from './native-tools.js';
-import {nativeExportStats,nativeExportDiagnostics,nativeExportCodes} from './native-export.js';
+import {nativeExportStats,nativeExportDiagnostics,nativeExportCodes,nativeExportLastFailure} from './native-export.js';
 import { providers } from './providers.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -63,11 +63,12 @@ export async function collectMonitor({ health = serviceHealth, stats = headroomS
   const telemetry = telemetryStatus(installed);
   for (const agent of installed.filter(a => ['codex', 'claude', 'hermes'].includes(a))) {
     const state = await health(agent);
-    let metrics = {}, queueReadable = true;
+    let metrics = {}, queueReadable = true, nativeFailure;
     try { metrics = queueStats(path.join(root(), 'telemetry-outbox', enrollment()?.device || 'local', agent === 'claude' ? 'claude-code' : agent), now); } catch { queueReadable = false; }
     if(agent==='codex') try {
       const pending=nativeExportStats();
       Object.assign(metrics,nativeExportDiagnostics(now));
+      nativeFailure=nativeExportLastFailure();
       metrics.queue_batches=(metrics.queue_batches||0)+pending.queue_batches;
       metrics.queue_bytes=(metrics.queue_bytes||0)+pending.queue_bytes;
       metrics.queue_oldest_seconds=Math.max(metrics.queue_oldest_seconds||0,pending.queue_oldest_seconds);
@@ -96,7 +97,7 @@ export async function collectMonitor({ health = serviceHealth, stats = headroomS
     const exporterMissing = telemetryEnabled && ['missing', 'installed_hooks_disabled_or_unconfigured'].includes(telemetry.nativeExporters[agent]);
     const deliveryUnverified = telemetryEnabled && telemetry.deliveryByAgent[agent]?.status !== 'delivered';
     const telemetryMissing = telemetryEnabled && state?.telemetry === false;
-    services.push({ service: 'contextq', agent: agent === 'claude' ? 'claude-code' : agent, state: !state || state.backendHealthy===false ? 'error' : !queueReadable || deliveryFailed || statsMissing || telemetryMissing || exporterMissing || deliveryUnverified || metrics.queue_oldest_seconds > 600 || workerFailed || rotating ? 'warning' : 'ok', reason: !state || state.backendHealthy===false ? 'proxy_unavailable' : !queueReadable ? 'queue_unreadable' : deliveryFailed?'telemetry_delivery_failed':statsMissing ? 'native_stats_unavailable' : telemetryMissing ? 'compression_telemetry_disabled' : exporterMissing ? 'native_exporter_missing' : metrics.queue_oldest_seconds > 600 ? 'delivery_backlog' : deliveryUnverified ? 'telemetry_delivery_unverified' : workerFailed?'worker_update_failed':rotating?'worker_retiring':'proxy_health_not_agent_liveness', metrics, ...(state?.version ? { version: state.version } : {}), ...(state?.retiringWorker?{retiringVersion:state.retiringWorker.version}:{}), ...(state?.targetVersion?{targetVersion:state.targetVersion}:{}) });
+    services.push({ service: 'contextq', agent: agent === 'claude' ? 'claude-code' : agent, state: !state || state.backendHealthy===false ? 'error' : !queueReadable || deliveryFailed || statsMissing || telemetryMissing || exporterMissing || deliveryUnverified || metrics.queue_oldest_seconds > 600 || workerFailed || rotating ? 'warning' : 'ok', reason: !state || state.backendHealthy===false ? 'proxy_unavailable' : !queueReadable ? 'queue_unreadable' : deliveryFailed?'telemetry_delivery_failed':statsMissing ? 'native_stats_unavailable' : telemetryMissing ? 'compression_telemetry_disabled' : exporterMissing ? 'native_exporter_missing' : metrics.queue_oldest_seconds > 600 ? 'delivery_backlog' : deliveryUnverified ? 'telemetry_delivery_unverified' : workerFailed?'worker_update_failed':rotating?'worker_retiring':'proxy_health_not_agent_liveness', metrics, ...(nativeFailure ? {nativeFailure} : {}), ...(state?.version ? { version: state.version } : {}), ...(state?.retiringWorker?{retiringVersion:state.retiringWorker.version}:{}), ...(state?.targetVersion?{targetVersion:state.targetVersion}:{}) });
   }
   for (const service of ['serverq', 'taskq']) {
     const spec = settings[service];

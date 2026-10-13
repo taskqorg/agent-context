@@ -1,9 +1,15 @@
 import { monitorMetrics } from './monitor-protocol.js';
+import {nativeFailureFields,validateNativeFailure} from './native-failure.js';
 const exportCauses={payload_too_large:'Пакет exporter отвергнут по размеру даже после уменьшения; данные сохранены, требуется проверка размера spans',concurrency_limit:'Exporter превысил лимит параллельных отправок; требуется обновление batching',timeout:'Exporter не завершился в срок; событие сохранено',collector_unavailable:'Локальный collector не подтвердил identity или routing; проверить сервис',snapshot_unavailable:'Завершённый native turn недоступен; проверить источник',unacknowledged:'Exporter не подтвердил turn; событие сохранено',process_failed:'Exporter завершился с ошибкой; требуется локальная диагностика',unknown:'Сохранён прежний отказ без точной причины; ожидается диагностический retry'};
-export function nativeExportExplanation(metrics) {
+export function nativeExportExplanation(metrics, snapshotAt = null, failure = null) {
   const messages=Object.entries(exportCauses).filter(([code])=>metrics['native_export_'+code]>0).map(([code,text])=>text+' ('+metrics['native_export_'+code]+')');
-  if(messages.length) messages.push('Максимум попыток: '+(metrics.native_export_attempts??'не измерено')+'. Следующая допустимая попытка через '+(metrics.native_export_retry_seconds===null?'не измерено':Math.ceil(metrics.native_export_retry_seconds))+' сек.');
-  if(Number.isFinite(metrics.native_export_recovery_age_seconds))messages.push('Последний успешный retry: '+Math.round(metrics.native_export_recovery_age_seconds)+' сек. назад; это acknowledgement exporter, не Langfuse readback');
+  if(messages.length) messages.push('Максимум попыток в снимке: '+(metrics.native_export_attempts??'не измерено')+'. Ожидание eligibility на момент снимка: '+(Number.isFinite(metrics.native_export_retry_seconds)?Math.ceil(metrics.native_export_retry_seconds):'не измерено')+' сек.; это не текущий countdown и не доказательство выполнения retry');
+  if(Number.isFinite(metrics.native_export_recovery_age_seconds))messages.push('Возраст последнего успешного retry на момент снимка: '+Math.round(metrics.native_export_recovery_age_seconds)+' сек.; это acknowledgement exporter, не Langfuse readback');
+  if(messages.length) messages.push(Number.isFinite(snapshotAt)?'Время снимка: '+new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Bangkok'}).format(snapshotAt)+' BKK':'Время снимка неизвестно');
+  if(failure) {
+    const stages={snapshot:'создание snapshot',collector:'проверка collector',process:'exporter',acknowledgement:'проверка acknowledgement'};
+    messages.push('Последний наблюдённый отказ '+new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Bangkok'}).format(failure.at)+' BKK · job '+failure.jobId.slice(0,12)+' · версия '+failure.version+' · '+stages[failure.stage]+' · SDK '+failure.sdkPhase+' · exit '+(failure.exitCode??'неизвестно')+' · Node '+(failure.nodeCode??'неизвестно')+' · signal '+(failure.signal??'неизвестно')+' · '+(failure.elapsedMs??'не измерено')+' мс · захвачено stdout/stderr '+(failure.stdoutCapturedBytes??'не измерено')+'/'+(failure.stderrCapturedBytes??'не измерено')+' байт'+(failure.outputCapped?' · достигнут лимит захвата вывода':'')+(failure.httpStatus!==null?' · SDK HTTP '+failure.httpStatus:'')+'; это receipt одного отказа, не причина всех заданий');
+  }
   return messages.join('. ');
 }
 const freshness = 10 * 60 * 1000;
@@ -102,8 +108,13 @@ export function overview({ health = [], compression = [], nativeTools = [], acti
     h.at = Math.max(h.at || 0, at); h.fresh = now - h.at <= freshness;
     const metrics = {};
     for (const key of monitorMetrics) metrics[key] = number(attribute(row, 'monitor.' + key));
-    const exportExplanation=now-at<=freshness?nativeExportExplanation(metrics):'';
-    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : [reasons[row.statusMessage] || 'Нет объяснения состояния.',exportExplanation].filter(Boolean).join(' '), metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, retiringVersion: /^\d+\.\d+\.\d+$/.test(attribute(row,'proxy.retiring_version')||'')?attribute(row,'proxy.retiring_version'):null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
+    let nativeFailure=null;
+    if(attribute(row,'native_failure.schema')!==undefined) {
+      const receipt=Object.fromEntries(nativeFailureFields.map(key=>[key,attribute(row,'native_failure.'+key)??null]));
+      try {nativeFailure=validateNativeFailure(receipt,at);}catch {/* Untrusted fields never become explanations. */}
+    }
+    const exportExplanation=now-at<=freshness?nativeExportExplanation(metrics,at,nativeFailure):'';
+    h.services.push({ service, name: serviceNames[service], agent: agentNames[agent] ? agent : null, state: now - at > freshness ? 'unknown' : tag(row, 'state'), nativeFailure: now - at > freshness ? null : nativeFailure, reason: now - at > freshness ? 'Нет свежей проверки более 10 минут.' : [reasons[row.statusMessage] || 'Нет объяснения состояния.',exportExplanation].filter(Boolean).join(' '), metrics, at, traceId: safeTrace(row), proxyVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'proxy.version') || '') ? attribute(row, 'proxy.version') : null, retiringVersion: /^\d+\.\d+\.\d+$/.test(attribute(row,'proxy.retiring_version')||'')?attribute(row,'proxy.retiring_version'):null, monitorVersion: /^\d+\.\d+\.\d+$/.test(attribute(row, 'version') || '') ? attribute(row, 'version') : null });
   }
   const measured = new Map(), since = now - period * 1000;
   let unattributed = 0;

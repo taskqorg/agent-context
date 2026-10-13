@@ -6,7 +6,7 @@ import { compressLocal } from './local-compression.js';
 import { enrollment } from './enrollment.js';
 import { providerSettings } from './providers.js';
 
-export const version = '0.4.16';
+export const version = '0.4.17';
 export const home = () => process.env.AGENT_CONTEXT_HOME || os.homedir();
 export const root = () => path.join(home(), '.agent-context');
 export const sha = value => crypto.createHash('sha256').update(value).digest('hex');

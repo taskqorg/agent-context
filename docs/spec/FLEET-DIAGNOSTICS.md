@@ -49,3 +49,31 @@ Rollout order: qualify and deploy the gateway validator and ServiceQ reader befo
 advertising client0.4.12. Their metric allowlist grows while old snapshots remain
 valid. No new producer metrics may be enabled against the old gateway validator.
 First slice observes existing retries; it does not add automatic repair actions.
+
+## Safe failure receipts and snapshot time (user-authorized)
+
+FD1/FD4: On an ordinary native export failure, retain a bounded typed receipt:
+job ID, actual wrapper version, occurrence time, stage, known Node error code or
+numeric exit code, whitelisted signal, killed flag, captured stdout/stderr byte
+counts, output-cap flag, elapsed time and known SDK conversion/flush phase.
+An SDK HTTP status may be inferred only from its known flush-error format.
+Missing information remains null/unknown. Never retain or export arbitrary error
+messages, stacks, stdout/stderr, headers, prompts or tool results. Captured bytes
+are not total emitted bytes after truncation. Local doctor and the monitor expose
+the same last-failure receipt; ServiceQ labels it as the last observed failure,
+not an explanation of every queued job. Preserve concurrent cause counts.
+
+FD2/FD3: Retry and recovery ages belong to their source snapshot. Display their
+source time and explicitly snapshot-relative wording; an elapsed eligibility
+estimate does not prove a retry occurred or that the worker stalled. Stale
+snapshots remain unknown. Keep existing queue IDs, retry/backoff, limits,
+acknowledgements and native progress unchanged; no replay or speculative repair.
+
+Acceptance: isolated numeric exit, spawn error, output cap, deadline and SDK
+conversion/flush failures produce distinct safe receipts without private text.
+Old jobs/snapshots without receipts remain readable. Reject unknown receipt
+keys/values at the gateway, preserve nulls, and qualify the gateway/ServiceQ before
+new client receipts. A delayed snapshot must not claim a current future retry.
+Existing npm test/npm pack, all-OS CI, exact-SHA review, immutable signed patch;
+use the next ordinary retained-job retry for actual-cause evidence. Do not
+investigate native503 or change native trust/login/active sessions.
