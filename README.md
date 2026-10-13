@@ -22,6 +22,6 @@ Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases
 
 ## Legacy Node package
 
-The Node package `@alexkirs/agent-context` (`bin/`, `src/`, `agent-context` CLI, gateway) is legacy under [agentq.md § 10](agentq.md#10-legacy-node-install). `agentq onboard --yes` removes it through its own uninstall; `agentq uninstall --legacy` does the same alone. Its code stays here until a separate task removes it.
+The Node package `@alexkirs/agent-context` (`agent-context` CLI, gateway) is retired under [agentq.md § 10](agentq.md#10-legacy-node-install); its code is gone from this repository. `agentq onboard --yes` removes an installed copy through its own uninstall; `agentq uninstall --legacy` does the same alone.
 
 Shared rules: [specq](https://github.com/taskqorg/specq).

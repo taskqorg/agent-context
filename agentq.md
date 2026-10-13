@@ -2,7 +2,7 @@
 
 agentq installs, routes and observes context optimization for Codex, Claude Code and Hermes on one host. This file holds every decision for the Rust rewrite on [coreq](https://github.com/taskqorg/coreq). It follows the [specq release contract](https://github.com/taskqorg/specq/blob/main/engineering/release-contract.md) and [taskq.md](https://github.com/taskqorg/taskq/blob/main/taskq.md) § 4 and § 8 as the reference consumer. Product outcomes stay in [docs/spec/PRODUCT.md](docs/spec/PRODUCT.md) revision 2; § 11 maps each requirement here.
 
-Status: decisions for implementation. The Node package (`@alexkirs/agent-context`, `bin/`, `src/`) keeps working unchanged until § 10 replaces it on a host.
+Status: decisions for implementation. The legacy Node package `@alexkirs/agent-context` is gone from this repository; installed copies keep working until § 10 removes them on a host.
 
 ## Principles
 
@@ -115,7 +115,7 @@ Dashboard duties (fleet view, versions, last seen, health, usage, incidents, acc
 - Kept names: MCP server `agent_context`, tool names, provider id `agent_context`, instruction markers. Existing relay-filed issues and Langfuse traces stay.
 - The relay worker and its GitHub App are retired: the code is gone from this repository, the owner deletes the deployed Worker and the App. Node clients that still default to the relay keep reports in their local queue.
 - Final npm version: `npm-final/` is the package `@alexkirs/agent-context` 0.5.0; every invocation prints the migration instruction to stderr and exits 1, nothing else, no install scripts. The owner publishes it as a release asset without `recipe.json`, so the legacy updater never selects it and `uninstall --legacy` keeps working.
-- The Node code and gateway stay in this repository until a separate task removes them after the hosts moved.
+- The Node code, gateway, its tests, benchmarks, Python adapters and recipe signing are removed from this repository; only `npm-final/` stays. Manual removal on a host without agentq: `node ~/.agent-context/launcher.mjs uninstall --dry-run`, then `uninstall`.
 
 ## 11. PRODUCT.md map
 

@@ -1,7 +1,0 @@
-name: agent-context
-version: "0.1.11"
-description: "Controlled recoverable tool-result compression via the local Headroom proxy."
-provides_hooks:
-  - pre_llm_call
-  - transform_tool_result
-  - post_llm_call

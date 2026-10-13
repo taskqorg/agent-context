@@ -4,7 +4,6 @@ version = "0.0.0-dev"
 edition = "2024"
 publish = false
 
-# The Node package owns src/ until agentq.md § 10 replaces it.
 [[bin]]
 name = "agentq"
 path = "agentq/main.rs"
