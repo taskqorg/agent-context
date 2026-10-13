@@ -43,7 +43,9 @@ test('FD1 actual execFile stdio limit is distinguishable without changing its ca
 });
 
 test('FD1/FD4 gateway rejects unknown fields/values and reader receives the same safe receipt',()=>{
-  const now=Date.now(),value=receipt(Object.assign(new Error('SECRET'),{code:1}));
+  const now=Date.now(),error=Object.assign(new Error('SECRET'),{code:1});
+  error.nativeProcessFailure=captureProcessFailure(error,'','[langfuse-codex] error during flush/shutdown: Error: Timeout',5);
+  const value=receipt(error);
   const packet={schema:1,id:'a'.repeat(32),at:new Date(now).toISOString(),host:'windows',runtime:'native',version:'0.4.17',services:[{service:'contextq',agent:'codex',state:'warning',reason:'telemetry_delivery_failed',metrics:{native_export_process_failed:3,native_export_attempts:50,native_export_retry_seconds:14,native_export_recovery_age_seconds:3600},nativeFailure:value}],incidents:[]};
   validateMonitor(packet);
   const spans=monitorExport(packet).otlp.resourceSpans[0].scopeSpans[0].spans;
@@ -66,4 +68,25 @@ test('FD2/FD3 delayed retry and recovery seconds never claim a current future co
   assert.match(text,/07:00:00/);assert.match(text,/не текущий countdown/);
   assert.doesNotMatch(text,/попытка через/);
   assert.doesNotMatch(nativeExportExplanation({native_export_process_failed:1}),/NaN|undefined/);
+});
+
+test('FD1 root SDK exception class and exact public category survive without the message',()=>{
+  const error={code:1};
+  for(const [layout,type,category] of [
+    ['TimeoutError: Operation timed out.','TimeoutError','operation_timeout'],
+    ['[\n  Error: Timeout\n    at privateFile:123\n]','Error','batch_timeout'],
+    ['Error: Concurrent export limit reached','Error','concurrency_limit'],
+    ['TypeError: SECRET','TypeError','unknown'],
+    ['Error: __proto__','Error','unknown']
+  ]) {
+    const value=captureProcessFailure(error,'','[langfuse-codex] error during flush/shutdown: '+layout,1);
+    assert.equal(value.sdkErrorType,type);assert.equal(value.sdkFailure,category);
+    error.nativeProcessFailure=value;assert.equal(receipt(error).sdkFailure,category);
+    assert.doesNotMatch(JSON.stringify(receipt(error)),/SECRET|privateFile|Operation timed out/);
+  }
+  const unrelated=captureProcessFailure(error,'','Error: Timeout\n[langfuse-codex] error during flush/shutdown: SECRET\nError: Timeout',1);
+  assert.equal(unrelated.sdkErrorType,null);assert.equal(unrelated.sdkFailure,null);
+  const old=receipt(error);delete old.sdkErrorType;delete old.sdkFailure;validateNativeFailure(old);
+  assert.throws(()=>validateNativeFailure({...old,sdkFailure:'SECRET'}));
+  assert.throws(()=>validateNativeFailure({...old,sdkErrorType:'SECRET'}));
 });

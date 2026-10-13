@@ -77,3 +77,5 @@ new client receipts. A delayed snapshot must not claim a current future retry.
 Existing npm test/npm pack, all-OS CI, exact-SHA review, immutable signed patch;
 use the next ordinary retained-job retry for actual-cause evidence. Do not
 investigate native503 or change native trust/login/active sessions.
+
+FD1/FD4 SDK diagnostic refinement: SDK flush receipts may include optional allowlisted `sdkErrorType` and `sdkFailure` fields. Classify only the root exception directly following the fixed flush/shutdown logger marker, including its inspected error-array layout. Map exact known public SDK messages to stable timeout/concurrency/export categories; unknown messages remain unknown. Never retain the message or infer timeout from duration. Older 15-field receipts remain valid. Qualify root-marker anchoring, unrelated-output rejection, privacy and old/new transport readback. Gateway/ServiceQ accept optional fields before new clients; retry policy, flush deadlines and exporter behavior stay unchanged.
