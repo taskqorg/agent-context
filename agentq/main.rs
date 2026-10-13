@@ -1,6 +1,7 @@
 //! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
 mod engines;
+mod legacy;
 mod mcp;
 mod onboard;
 mod telemetry;
@@ -71,8 +72,8 @@ fn main() {
         ["doctor"] => doctor(&t),
         ["uninstall"] => uninstall(&t, false),
         ["uninstall", "--dry-run"] => uninstall(&t, true),
-        ["uninstall", "--legacy"] => legacy(&legacy_dir(), false).unwrap_or_else(|e| fail(&e.0, &e.1)),
-        ["uninstall", "--legacy", "--dry-run"] | ["uninstall", "--dry-run", "--legacy"] => legacy(&legacy_dir(), true).unwrap_or_else(|e| fail(&e.0, &e.1)),
+        ["uninstall", "--legacy"] => legacy(&legacy_dir(), false),
+        ["uninstall", "--legacy", "--dry-run"] | ["uninstall", "--dry-run", "--legacy"] => legacy(&legacy_dir(), true),
         _ => fail(&format!("unknown command `{}`", args.join(" ")), &format!("usage: {USAGE}")),
     };
     std::process::exit(code);
@@ -231,6 +232,7 @@ fn selftest(t: &Tool) -> i32 {
         ("status", status::common(t, "h", PROJECT, 1, None, None)["version"] == VERSION),
         ("mcp tools", mcp::tools().as_array().is_some_and(|a| a.len() == 3)),
         ("telemetry event", telemetry::span("agentq.verify", "selftest", Value::Null, 1, "i", "h")["attributes"].as_array().is_some_and(|a| a.len() == 7)),
+        ("legacy strip", legacy::selftest()),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();
@@ -245,7 +247,7 @@ fn journal(t: &Tool) -> PathBuf {
     t.install.join("data").join("owned.json")
 }
 
-/// agentq.md § 1: discovery without `--yes`; with it, legacy removal on consent (§ 10), § 4 edits, service install.
+/// agentq.md § 1: discovery without `--yes`; with it, legacy removal (§ 10), § 4 edits, service install.
 fn onboard(t: &Tool, args: &[&str]) -> i32 {
     let yes = args.contains(&"--yes");
     let picked: Vec<&str> = args.iter().copied().filter(|a| *a != "--yes").collect();
@@ -268,14 +270,9 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
     if !yes {
         return 0;
     }
+    // `--yes` is the consent (§ 10)
     if installed {
-        legacy(&old, true).unwrap_or_else(|e| fail(&e.0, &e.1));
-        eprint!("Remove the legacy install shown above? [y/N] ");
-        let mut answer = String::new();
-        let _ = std::io::stdin().read_line(&mut answer);
-        if answer.trim() != "y" || legacy(&old, false) != Ok(0) {
-            fail(&format!("legacy install still present{}", running(&legacy_pids(&old))), "run `agentq uninstall --legacy`, then `agentq onboard --yes`");
-        }
+        legacy(&old, false);
     }
     let agents: Vec<&str> = if picked.is_empty() { ready } else { picked.into_iter().filter(|a| ready.contains(a)).collect() };
     let exe = t.install.join(t.exe_name());
@@ -311,22 +308,32 @@ fn legacy_dir() -> PathBuf {
     PathBuf::from(home).join(".agent-context")
 }
 
-/// agentq.md § 10: the legacy install removes itself (npm package, launcher, services, journaled edits); agentq never
-/// deletes its files.
-fn legacy(dir: &Path, dry: bool) -> Result<i32, (String, String)> {
-    let launcher = dir.join("launcher.mjs");
-    if !launcher.exists() {
-        // ponytail: a global npm package left without ~/.agent-context stays; `npm uninstall -g @alexkirs/agent-context` removes it
+/// agentq.md § 10: back up and strip legacy config entries, unload the monitor, remove the npm package, move the
+/// folder aside.
+fn legacy(dir: &Path, dry: bool) -> i32 {
+    if !dir.join("launcher.mjs").exists() {
         println!("legacy: already removed{}", running(&legacy_pids(dir)));
-        return Ok(0);
+        return 0;
     }
-    let mut c = Command::new("node");
-    c.arg(&launcher).arg("uninstall");
-    if dry {
-        c.arg("--dry-run");
+    let run = |cmd: &str, args: &[&str]| coreq::quiet(Command::new(cmd).args(args)).output().is_ok_and(|o| o.status.success());
+    match legacy::remove(dir, dry, &date(now()), &run) {
+        Ok(lines) => {
+            lines.iter().for_each(|l| println!("{l}"));
+            0
+        }
+        Err(e) => fail(&format!("legacy uninstall: {e}"), "close programs using the legacy folder, then run `agentq uninstall --legacy` again"),
     }
-    let s = c.status().map_err(|e| (format!("legacy uninstall needs Node: {e}"), format!("install Node, then run `node {} uninstall`", launcher.display())))?;
-    Ok(s.code().unwrap_or(1))
+}
+
+/// `YYYY-MM-DD` in UTC (days-to-civil, H. Hinnant).
+fn date(secs: u64) -> String {
+    let z = (secs / 86400) as i64 + 719468;
+    let (era, doe) = (z.div_euclid(146097), z.rem_euclid(146097));
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    format!("{:04}-{m:02}-{d:02}", yoe + era * 400 + i64::from(m <= 2))
 }
 
 /// Pids of processes whose command line holds `<legacy>/`, as the legacy launcher, proxies and MCP servers do.
@@ -345,22 +352,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_delegates_to_its_own_uninstall() {
-        let d = std::env::temp_dir().join(format!("agentq-legacy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(legacy(&d, false), Ok(0), "no legacy install: no-op");
-        std::fs::create_dir_all(&d).unwrap();
-        // the fake launcher records its args and removes the install, as the Node uninstall does
-        std::fs::write(d.join("launcher.mjs"), "import fs from 'node:fs';import p from 'node:path';const d=import.meta.dirname;fs.writeFileSync(p.join(d,'..','agentq-legacy-args-'+process.ppid),process.argv.slice(2).join(' '));if(!process.argv.includes('--dry-run'))fs.rmSync(d,{recursive:true});").unwrap();
-        let args = d.parent().unwrap().join(format!("agentq-legacy-args-{}", std::process::id()));
-        assert_eq!(legacy(&d, true), Ok(0));
-        assert_eq!(std::fs::read_to_string(&args).unwrap(), "uninstall --dry-run");
-        assert!(d.exists(), "dry run keeps the install");
-        assert_eq!(legacy(&d, false), Ok(0));
-        assert_eq!(std::fs::read_to_string(&args).unwrap(), "uninstall");
-        assert!(!d.exists());
-        assert_eq!(legacy(&d, false), Ok(0), "second run: no-op");
-        let _ = std::fs::remove_file(args);
+    fn date_is_utc_civil() {
+        assert_eq!(date(0), "1970-01-01");
+        assert_eq!(date(1_791_849_600), "2026-10-13");
+        assert_eq!(date(951_782_400), "2000-02-29");
     }
 
     /// #64 A3: a running legacy process recreated the folder with leftovers only: removed, and its pid is named.
@@ -372,7 +367,7 @@ mod tests {
         std::fs::write(d.join("machine-id.json"), "{}").unwrap();
         let mut p = Command::new("sh").args(["-c", "sleep 30; true"]).arg(d.join("launcher.mjs")).spawn().unwrap();
         assert_eq!(legacy_pids(&d), vec![p.id().to_string()]);
-        assert_eq!(legacy(&d, false), Ok(0), "no launcher: nothing to uninstall");
+        assert_eq!(legacy(&d, false), 0, "no launcher: nothing to uninstall");
         let _ = p.kill();
         let _ = p.wait();
         assert!(legacy_pids(&d).is_empty());

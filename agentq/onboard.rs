@@ -172,7 +172,7 @@ fn unplace(text: &str, e: &Value) -> Option<String> {
 
 /// Pretty JSON with the original's indent (2 spaces for a new file); a trailing newline only when the original had one.
 /// ponytail: indent only; other foreign layout (compact arrays, spacing) is re-pretty while onboarded, restore brings its bytes back.
-fn dump(doc: &Value, orig: &str) -> String {
+pub(crate) fn dump(doc: &Value, orig: &str) -> String {
     let indent = orig.lines().nth(1).map(|l| &l[..l.len() - l.trim_start().len()]).filter(|i| !i.is_empty()).unwrap_or("  ");
     // JSON strings hold no raw newline, so each line's leading spaces are indent only
     let s = serde_json::to_string_pretty(doc).unwrap_or_default().lines().map(|l| {
