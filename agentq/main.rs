@@ -1,6 +1,7 @@
-//! agentq: update, service, status, MCP and legacy uninstall on coreq (agentq.md § 1, § 2, § 5, § 10).
+//! agentq: update, service, status, MCP, onboarding, hooks and uninstall on coreq (agentq.md § 1, § 2, § 4, § 5, § 9, § 10).
 
 mod mcp;
+mod onboard;
 
 use coreq::{Tool, service, status, update, write_atomic};
 use serde_json::Value;
@@ -13,7 +14,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | uninstall --legacy [--dry-run] | --version";
+const USAGE: &str = "agentq onboard [--yes] [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -46,6 +47,14 @@ fn main() {
         ["selftest"] => selftest(&t),
         ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
         ["service", cmd] => service_cmd(&t, cmd),
+        ["onboard", rest @ ..] => onboard(&t, rest),
+        // ponytail: no-op `{}` until RTK qualifies commands (§ 3) and the service reports routing (§ 4)
+        ["hook", "codex" | "claude" | "hermes", _] => {
+            let _ = std::io::read_to_string(std::io::stdin());
+            println_code("{}")
+        }
+        ["uninstall"] => uninstall(&t, false),
+        ["uninstall", "--dry-run"] => uninstall(&t, true),
         ["uninstall", "--legacy"] => legacy(&legacy_dir(), false).unwrap_or_else(|e| fail(&e.0, &e.1)),
         ["uninstall", "--legacy", "--dry-run"] | ["uninstall", "--dry-run", "--legacy"] => legacy(&legacy_dir(), true).unwrap_or_else(|e| fail(&e.0, &e.1)),
         _ => fail(&format!("unknown command `{}`", args.join(" ")), &format!("usage: {USAGE}")),
@@ -166,6 +175,64 @@ fn selftest(t: &Tool) -> i32 {
         println_code(&format!("selftest: ok {VERSION} {}", update::target()))
     } else {
         fail(&format!("selftest failed: {}", bad.join(", ")), "report the release as broken")
+    }
+}
+
+fn journal(t: &Tool) -> PathBuf {
+    t.install.join("data").join("owned.json")
+}
+
+/// agentq.md § 1: discovery without `--yes`; with it, legacy removal on consent (§ 10), § 4 edits, service install.
+fn onboard(t: &Tool, args: &[&str]) -> i32 {
+    let yes = args.contains(&"--yes");
+    let picked: Vec<&str> = args.iter().copied().filter(|a| *a != "--yes").collect();
+    if let Some(a) = picked.iter().find(|a| !onboard::AGENTS.contains(a)) {
+        fail(&format!("unknown agent `{a}`"), &format!("usage: {USAGE}"));
+    }
+    let ready: Vec<&str> = onboard::AGENTS.into_iter().filter(|a| onboard::root(a).exists()).collect();
+    for a in onboard::AGENTS {
+        println!("{a}: {} {}", if ready.contains(&a) { "ready" } else { "not found" }, onboard::root(a).display());
+    }
+    let old = legacy_dir();
+    if old.exists() {
+        println!("legacy: {} found", old.display());
+    }
+    if !yes {
+        return 0;
+    }
+    if old.exists() {
+        legacy(&old, true).unwrap_or_else(|e| fail(&e.0, &e.1));
+        eprint!("Remove the legacy install shown above? [y/N] ");
+        let mut answer = String::new();
+        let _ = std::io::stdin().read_line(&mut answer);
+        if answer.trim() != "y" || legacy(&old, false) != Ok(0) {
+            fail("legacy install still present", "run `agentq uninstall --legacy`, then `agentq onboard --yes`");
+        }
+    }
+    let agents: Vec<&str> = if picked.is_empty() { ready } else { picked.into_iter().filter(|a| ready.contains(a)).collect() };
+    let exe = t.install.join(t.exe_name());
+    let wants: Vec<_> = agents.iter().flat_map(|a| onboard::wants(a, &onboard::root(a), &onboard::claude_json(), &exe)).collect();
+    match onboard::apply(&wants, &journal(t)) {
+        Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
+        Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
+    }
+    service_cmd(t, "install");
+    println_code(&format!("verify: start a new {} session and call agent_context search_document", agents.join(", ")))
+}
+
+/// agentq.md § 9: restore owned edits, remove the service unit and the install folder.
+fn uninstall(t: &Tool, dry: bool) -> i32 {
+    if !t.install.exists() {
+        return println_code("uninstall: already removed");
+    }
+    onboard::restore(&journal(t), dry).unwrap_or_else(|e| fail(&format!("uninstall: {e}"), "fix the file, then run `agentq uninstall` again")).iter().for_each(|l| println!("{l}"));
+    if dry {
+        return println_code(&format!("would remove: service unit, {}", t.install.display()));
+    }
+    service_cmd(t, "uninstall");
+    match std::fs::remove_dir_all(&t.install) {
+        Ok(()) => println_code(&format!("removed: {}", t.install.display())),
+        Err(e) => fail(&format!("remove {}: {e}", t.install.display()), "close agentq processes and run `agentq uninstall` again"),
     }
 }
 
