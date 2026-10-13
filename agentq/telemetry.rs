@@ -317,19 +317,21 @@ pub fn sender(install: &Path, every: u64) -> ! {
     }
 }
 
-/// `telemetry verify`: queue one event, send now, read its trace back (Langfuse ingests asynchronously).
-pub fn verify(data: &Path) -> Result<String, String> {
-    let k = load(data).ok_or("no Langfuse keys; run `agentq langfuse`")?;
+/// `telemetry verify`: queue one event, send now, read its trace back (Langfuse ingests asynchronously). A miss names
+/// the query and its last answer, so a 404 (not ingested yet) differs from a 401 (keys) or a network error.
+pub fn verify(data: &Path, k: &Keys, tries: u32, wait: Duration) -> Result<String, String> {
     let id = emit(data, "agentq.verify", "verify", json!({"agentq.ids_unknown": "synthetic event"})).ok_or("queue not writable")?;
-    send(data, &k, crate::now())?;
-    let url = format!("url = {}\n", quote(&format!("{}/api/public/traces/{id}", k.host)));
-    for _ in 0..20 {
-        std::thread::sleep(Duration::from_secs(3));
-        if curl(&url, &k).is_ok() {
-            return Ok(id);
+    send(data, k, crate::now())?;
+    let get = format!("{}/api/public/traces/{id}", k.host);
+    let mut last = String::new();
+    for _ in 0..tries {
+        std::thread::sleep(wait);
+        match curl(&format!("url = {}\n", quote(&get)), k) {
+            Ok(_) => return Ok(id),
+            Err(e) => last = e,
         }
     }
-    Err(format!("sent {id}, but Langfuse did not return the trace within 60 s"))
+    Err(format!("sent {id}; GET {get} for {} s, last answer: {last}", tries as u64 * wait.as_secs()))
 }
 
 #[cfg(test)]
@@ -433,8 +435,10 @@ mod tests {
                 }
                 let mut body = vec![0; len];
                 let _ = r.read_exact(&mut body);
+                // posts land; a read-back finds nothing yet, as before Langfuse ingests
+                let status = if head.starts_with("GET ") { "404 Not Found" } else { "200 OK" };
                 g.lock().unwrap().push((head, String::from_utf8_lossy(&body).into_owned()));
-                let _ = (&s).write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = (&s).write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
             }
         });
         (url, got)
@@ -467,6 +471,18 @@ mod tests {
         let spans = |b: &str| serde_json::from_str::<Value>(b).unwrap()["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap().len();
         assert_eq!(spans(&got[0].1) + spans(&got[1].1), 150);
         assert!(!got[0].1.contains("sk-lf-test"), "no secret in the payload");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #64 A2: a read-back miss names the query and Langfuse's answer, not a bare timeout.
+    #[test]
+    fn verify_names_the_query() {
+        let d = dir("verify");
+        let (url, got) = server();
+        let k = Keys::parse(&format!("{url} pk sk")).unwrap();
+        let e = verify(&d, &k, 2, Duration::ZERO).unwrap_err();
+        assert!(e.contains(&format!("GET {url}/api/public/traces/")) && e.contains("404"), "{e}");
+        assert_eq!(got.lock().unwrap().iter().filter(|r| r.0.starts_with("GET /api/public/traces/")).count(), 2);
         let _ = std::fs::remove_dir_all(d);
     }
 }

@@ -61,6 +61,19 @@ pub fn ensure(install: &Path) -> Vec<String> {
     vec![line("rtk", RTK, install_rtk(install)), line("headroom", HEADROOM, install_headroom(install))]
 }
 
+/// Read-only `doctor` lines: each engine's checked version, else why not.
+pub fn check(install: &Path) -> Vec<String> {
+    let hr = engine_dir(install, "headroom", HEADROOM);
+    let hr = if hr.join("ready").exists() { check_version(&venv_bin(&hr, "headroom"), &format!("headroom, version {HEADROOM}")) } else { Err("not installed".into()) };
+    [("rtk", RTK, check_version(&rtk_path(install), &format!("rtk {RTK}"))), ("headroom", HEADROOM, hr)]
+        .into_iter()
+        .map(|(name, ver, r)| match r {
+            Ok(()) => format!("engine {name}: {ver} ok"),
+            Err(e) => format!("engine {name}: unavailable: {e}"),
+        })
+        .collect()
+}
+
 /// Download, sha256, unpack into a temporary folder, `--version`, then rename into place.
 pub fn install_rtk(install: &Path) -> Result<PathBuf, String> {
     let exe = rtk_path(install);
