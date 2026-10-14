@@ -113,7 +113,7 @@ pub fn execute(h: &Host, raw: &str, now: u64) -> Value {
     let plan = configure::plan(&req, &configuration);
     let changes: Vec<Value> = plan["profiles"].as_array().into_iter().flatten().flat_map(|p| p["changes"].as_array().into_iter().flatten().map(move |c| json!({"profile": p["id"], "field": c["field"], "old": c["old"], "new": c["new"]}))).collect();
     let mut rec = json!({
-        "operation": op, "digest": configure::digest(&req), "actor": req["actor"], "workspace": req["workspace"], "installation": req["installation"],
+        "operation": op, "digest": configure::digest(&req), "actor": h.grant["actor"], "workspace": h.grant["workspace"], "installation": req["installation"],
         "generation": req["generation"], "plan": plan["digest"], "at": now, "changes": changes, "journal": entries(h),
         "compression": compression(&h.data)["agents"], "result": r,
     });
