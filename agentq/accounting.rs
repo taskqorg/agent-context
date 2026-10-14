@@ -231,16 +231,32 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
     for (i, s) in sources.iter().enumerate() {
         let (covered, gaps) = coverage(&s["observed"], start, end)?;
         let dropped = s["dropped"].as_u64().unwrap_or(0);
+        let source_capped = s["capped"].as_bool().unwrap_or(false);
+        // A count, or the producer's reset times of which those in the window count.
+        let resets = s["resets"].as_u64().unwrap_or_else(|| {
+            s["resets"].as_array().into_iter().flatten().filter_map(Value::as_u64).filter(|t| (start..end).contains(t)).count() as u64
+        });
+        let mut why = vec![];
+        if let Some(u) = s["unknown"].as_str() {
+            why.push(json!({"reason": "no_observation", "detail": u}));
+        } else if covered.is_empty() {
+            why.push(json!({"reason": "no_observation", "detail": "source states no observed interval"}));
+        }
+        for (hit, reason) in [(!gaps.is_empty() && !covered.is_empty(), "gap"), (resets > 0, "reset"), (dropped > 0, "dropped"), (source_capped, "capped")] {
+            if hit {
+                why.push(json!({"reason": reason}));
+            }
+        }
         let state = if covered.is_empty() && found[i] == 0 {
             "unknown"
-        } else if gaps.is_empty() && dropped == 0 && !s["capped"].as_bool().unwrap_or(false) {
+        } else if gaps.is_empty() && dropped == 0 && !source_capped {
             "complete"
         } else {
             "partial"
         };
         covered_all &= state == "complete";
         out_sources.push(json!({"installation": s["installation"], "runtime": s["runtime"], "state": state,
-            "observed": covered, "gaps": gaps, "dropped": dropped, "resets": s["resets"].as_u64().unwrap_or(0), "records": found[i]}));
+            "observed": covered, "gaps": gaps, "dropped": dropped, "resets": resets, "records": found[i], "reasons": why}));
     }
     let state = if out_sources.iter().all(|s| s["state"] == "unknown") && events.is_empty() {
         "unknown"
@@ -330,11 +346,13 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
     Ok(out)
 }
 
-/// This installation's stats files as one source; readable files cover the 7-day retention through the second `now`.
+/// This installation's stats files as one source. Coverage is only what the producer's journal proves: from its
+/// `since` (within retention) through the second `now`, less its gaps; without a readable journal it is unknown.
 pub fn local(data: &Path, now: u64) -> Value {
+    let dir = data.join("stats");
     let mut records = vec![];
-    let mut readable = true;
-    match std::fs::read_dir(data.join("stats")) {
+    let mut unknown = None;
+    match std::fs::read_dir(&dir) {
         Ok(es) => {
             for e in es.flatten() {
                 if !e.file_name().to_string_lossy().ends_with(".jsonl") {
@@ -342,15 +360,36 @@ pub fn local(data: &Path, now: u64) -> Value {
                 }
                 match std::fs::read_to_string(e.path()) {
                     Ok(s) => records.extend(s.lines().map(|l| serde_json::from_str(l).unwrap_or(json!("unreadable")))),
-                    Err(_) => readable = false,
+                    Err(_) => unknown = Some("stats file unreadable"),
                 }
             }
         }
-        Err(_) => readable = false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => unknown = Some("no stats recorded"),
+        Err(_) => unknown = Some("stats unreadable"),
+    }
+    let journal = std::fs::read(dir.join(crate::compression::COVERAGE)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let mut observed = vec![];
+    let mut resets = vec![];
+    match journal.filter(|j| j["schema"] == 1).and_then(|j| j["since"].as_u64().map(|s| (s, j))) {
+        _ if unknown.is_some() => {}
+        Some((since, j)) => {
+            let mut at = since.max(now.saturating_sub(RETENTION));
+            let mut gaps: Vec<(u64, u64)> = j["gaps"].as_array().into_iter().flatten().filter_map(|g| g[0].as_u64().zip(g[1].as_u64())).collect();
+            gaps.sort();
+            for (a, b) in gaps.into_iter().chain([(now + 1, now + 1)]) {
+                let a = a.min(now + 1);
+                if a > at {
+                    observed.push(json!([at, a]));
+                }
+                at = at.max(b);
+            }
+            resets = j["resets"].as_array().cloned().unwrap_or_default();
+        }
+        None => unknown = Some(if dir.join(crate::compression::COVERAGE).exists() { "coverage journal unreadable" } else { "no coverage journal" }),
     }
     let installation = std::fs::read_to_string(data.join("installation")).ok().map(|s| s.trim().to_string());
-    json!({"installation": installation, "runtime": crate::telemetry::runtime(),
-        "observed": if readable { json!([[now.saturating_sub(RETENTION), now + 1]]) } else { json!([]) }, "records": records})
+    json!({"installation": installation, "runtime": crate::telemetry::runtime(), "observed": observed, "resets": resets,
+        "unknown": unknown, "records": records})
 }
 
 /// Exported spans from a queue folder, an OTLP JSON body, a span array or one span. Export carries no coverage, so
@@ -382,7 +421,8 @@ pub fn exported(path: &Path) -> Result<Value, String> {
     } else {
         return Err(format!("no events at {}", path.display()));
     }
-    Ok(json!({"installation": null, "runtime": null, "observed": [], "dropped": dropped, "records": records}))
+    Ok(json!({"installation": null, "runtime": null, "observed": [], "dropped": dropped,
+        "unknown": "exported events carry no coverage", "records": records}))
 }
 
 #[cfg(test)]

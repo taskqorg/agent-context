@@ -52,7 +52,11 @@ fn install(root: &Path) -> PathBuf {
 fn records(root: &Path) -> Vec<Value> {
     let mut v = vec![];
     for e in std::fs::read_dir(install(root).join("data/stats")).unwrap() {
-        for line in std::fs::read_to_string(e.unwrap().path()).unwrap().lines() {
+        let p = e.unwrap().path();
+        if p.extension().is_none_or(|x| x != "jsonl") {
+            continue;
+        }
+        for line in std::fs::read_to_string(p).unwrap().lines() {
             v.push(serde_json::from_str(line).unwrap());
         }
     }
@@ -70,6 +74,10 @@ fn execution_recovery_stats_chain() {
     ));
     std::fs::create_dir_all(root.join("bin")).unwrap();
     assert!(!cli(&root, &["stats", "--json"], None, &[]).status.success());
+    let none = cli(&root, &["stats", "--accounting"], None, &[]);
+    let none: Value = serde_json::from_slice(&none.stdout).unwrap();
+    assert_eq!((&none["state"], &none["calls"]), (&json!("unknown"), &Value::Null), "an empty store is unknown, never zero");
+    assert_eq!(none["coverage"]["sources"][0]["reasons"][0]["detail"], "no stats recorded");
     assert!(
         !cli(&root, &["compress", "hermes"], Some("{"), &[])
             .status
@@ -211,17 +219,56 @@ fn execution_recovery_stats_chain() {
         assert!(o.status.success(), "{o:?}");
         serde_json::from_slice(&o.stdout).unwrap()
     };
-    let local = accounting(&[]);
+    // Coverage is what the producer proved: from its first record, never the retention period it has not seen.
+    let journal = data.join("stats/coverage.json");
+    let since = serde_json::from_slice::<Value>(&std::fs::read(&journal).unwrap()).unwrap()["since"].as_u64().unwrap();
+    let from = since.to_string();
+    let week = accounting(&[]);
+    assert_eq!((&week["state"], &week["calls"]), (&json!("partial"), &json!(9)), "a new store never covers the week before it");
+    assert_eq!(week["coverage"]["sources"][0]["reasons"], json!([{"reason": "gap"}]));
+    let local = accounting(&["--from", &from]);
     let queue = data.join("queue");
-    let exported = accounting(&["--events", queue.to_str().unwrap()]);
+    let exported = accounting(&["--events", queue.to_str().unwrap(), "--from", &from]);
     assert_eq!((&local["state"], &local["calls"]), (&json!("complete"), &json!(9)));
     assert_eq!(exported["state"], "partial", "export carries no coverage: lower bounds");
+    assert_eq!(exported["coverage"]["sources"][0]["reasons"][0]["detail"], "exported events carry no coverage");
     for k in ["calls", "outcomes", "reasons", "volume", "cohorts"] {
         assert_eq!(local[k], exported[k], "{k}");
     }
     assert_eq!(local["volume"][0]["paired"], 1);
     assert_eq!(local["volume"][0]["bytes_in"], raw.len());
     assert!(!local.to_string().contains("agentq-cli-") && !exported.to_string().contains("agentq-cli-"), "no host paths");
+
+    // A failed append is a gap in the journal; the call keeps its native bytes.
+    let day = std::fs::read_dir(data.join("stats")).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "jsonl")).unwrap();
+    let kept = day.with_extension("kept");
+    std::fs::rename(&day, &kept).unwrap();
+    std::fs::create_dir(&day).unwrap();
+    assert_eq!(cli(&root, &["run", "--", "cargo", "test"], None, &[]).stdout, raw.as_bytes());
+    std::fs::remove_dir(&day).unwrap();
+    std::fs::rename(&kept, &day).unwrap();
+    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!((j["since"].as_u64(), j["gaps"].as_array().unwrap().len()), (Some(since), 1));
+    let gap = accounting(&["--from", &from]);
+    assert_eq!((&gap["state"], &gap["calls"]), (&json!("partial"), &json!(9)));
+    assert_eq!(gap["coverage"]["sources"][0]["gaps"][0], j["gaps"][0]);
+
+    // A lost journal over held records is a reset: older records count but are unproven.
+    std::fs::remove_file(&journal).unwrap();
+    let lost = cli(&root, &["stats", "--accounting"], None, &[]);
+    let lost: Value = serde_json::from_slice(&lost.stdout).unwrap();
+    assert_eq!((&lost["state"], &lost["calls"]), (&json!("partial"), &json!(9)));
+    assert_eq!(lost["coverage"]["sources"][0]["reasons"][0]["detail"], "no coverage journal");
+    cli(&root, &["run", "--", "cargo", "test"], None, &[]);
+    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!(j["resets"], json!([j["since"]]));
+    let reset = accounting(&["--from", &from]);
+    assert_eq!((&reset["state"], &reset["calls"]), (&json!("partial"), &json!(10)));
+    assert_eq!(reset["coverage"]["sources"][0]["resets"], 1);
+    assert!(reset["coverage"]["sources"][0]["reasons"].as_array().unwrap().contains(&json!({"reason": "reset"})));
+    std::fs::write(&journal, "{").unwrap();
+    let corrupt: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
+    assert_eq!(corrupt["coverage"]["sources"][0]["reasons"][0]["detail"], "coverage journal unreadable");
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {

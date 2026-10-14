@@ -419,6 +419,32 @@ fn stats_date(name: &str) -> Option<&str> {
     .then_some(d)
 }
 
+/// The producer's coverage journal in `data/stats/` (ACCOUNTING O3).
+pub const COVERAGE: &str = "coverage.json";
+
+/// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
+/// second. A missing journal over held records, or an unreadable one, restarts `since` here and adds a reset: the
+/// older records stay countable but unproven.
+fn coverage(journal: Option<&[u8]>, held: bool, at: u64) -> Value {
+    let fresh = |resets: Vec<u64>| json!({"schema":1,"since":at,"resets":resets,"gaps":[]});
+    match journal {
+        None if !held => fresh(vec![]),
+        None => fresh(vec![at]),
+        Some(b) => match serde_json::from_slice::<Value>(b) {
+            Ok(v) if v["schema"] == 1
+                && v["since"].is_u64()
+                && v["resets"].as_array().is_some_and(|a| a.iter().all(Value::is_u64))
+                && v["gaps"].as_array().is_some_and(|a| {
+                    a.iter().all(|g| g[0].as_u64().zip(g[1].as_u64()).is_some_and(|(x, y)| x < y))
+                }) =>
+            {
+                v
+            }
+            _ => fresh(vec![at]),
+        },
+    }
+}
+
 /// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes.
 fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let _lock = crate::executor::lock(data)?;
@@ -433,9 +459,11 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let at = r["time"].as_u64().ok_or("missing time")?;
     let cutoff = at.saturating_sub(7 * 86400);
     let oldest = crate::date(cutoff);
+    let mut held = false;
     for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let e = e.map_err(|e| e.to_string())?;
         let name = e.file_name().to_string_lossy().into_owned();
+        held |= stats_date(&name).is_some_and(|d| d >= oldest.as_str());
         if stats_date(&name).is_some_and(|d| d < oldest.as_str()) {
             std::fs::remove_file(e.path()).map_err(|e| e.to_string())?;
         } else if stats_date(&name) == Some(oldest.as_str()) {
@@ -453,12 +481,31 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
             }
         }
     }
-    let mut f = std::fs::OpenOptions::new()
+    let journal = dir.join(COVERAGE);
+    let before = std::fs::read(&journal).ok();
+    let mut cov = coverage(before.as_deref(), held, at);
+    let appended = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join(format!("{}.jsonl", crate::date(at))))
-        .map_err(|e| e.to_string())?;
-    writeln!(f, "{r}").map_err(|e| e.to_string())?;
+        .and_then(|mut f| writeln!(f, "{r}"))
+        .map_err(|e| e.to_string());
+    if appended.is_err() {
+        cov["gaps"].as_array_mut().unwrap().push(json!([at, at + 1]));
+    }
+    for k in ["resets", "gaps"] {
+        cov[k].as_array_mut().unwrap().retain(|v| {
+            v.as_u64().or_else(|| v[1].as_u64()).is_some_and(|t| t > cutoff)
+        });
+    }
+    let after = cov.to_string();
+    // A lost journal write keeps the previous, still true journal; the next record then reads a reset.
+    if before.as_deref() != Some(after.as_bytes()) {
+        if let Err(e) = coreq::write_atomic(&journal, &after) {
+            eprintln!("agentq: stats coverage unknown: {e}");
+        }
+    }
+    appended?;
     if c["stats"] != "off" {
         let mut a = serde_json::Map::new();
         for (k, v) in r.as_object().ok_or("invalid record")? {

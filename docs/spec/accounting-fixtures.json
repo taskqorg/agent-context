@@ -12,7 +12,14 @@
     "now": "observation time; a record later than now + 300 s is future_time and never enters totals",
     "cap": "optional records read per query (default 100000); reaching it sets coverage.capped",
     "bucket": "optional seconds; adds buckets[] with each sub-window's own state, calls and outcomes",
-    "sources": "[{installation, runtime, observed: [[from, to]..], dropped, resets, capped, records: [§3 record | agentq.compress span | agentq.run span | other]}]"
+    "sources": "[{installation, runtime, observed: [[from, to]..], dropped, resets: count | [reset unix times], capped, unknown: why the source has no coverage, records: [§3 record | agentq.compress span | agentq.run span | other]}]"
+  },
+  "producer": {
+    "journal": "data/stats/coverage.json {schema: 1, since, resets: [unix], gaps: [[from, to]..]}, written by the § 3 core with each record",
+    "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it and appends a reset",
+    "gaps": "a record append that failed: [time, time + 1)",
+    "local source": "observed = [max(since, now - 7 days), now + 1) less gaps; no stats folder, no journal or an unreadable journal or stats file: observed [] and unknown with that reason",
+    "exported source": "observed [] and unknown \"exported events carry no coverage\"; a queue folder adds its dropped count"
   },
   "output": {
     "state": "complete: every source covers the window, nothing excluded, no legacy cohort, not capped; unknown: no coverage and no events; else partial",
@@ -20,7 +27,7 @@
     "calls, outcomes, reasons": "distinct event IDs in the window; null when unknown",
     "volume": "per adapter and engine, compressed calls only: compressed, paired, bytes_in, bytes_out (unit byte; MiB = 2^20 bytes), reduction = 1 - sum(out)/sum(in), excluded {unmeasured, invalid}, estimated_tokens {kind: estimate}",
     "cohorts": "per installation, runtime, version, profile, agent, adapter, tool, runner, engine, engine_version (null = unknown, never inferred): calls, outcomes, reasons, evidence (at most 3 event IDs)",
-    "coverage": "sources[{state, observed, gaps, dropped, resets, records}], read, counted, duplicates, out_of_window, excluded {malformed, unsupported_schema, future_time, conflicting_duplicate}, legacy_run, capped, profile_unknown",
+    "coverage": "sources[{state, observed, gaps, dropped, resets, records, reasons: [{reason: no_observation (with detail) | gap | reset | dropped | capped}]}], read, counted, duplicates, out_of_window, excluded {malformed, unsupported_schema, future_time, conflicting_duplicate}, legacy_run, capped, profile_unknown",
     "observed_tokens, task_effect": "unknown with a reason: core records carry no observed usage, and whole-task effect needs a separate paired experiment cohort"
   },
   "base_record": {
@@ -223,6 +230,40 @@
       ]}]},
       "expect": {"state": "partial", "calls": 1, "coverage": {"read": 4, "duplicates": 1, "legacy_run": 1, "profile_unknown": 1},
         "cohorts": [{"installation": "inst-export", "runtime": "windows", "version": "0.6.0", "engine_version": "0.51.0", "profile": null, "calls": 1}]}
+    },
+    {
+      "name": "producer_empty_store_is_unknown",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "windows", "observed": [], "resets": [], "unknown": "no stats recorded", "records": []}]},
+      "expect": {"state": "unknown", "calls": null, "coverage": {"sources": [{"state": "unknown", "reasons": [{"reason": "no_observation", "detail": "no stats recorded"}]}]}}
+    },
+    {
+      "name": "producer_since_bounds_coverage",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 1800, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[1500, 1801]], "resets": [], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1500}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "observed": [[1500, 1801]], "gaps": [[1000, 1500], [1801, 2000]], "reasons": [{"reason": "gap"}]}]}}
+    },
+    {
+      "name": "producer_failed_append_gap",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[900, 1700], [1701, 2501]], "resets": [], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1200}
+      ]}]},
+      "expect": {"state": "partial", "calls": 1, "coverage": {"sources": [{"state": "partial", "gaps": [[1700, 1701]], "reasons": [{"reason": "gap"}]}]}}
+    },
+    {
+      "name": "producer_lost_journal_reset",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[1600, 2501]], "resets": [400, 1600], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1200},
+        {"event_id": "000000000000000000000000000000a2", "time": 1650}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 2, "coverage": {"sources": [{"state": "partial", "resets": 1, "gaps": [[1000, 1600]], "records": 2, "reasons": [{"reason": "gap"}, {"reason": "reset"}]}]}}
+    },
+    {
+      "name": "producer_unreadable_journal_keeps_records",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [], "resets": [], "unknown": "coverage journal unreadable", "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1200}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "records": 1, "reasons": [{"reason": "no_observation", "detail": "coverage journal unreadable"}]}]}}
     },
     {
       "name": "buckets_on_event_time",
