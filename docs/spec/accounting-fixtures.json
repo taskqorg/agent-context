@@ -17,7 +17,7 @@
     "sources": "[{installation, runtime, observed: [[from, to]..], dropped, resets: count | [reset unix times], capped, unknown: why the source has no coverage, records: [§3 record | agentq.compress span | agentq.run span | other]}]"
   },
   "producer": {
-    "journal": "data/stats/coverage.json {schema: 1, since, resets: [unix], gaps: [[from, to]..], counts: {\"YYYY-MM-DD\": records}}, written by the § 3 core with each record; a save failing before or at its journal write (lock timeout, unreadable store, failed write) leaves its own data/stats/coverage.failed.* marker until a later written journal resets coverage and removes the markers it saw",
+    "journal": "data/stats/coverage.json {schema: 1, since, resets: [unix], gaps: [[from, to]..], counts: {\"YYYY-MM-DD\": records}}, written by the § 3 core with each record; a save failing before or at its journal write (lock timeout, unreadable store, failed write) leaves its own data/coverage.failed.* marker (outside data/stats, so an unwritable stats folder still leaves it) until a later written journal resets coverage and removes the markers it saw",
     "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it at the next second (the reset second stays unproven) and appends a reset",
     "gaps": "a record append that failed: [time, time + 1)",
     "counts": "records each held day file data/stats/YYYY-MM-DD.jsonl must contain: +1 per appended record, less the lines retention trims from the oldest file (an earlier loss stays visible), rebuilt from the lines held when the journal restarts",

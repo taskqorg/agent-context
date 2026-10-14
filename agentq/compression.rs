@@ -438,20 +438,21 @@ fn stats_date(name: &str) -> Option<&str> {
 
 /// The producer's coverage journal in `data/stats/` (ACCOUNTING O3).
 pub const COVERAGE: &str = "coverage.json";
-/// Prefix of markers left when a save fails before or at its journal write: the journal no longer proves coverage until
-/// the next written journal resets it. Each failure writes its own file, so a reset removes only the markers it saw.
+/// Prefix of markers left in `data/` when a save fails before or at its journal write: the journal no longer proves
+/// coverage until the next written journal resets it. Each failure writes its own file, so a reset removes only the
+/// markers it saw. They live outside `data/stats/`, so an unwritable stats folder still leaves evidence.
 pub const FAILED: &str = "coverage.failed";
 
-/// Failure markers held in `dir`.
-pub fn failed(dir: &Path) -> Vec<std::path::PathBuf> {
-    let es = std::fs::read_dir(dir).into_iter().flatten().flatten();
+/// Failure markers held in `data`.
+pub fn failed(data: &Path) -> Vec<std::path::PathBuf> {
+    let es = std::fs::read_dir(data).into_iter().flatten().flatten();
     es.filter(|e| e.file_name().to_string_lossy().starts_with(FAILED)).map(|e| e.path()).collect()
 }
 
 /// Durable unknown for a save that may have lost its record; works without the lifecycle lock.
-fn mark_failed(dir: &Path, at: u64) {
+fn mark_failed(data: &Path, at: u64) {
     let name = format!("{FAILED}.{}.{}", std::process::id(), crate::mcp::new_id());
-    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(name), at.to_string())) {
+    if let Err(e) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(data.join(name), at.to_string())) {
         eprintln!("agentq: stats coverage marker: {e}");
     }
 }
@@ -496,7 +497,7 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let mut journaled = false;
     let res = save_locked(data, c, r, &mut journaled);
     if res.is_err() && !journaled {
-        mark_failed(&data.join("stats"), r["time"].as_u64().unwrap_or_else(crate::now));
+        mark_failed(data, r["time"].as_u64().unwrap_or_else(crate::now));
     }
     res
 }
@@ -549,7 +550,7 @@ fn save_locked(data: &Path, c: &Value, r: &Value, journaled: &mut bool) -> Resul
     let journal = dir.join(COVERAGE);
     let before = std::fs::read(&journal).ok();
     // Markers written after this read belong to calls not yet covered by this reset and stay.
-    let failed = failed(&dir);
+    let failed = failed(data);
     // A stale journal after a failed save proves nothing; an empty one parses as unreadable and resets.
     let proven = if failed.is_empty() { before.as_deref() } else { Some(&b""[..]) };
     // A reset starts after now, not after this record's time: a locked-out call may be newer than this one.
@@ -584,7 +585,7 @@ fn save_locked(data: &Path, c: &Value, r: &Value, journaled: &mut bool) -> Resul
             Ok(()) => failed.iter().for_each(|f| _ = std::fs::remove_file(f)),
             Err(e) => {
                 eprintln!("agentq: stats coverage unknown: {e}");
-                mark_failed(&dir, at);
+                mark_failed(data, at);
             }
         }
     }
@@ -938,7 +939,7 @@ mod tests {
         // The next written journal resets coverage and clears the marker.
         std::fs::remove_dir(&block).unwrap();
         compress(&d, "hermes", &input).unwrap();
-        assert!(failed(&stats_dir).is_empty());
+        assert!(failed(&d).is_empty());
         let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
         assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
         assert!(crate::accounting::local(&d, crate::now())["unknown"].is_null());
@@ -985,11 +986,34 @@ mod tests {
         let a = crate::accounting::local(&d, crate::now());
         assert_eq!(a["unknown"], "stats write failed", "{a}");
         // A marker written by a call this save never saw survives its reset.
-        let late = d.join("stats").join(format!("{FAILED}.late"));
+        let late = d.join(format!("{FAILED}.late"));
         compress(&d, "hermes", &input).unwrap();
         assert!(crate::accounting::local(&d, crate::now() + 1)["unknown"].is_null());
         std::fs::write(&late, "0").unwrap();
         assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], "stats write failed");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: an immutable stats folder and day file lose the call; evidence outside them keeps it unknown.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unwritable_stats_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-unwritable-{}", crate::mcp::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        compress(&d, "hermes", &input).unwrap();
+        let stats_dir = d.join("stats");
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let flags = |f: &str| {
+            let ok = Command::new("chflags").arg(f).args([&day, &stats_dir]).status().unwrap().success();
+            assert!(ok);
+        };
+        flags("uchg");
+        compress(&d, "hermes", &input).unwrap();
+        flags("nouchg");
+        let a = crate::accounting::local(&d, crate::now());
+        assert_eq!(a["unknown"], "stats write failed", "{a}");
         std::fs::remove_dir_all(d).unwrap();
     }
 }
