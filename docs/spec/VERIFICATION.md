@@ -61,6 +61,18 @@ Procedure for the live task (#86) on each authorized host, at most 30 minutes pe
 
 Record per host: OS, producer revision, three trace IDs, exported and native values, verdict. A graph claim needs at least three samples.
 
+## Enrollment qualification
+
+Live task #95 against `https://dash.ufobe.com`, contract: [ENROLLMENT](ENROLLMENT.md), dashq E1–E10. Release follows only when every platform below reads `pass` with CLI receipt, service delivery and dashboard page readback. An unapproved or unrun step reads `not run`, never pass.
+
+Procedure per host. The candidate runs in a separate `AGENTQ_INSTALL`, so the working installation stays untouched. Run `service run` there as a plain process. Never use `agentq service stop|restart|uninstall` there: the unit name (Windows task `AgentQ-host`) is shared with the working installation.
+
+| Run | Host | Candidate | E1 connect | E2 cancel / repeat / expire | Other E | Verdict |
+|---|---|---|---|---|---|---|
+| 2026-10-15 | Windows 11, isolated install | `3c251d7` built as `0.6.0-rc95`; service status read back | not run: two codes expired unapproved | pass: abort leaves `pending approval`, no grant; repeat reuses the same code; expiry gives `expired_token`, no grant, next action `agentq enroll` | not run | incomplete |
+| 2026-10-15 | WSL 2 Ubuntu 24.04, same host, isolated install | `3c251d7` built as `0.6.0-rc95`; service status read back | not run: code expired unapproved | pass: expiry gives no grant and next action `agentq enroll` | not run | incomplete |
+| — | macOS, FRA Linux (from the Mac over ssh) | — | not run | not run | not run | untested |
+
 ## Update restart qualification
 
 Live check for agentq.md § 5 Update (#111, #116): from a service running the previous release, `agentq update` on the host, then poll `agentq service status` every 2 s for at most 90 s. Pass: within 60 s the service pid changes and its exe is `<install>/releases/<new>/agentq` answering `--version` with the new release, with no manual restart. A 0.5.6 service lacks the restart code, so the first proof runs 0.5.7 to 0.5.8; hosts reached 0.5.7 by their own hourly update.
