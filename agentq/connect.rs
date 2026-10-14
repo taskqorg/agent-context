@@ -134,7 +134,7 @@ fn operate(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
                     Some(_) => direct.push((op.clone(), configure::result(op["operation"].as_str(), "rejected", Some("payload_mismatch"), None))),
                     None => {
                         let (result, readback) = run(data, &a, &op, s, now);
-                        let op = json!({"operation": op["operation"], "digest": op["digest"], "installation": op["installation"], "generation": op["generation"]});
+                        let op = json!({"operation": op["operation"], "digest": op["digest"], "installation": op["installation"], "generation": op["generation"], "actor": op["authority"]["actor"]});
                         let st = json!({"op": op, "body": {"result": result, "readback": readback}, "at": now, "posted": false});
                         let _ = std::fs::create_dir_all(results(data)).map_err(|e| e.to_string()).and_then(|_| write_atomic(&file, &st.to_string()));
                     }
@@ -185,14 +185,15 @@ fn post(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire, direct: Vec<
 }
 
 /// One pulled operation through the executor with this grant's authority: its installation and generation, the
-/// workspace DashQ bound to the grant, the actor DashQ authenticated, every current local profile and the
-/// operation's expiry. Returns the result and the sanitized A2 projection of the profiles it names.
+/// workspace DashQ bound to the grant, the actor and profiles of the operation's server-set `authority` (coreq checked
+/// it on pull) and the operation's expiry. Payload claims never add authority: the executor rejects a payload actor,
+/// workspace or profile outside it. Returns the result and the sanitized A2 projection of the profiles it names.
 fn run(data: &Path, a: &Value, op: &Value, s: &Sender, now: u64) -> (Value, Value) {
     let install = data.parent().unwrap_or(data);
     let clients = s.clients.clone().unwrap_or_else(profiles::clients);
-    let ids: Vec<Value> = profiles::status_with(&clients, data, now)["profiles"].as_array().into_iter().flatten().map(|p| p["id"].clone()).collect();
-    let grant = json!({"capability": configure::CAPABILITY, "actor": op["payload"]["actor"], "workspace": a["workspace"], "installation": a["installation"],
-        "generation": a["generation"], "profiles": ids, "expires_at": op["expires_at"]});
+    let au = &op["authority"];
+    let grant = json!({"capability": configure::CAPABILITY, "actor": au["actor"], "workspace": a["workspace"], "installation": a["installation"],
+        "generation": a["generation"], "profiles": au["profiles"], "expires_at": op["expires_at"]});
     let exe = install.join(format!("agentq{}", std::env::consts::EXE_SUFFIX));
     let h = executor::Host { data: data.to_path_buf(), exe, clients, installation: crate::telemetry::installation(data), generation: a["generation"].as_u64().unwrap_or(0), grant };
     let r = executor::execute(&h, &op["payload"].to_string(), now);
@@ -479,13 +480,21 @@ mod tests {
         vec![profiles::Client { kind: "claude-desktop-chat", agent: "claude-desktop", files: vec![root.join("claude_desktop_config.json")], root }]
     }
 
-    /// Queues one operation of `generation` whose payload is the AgentQ request `kind` with `changes`.
+    /// Queues one operation of `generation` whose payload is the AgentQ request `kind` with `changes`, authorized for
+    /// actor `u1` on the profiles it changes.
     fn queue_op(w: &mut Dash, id: &str, kind: &str, generation: u64, changes: Value, plan: Option<&Value>) -> Value {
+        let mut profiles: Vec<Value> = vec![];
+        for c in changes.as_array().into_iter().flatten() {
+            if !profiles.contains(&c["profile"]) {
+                profiles.push(c["profile"].clone());
+            }
+        }
         let mut payload = json!({"schema": 1, "operation": id, "kind": kind, "actor": "u1", "workspace": "ws", "installation": "inst-1", "generation": generation, "issued_at": w.now, "expires_at": w.now + 300, "changes": changes});
         if let Some(p) = plan {
             payload["plan"] = json!({"revision": p["revision"], "digest": p["digest"]});
         }
-        let op = json!({"operation": id, "capability": configure::CAPABILITY, "installation": "inst-1", "generation": generation, "expires_at": w.now + 300, "digest": enroll::digest(&payload), "payload": payload});
+        let op = json!({"operation": id, "capability": configure::CAPABILITY, "installation": "inst-1", "generation": generation, "expires_at": w.now + 300, "digest": enroll::digest(&payload), "payload": payload,
+            "authority": {"actor": "u1", "workspace": "ws", "profiles": profiles}});
         w.ops.push(op.clone());
         op
     }
@@ -703,6 +712,56 @@ mod tests {
         pass_with(&d, w.now + 60, &mut s, &mut w);
         assert!(!w.results.contains_key("e0000000000000000000000000000007"));
         assert!(!file.exists());
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    /// #118 A1-A3: the actor comes from the operation's server-set authority, never the payload. A mismatching payload
+    /// actor is `wrong_actor`, a missing one `invalid`, a missing authority `authority`: each posted, none applied. A
+    /// matching one applies, and the stored result and operation record keep the authority's actor.
+    #[test]
+    fn operations_actor_from_authority() {
+        let d = data("actor");
+        let mut w = Dash { now: 1000, approve: vec![configure::CAPABILITY], ..Dash::default() };
+        enroll_with(&d, "https://dash.example", &mut w).unwrap();
+        let clients = desktop(&d);
+        let file = clients[0].files[0].clone();
+        let id = profiles::status_with(&clients, &d, w.now)["profiles"][0]["id"].clone();
+        let mcp = json!([{"profile": id, "field": "mcp", "value": "registered"}]);
+        let mut s = Sender { snapshot_at: u64::MAX / 2, clients: Some(clients), ..Sender::default() };
+        // the last queued operation's payload claims `edit`, under a digest DashQ computed for it
+        let claim = |w: &mut Dash, edit: &dyn Fn(&mut Value)| {
+            let op = w.ops.last_mut().unwrap();
+            edit(&mut op["payload"]);
+            op["digest"] = json!(enroll::digest(&op["payload"]));
+        };
+
+        queue_op(&mut w, "f0000000000000000000000000000001", "plan", 1, mcp.clone(), None);
+        pass_with(&d, w.now, &mut s, &mut w);
+        let plan = w.results["f0000000000000000000000000000001"]["result"].clone();
+        assert_eq!(plan["kind"], "plan", "matching actor: {plan}");
+
+        queue_op(&mut w, "f0000000000000000000000000000002", "apply", 1, mcp.clone(), Some(&plan));
+        claim(&mut w, &|p| p["actor"] = json!("u2"));
+        queue_op(&mut w, "f0000000000000000000000000000003", "apply", 1, mcp.clone(), Some(&plan));
+        claim(&mut w, &|p| drop(p.as_object_mut().unwrap().shift_remove("actor")));
+        queue_op(&mut w, "f0000000000000000000000000000004", "apply", 1, mcp.clone(), Some(&plan));
+        w.ops.last_mut().unwrap().as_object_mut().unwrap().shift_remove("authority");
+        pass_with(&d, w.now, &mut s, &mut w);
+        let reason = |w: &Dash, op: &str| w.results[op]["result"]["reason"].clone();
+        assert_eq!(reason(&w, "f0000000000000000000000000000002"), "wrong_actor");
+        assert_eq!(reason(&w, "f0000000000000000000000000000003"), "invalid");
+        assert_eq!(reason(&w, "f0000000000000000000000000000004"), "authority");
+        assert!(!file.exists(), "nothing applied");
+        let stored = |op: &str| read(&results(&d).join(format!("{op}.json"))).unwrap();
+        assert_eq!(stored("f0000000000000000000000000000002")["op"]["actor"], "u1", "the authority's actor, not the payload's");
+
+        queue_op(&mut w, "f0000000000000000000000000000005", "apply", 1, mcp, Some(&plan));
+        pass_with(&d, w.now, &mut s, &mut w);
+        assert_eq!(w.results["f0000000000000000000000000000005"]["result"]["outcome"], "applied");
+        assert!(file.exists());
+        assert_eq!(stored("f0000000000000000000000000000005")["op"]["actor"], "u1");
+        let rec = read(&d.join("operations").join("f0000000000000000000000000000005.json")).unwrap();
+        assert_eq!((rec["actor"].clone(), rec["workspace"].clone()), (json!("u1"), json!("ws")), "operation record keeps the grant's actor");
         let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 }
