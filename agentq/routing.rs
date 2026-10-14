@@ -143,7 +143,7 @@ pub fn state(agent: &str, root: &Path, port: Option<u16>) -> (&'static str, Stri
 /// Records `agentq direct` for `agents` in `config.json` `direct` (`on`), or clears it on `onboard --yes`.
 pub fn set_direct(data: &Path, agents: &[&str], on: bool) -> Result<(), String> {
     // a corrupt config.json stops here instead of being replaced, so its ports and settings survive
-    let mut c = read_json(&data.join("config.json")).map_err(|_| format!("{} unreadable", data.join("config.json").display()))?.unwrap_or(json!({}));
+    let mut c = read_json(&data.join("config.json"), config_shape).map_err(|_| format!("{} unreadable", data.join("config.json").display()))?.unwrap_or(json!({}));
     let mut list: Vec<String> = c["direct"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|a| !agents.contains(a)).map(String::from).collect();
     if on {
         list.extend(agents.iter().map(|a| a.to_string()));
@@ -156,13 +156,23 @@ pub fn set_direct(data: &Path, agents: &[&str], on: bool) -> Result<(), String> 
     write_atomic(&data.join("config.json"), &serde_json::to_string_pretty(&c).unwrap_or_default())
 }
 
-/// A JSON file: `None` when missing, `Err` when unreadable or corrupt.
-fn read_json(p: &Path) -> Result<Option<Value>, ()> {
+/// A JSON file: `None` when missing, `Err` when unreadable, corrupt or not of the expected shape.
+fn read_json(p: &Path, shape: fn(&Value) -> bool) -> Result<Option<Value>, ()> {
     match std::fs::read_to_string(p) {
-        Ok(s) => serde_json::from_str(&s).map(Some).map_err(|_| ()),
+        Ok(s) => serde_json::from_str(&s).ok().filter(shape).map(Some).ok_or(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(_) => Err(()),
     }
+}
+
+/// config.json: an object whose `direct`, when present, lists agent names.
+fn config_shape(c: &Value) -> bool {
+    c.is_object() && (c["direct"].is_null() || c["direct"].as_array().is_some_and(|l| l.iter().all(Value::is_string)))
+}
+
+/// owned.json: the onboard journal, a list of entries that each name their `file`.
+fn journal_shape(j: &Value) -> bool {
+    j.as_array().is_some_and(|l| l.iter().all(|e| e["file"].is_string()))
 }
 
 /// Whether the agent should be routed (#132): an onboarded agent with shipped routing and no `agentq direct`.
@@ -171,11 +181,11 @@ pub fn intended(data: &Path, agent: &str, root: &Path) -> (&'static str, &'stati
     if !ROUTED.contains(&agent) {
         return ("direct", "routing not shipped");
     }
-    let Ok(c) = read_json(&data.join("config.json")) else { return ("unknown", "config.json unreadable") };
+    let Ok(c) = read_json(&data.join("config.json"), config_shape) else { return ("unknown", "config.json unreadable") };
     if c.is_some_and(|c| c["direct"].as_array().is_some_and(|l| l.iter().any(|a| a == agent))) {
         return ("direct", "`agentq direct`");
     }
-    let Ok(j) = read_json(&data.join("owned.json")) else { return ("unknown", "owned.json unreadable") };
+    let Ok(j) = read_json(&data.join("owned.json"), journal_shape) else { return ("unknown", "owned.json unreadable") };
     if !j.as_ref().and_then(Value::as_array).into_iter().flatten().any(|e| e["file"].as_str().is_some_and(|f| Path::new(f).starts_with(root))) {
         return ("direct", "not onboarded");
     }
@@ -308,6 +318,17 @@ mod tests {
         assert_eq!(intended(&data, "codex", &root).0, "routed");
         std::fs::write(data.join("owned.json"), "[{").unwrap();
         assert_eq!(intended(&data, "codex", &root), ("unknown", "owned.json unreadable"), "corrupt journal is not intended direct");
+        for bad in ["{}", "[1]", "[{\"file\": 1}]"] {
+            std::fs::write(data.join("owned.json"), bad).unwrap();
+            assert_eq!(intended(&data, "codex", &root), ("unknown", "owned.json unreadable"), "journal shape {bad}");
+        }
+        std::fs::write(data.join("owned.json"), "[]").unwrap();
+        assert_eq!(intended(&data, "codex", &root), ("direct", "not onboarded"));
+        for bad in ["[]", "{\"direct\": \"codex\"}", "{\"direct\": [1]}"] {
+            std::fs::write(data.join("config.json"), bad).unwrap();
+            assert_eq!(intended(&data, "codex", &root), ("unknown", "config.json unreadable"), "config shape {bad}");
+            assert!(set_direct(&data, &["codex"], true).is_err(), "config shape {bad} is not replaced");
+        }
         std::fs::write(data.join("config.json"), "{").unwrap();
         assert_eq!(intended(&data, "codex", &root), ("unknown", "config.json unreadable"));
         assert!(set_direct(&data, &["codex"], true).is_err(), "a corrupt config.json is not replaced");
