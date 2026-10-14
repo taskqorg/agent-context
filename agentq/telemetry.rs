@@ -13,6 +13,8 @@ const CAP_BYTES: u64 = 64 * 1024 * 1024;
 const CAP_AGE: u64 = 7 * 86400;
 const BATCH: usize = 100;
 const HEARTBEAT: u64 = 3600;
+/// The start heartbeat waits at most this long for proxies the service just started.
+const START_WAIT: u64 = 300;
 const STORE: &str = "agentq-langfuse";
 /// Queue files bound to a DashQ grant (`connect.rs`); standalone spans are the other files.
 pub const RECORD: &str = ".rec.json";
@@ -339,10 +341,17 @@ fn heartbeat(install: &Path, data: &Path, now: u64, agents: Value) -> Value {
         "agentq.ids_unknown": "an installation event has no session"})
 }
 
-/// The service's one sender: hourly `agentq.installation`, a resource sample per bucket, then a send pass every
-/// `every` seconds.
+/// Whether the start heartbeat waits: an agent still reads `unknown` (its proxy is binding) and `START_WAIT` has not
+/// passed since `start`. Hourly heartbeats never wait.
+fn start_waits(agents: &Value, beat: u64, start: u64, now: u64) -> bool {
+    beat == 0 && now < start + START_WAIT && agents.as_object().into_iter().flatten().any(|(_, a)| a["routing"] == "unknown")
+}
+
+/// The service's one sender: `agentq.installation` at start and hourly, a resource sample per bucket, then a send pass
+/// every `every` seconds.
 pub fn sender(install: &Path, every: u64) -> ! {
     let data = install.join("data");
+    let start = crate::now();
     let mut beat = 0;
     let mut sampler = crate::resource::Sampler::new(&data);
     let mut dashq = crate::connect::Sender::default();
@@ -351,8 +360,11 @@ pub fn sender(install: &Path, every: u64) -> ! {
         let now = crate::now();
         crate::connect::pass(&data, now, &mut dashq);
         if now >= beat + HEARTBEAT {
-            beat = now;
-            emit(&data, "agentq.installation", "heartbeat", heartbeat(install, &data, now, crate::routing::agents(&data)));
+            let agents = crate::routing::agents(&data);
+            if !start_waits(&agents, beat, start, now) {
+                beat = now;
+                emit(&data, "agentq.installation", "heartbeat", heartbeat(install, &data, now, agents));
+            }
         }
         match load(&data) {
             Some(k) => {
@@ -425,7 +437,8 @@ mod tests {
 
     /// Chain #134 A1: per-client routing with reason and intent, and a hook's last failure, reach the exported
     /// `agentq.installation` span, and the failure stays after the client's next successful run. Risk: a heartbeat that
-    /// drops the failure before dashq Attention reads it, or exports routing only as a summary.
+    /// drops the failure before dashq Attention reads it, exports routing only as a summary, or exports a proxy still
+    /// binding at service start as an hour of `unknown` routing.
     #[test]
     fn heartbeat_carries_routing_and_hooks() {
         let d = dir("beat");
@@ -444,6 +457,12 @@ mod tests {
         let s = beat(&json!({}));
         assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 200, "last_failure": failure}]));
         assert_eq!((attr(&s, "agentq.hook_failures")["stringValue"].as_str(), attr(&s, "agentq.routing")["stringValue"].as_str()), (Some("none"), Some("{}")));
+        // the start heartbeat waits for a binding proxy, at most START_WAIT; hourly ones never wait
+        let binding = json!({"codex": {"routing": "unknown", "reason": "proxy on 127.0.0.1:1 not answering"}});
+        assert!(start_waits(&binding, 0, 1000, 1000 + START_WAIT - 1));
+        assert!(!start_waits(&binding, 0, 1000, 1000 + START_WAIT));
+        assert!(!start_waits(&agents, 0, 1000, 1000));
+        assert!(!start_waits(&binding, 1000, 1000, 1000 + HEARTBEAT));
         let _ = std::fs::remove_dir_all(d);
     }
 

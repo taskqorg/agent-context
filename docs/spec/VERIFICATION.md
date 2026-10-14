@@ -82,5 +82,16 @@ Live check for agentq.md § 6 `agentq.installation` (`agentq.routing`, `agentq.h
 
 - Isolated install (OS temp dir, no Langfuse keys, so spans stay queued): the released `agentq-0.6.0-windows-x86_64.exe` (sha256 matches `SHA256SUMS`) ran `hook codex Stop` with invalid UTF-8 stdin (answered `{}`, exit 0), then `service run`. Its start heartbeat carried `agentq.hooks` `[{"agent":"codex","event":"Stop","state":"failed","last_ok_at":null,"last_failure":{"at":…,"error":"stdin: stream did not contain valid UTF-8"}}]` and `agentq.routing` `{"codex":{"routing":"direct","reason":"config.toml selects no agent_context provider","intended":"direct","intended_reason":"not onboarded"}}`. After one successful `hook codex Stop`, the next heartbeat read `state` `ok` with the same `last_failure`, and `agentq.hook_failures` read `none`.
 - Working install: `agentq update` moved the service from 0.5.9 to 0.6.0. A forced `hook codex Stop` with invalid UTF-8 stdin made `doctor` report the failure. The 0.6.0 start heartbeat after it was delivered: `telemetry status` showed the last delivery 13 s after the start, error none.
-- Unverified: span contents read back from Langfuse or dashq (this worker has no read access), and mac and hermes-fra1 rollout (no host access; they pick up 0.6.0 through the hourly update).
+- Langfuse readback (`GET /api/public/v2/observations?name=agentq.installation`, the installation's own keys), 2026-10-14 UTC. v0.6.0 published 19:28:57; each service took it on its hourly update check and its 0.6.0 start heartbeat carried `agentq.routing` and `agentq.hooks`:
+
+| Host | Runtime | Last 0.5.9 heartbeat | First 0.6.0 heartbeat | `agentq.routing_problems` | `agentq.hooks` |
+|---|---|---|---|---|---|
+| DESKTOP | windows | updated by `agentq update` | 19:30:57 | codex unknown (proxy not answering) | `[]`, then codex Stop failed |
+| macbook-m2.local | macos | 20:17:57 | 20:25:56 | codex unknown (proxy not answering) | codex SessionStart and Stop ok, `last_failure` null |
+| hermes-fra1 | linux | 20:25:42 | 20:25:53 | codex unknown (proxy not answering) | `[]` |
+| DESKTOP (WSL) | linux | 20:26:09 | 20:26:23 | codex unknown (proxy not answering) | `[]` |
+
+- Forced failure: on Windows `hook codex Stop` with invalid UTF-8 stdin failed at 19:31:07; the next heartbeat (19:32:11) carried `agentq.hooks` codex Stop `failed` with `last_failure` `{"at":1792006267,"error":"stdin: stream did not contain valid UTF-8"}` and `agentq.hook_failures` `codex Stop (stdin: stream did not contain valid UTF-8)`; the hourly one (20:32:15) still did, with `agentq.routing_problems` `none`.
+- Found: every 0.6.0 start heartbeat read codex `unknown`, because the sender beats before the headroom proxy binds (37 s and 48 s measured on Windows); the Windows hourly heartbeat read routed. The start heartbeat now waits until no agent reads `unknown`, at most 5 min (agentq.md § 6); it ships in the next release.
+- Not checked: dashq Attention rendering (dashq#116) and a forced failure on mac or hermes-fra1 (no host access).
 - Found: `agentq service restart` on this host ended the `AgentQ-host` task and then failed `schtasks /Create` with Access denied, leaving no service. `schtasks /Run /TN AgentQ-host` restored it.
