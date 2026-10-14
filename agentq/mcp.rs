@@ -19,7 +19,7 @@ pub fn tools() -> Value {
     json!([
         {"name": "index_document", "description": "Index a large reference document. Returns a recovery ref; original stays available. Read code, short results and complete JSON normally.", "inputSchema": schema(json!({"path": {"type": "string"}}))},
         {"name": "search_document", "description": "Find exact passages in an indexed reference. Search results are excerpts; retrieve original when more detail is needed.", "inputSchema": schema(json!({"ref": {"type": "string"}, "queries": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8}})), "annotations": {"readOnlyHint": true}},
-        {"name": "get_original", "description": "Recover retained original without rerunning a command. RTK refs also require the hash shown in its recovery hint. Returns at most 64k characters; use next_offset to continue.", "inputSchema": {"type": "object", "properties": {"ref": {"type": "string"}, "hash": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}}, "required": ["ref"], "additionalProperties": false}, "annotations": {"readOnlyHint": true}}
+        {"name": "get_original", "description": "Recover retained original without rerunning a command. Legacy RTK refs require the hash shown in its recovery hint; captured run refs need only the ref. Returns at most 64k characters; use next_offset to continue.", "inputSchema": {"type": "object", "properties": {"ref": {"type": "string"}, "hash": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}}, "required": ["ref"], "additionalProperties": false}, "annotations": {"readOnlyHint": true}}
     ])
 }
 
