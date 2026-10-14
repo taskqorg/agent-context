@@ -1,6 +1,8 @@
 //! DashQ connection (docs/spec/ENROLLMENT.md): coreq `enroll` owns pairing, the protected grant and revocation in
-//! `data/connection/`; allowlisted snapshots travel as grant-bound records in the existing telemetry queue.
+//! `data/connection/`; allowlisted snapshots travel as grant-bound records in the existing telemetry queue, and
+//! `agentq.configure` operations (docs/spec/CONFIGURATION.md A4) run through the guarded executor on the same pass.
 
+use crate::{configure, executor, profiles};
 use crate::telemetry::{RECORD, entries, prune, queue, update_state};
 use coreq::enroll::{self, Backoff, Delivery, Request, Wire};
 use coreq::write_atomic;
@@ -59,12 +61,13 @@ fn queue_snapshot(data: &Path, now: u64) -> Result<(Value, PathBuf), String> {
     Ok((rec, file))
 }
 
-/// The service sender's connection state.
+/// The service sender's connection state. `clients`: the configurable clients, `None` for the real ones.
 #[derive(Default)]
 pub struct Sender {
     backoff: Backoff,
     wait_until: u64,
     snapshot_at: u64,
+    clients: Option<Vec<profiles::Client>>,
 }
 
 /// One service pass over HTTPS.
@@ -87,6 +90,118 @@ fn pass_with(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
     if now >= s.wait_until {
         deliver(data, now, s, wire);
     }
+    if now >= s.wait_until {
+        operate(data, now, s, wire);
+    }
+}
+
+/// Results of executed operations, kept until DashQ's receipt and after it, so a lost reply, a restart or a duplicate
+/// delivery posts the same result and never runs the operation again.
+fn results(data: &Path) -> PathBuf {
+    dir(data).join("results")
+}
+
+/// Posted results kept for duplicate deliveries; an unposted one is never pruned.
+const KEEP: usize = 64;
+
+/// CONFIGURATION A4: one `/operations` pull per pass when the active grant holds `agentq.configure`. A new operation
+/// runs once through the executor (lifecycle lock, plan/apply, readback); a known one with the same digest posts its
+/// stored result, a changed payload under the same ID is `payload_mismatch`. Operations coreq rejects locally never
+/// run; those of this grant get a `rejected` result with the reason.
+fn operate(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
+    let d = dir(data);
+    let Ok(Some(a)) = enroll::active(&d) else { return };
+    if !a["capabilities"].as_array().is_some_and(|c| c.contains(&json!(configure::CAPABILITY))) {
+        return;
+    }
+    let mut direct = vec![];
+    let error = match enroll::pull(&d, configure::CAPABILITY, &mut s.backoff, wire) {
+        Ok(p) => {
+            for r in p.rejected {
+                // a malformed operation or another grant's has no result here
+                if !["invalid", "installation", "stale_generation"].contains(&r["reason"].as_str().unwrap_or("invalid")) {
+                    let op = json!({"operation": r["operation"], "digest": r["digest"], "installation": a["installation"], "generation": a["generation"]});
+                    direct.push((op, configure::result(r["operation"].as_str(), "rejected", r["reason"].as_str(), None)));
+                }
+            }
+            for op in p.operations {
+                let file = results(data).join(format!("{}.json", op["operation"].as_str().unwrap_or_default()));
+                match read(&file) {
+                    Some(mut st) if st["op"]["digest"] == op["digest"] => {
+                        st["posted"] = json!(false);
+                        let _ = write_atomic(&file, &st.to_string());
+                    }
+                    Some(_) => direct.push((op.clone(), configure::result(op["operation"].as_str(), "rejected", Some("payload_mismatch"), None))),
+                    None => {
+                        let (result, readback) = run(data, &a, &op, s, now);
+                        let op = json!({"operation": op["operation"], "digest": op["digest"], "installation": op["installation"], "generation": op["generation"]});
+                        let st = json!({"op": op, "body": {"result": result, "readback": readback}, "at": now, "posted": false});
+                        let _ = std::fs::create_dir_all(results(data)).map_err(|e| e.to_string()).and_then(|_| write_atomic(&file, &st.to_string()));
+                    }
+                }
+            }
+            None
+        }
+        Err(Delivery::Retry(secs)) => {
+            s.wait_until = now + secs;
+            Some(format!("no reply; retry in {secs} s"))
+        }
+        Err(Delivery::Stopped(e)) => Some(e),
+    };
+    let error = error.or_else(|| post(data, now, s, wire, direct));
+    update_state(&queue(data), |st| st["connection"]["operations_error"] = json!(error));
+}
+
+/// Posts `direct` results, then every stored unposted one; a lost reply keeps it for the next pass unchanged.
+fn post(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire, direct: Vec<(Value, Value)>) -> Option<String> {
+    let d = dir(data);
+    for (op, r) in direct {
+        if let Err(Delivery::Retry(secs)) = enroll::post_result(&d, &op, json!({"result": r, "readback": []}), &mut s.backoff, wire) {
+            s.wait_until = now + secs;
+            return Some(format!("no reply; retry in {secs} s"));
+        }
+    }
+    let mut stored: Vec<(PathBuf, Value)> = std::fs::read_dir(results(data)).into_iter().flatten().flatten().map(|e| e.path()).filter_map(|p| read(&p).map(|v| (p, v))).collect();
+    stored.sort_by_key(|e| std::cmp::Reverse(e.1["at"].as_u64().unwrap_or(0)));
+    for (p, st) in stored.iter_mut().filter(|e| e.1["posted"] == false) {
+        let receipt = match enroll::post_result(&d, &st["op"], st["body"].clone(), &mut s.backoff, wire) {
+            Ok(r) => r,
+            Err(Delivery::Retry(secs)) => {
+                s.wait_until = now + secs;
+                return Some(format!("no reply; retry in {secs} s"));
+            }
+            // another grant's result never enters this one; ends its posting
+            Err(Delivery::Stopped(e)) if e == "grant" => json!({"state": "rejected", "reason": "grant"}),
+            Err(Delivery::Stopped(e)) => return Some(e),
+        };
+        st["posted"] = json!(true);
+        st["receipt"] = receipt;
+        let _ = write_atomic(p, &st.to_string());
+    }
+    for (p, _) in stored.iter().filter(|e| e.1["posted"] == true).skip(KEEP) {
+        let _ = std::fs::remove_file(p);
+    }
+    None
+}
+
+/// One pulled operation through the executor with this grant's authority: its installation and generation, the
+/// workspace DashQ bound to the grant, the actor DashQ authenticated, every current local profile and the
+/// operation's expiry. Returns the result and the sanitized A2 projection of the profiles it names.
+fn run(data: &Path, a: &Value, op: &Value, s: &Sender, now: u64) -> (Value, Value) {
+    let install = data.parent().unwrap_or(data);
+    let clients = s.clients.clone().unwrap_or_else(profiles::clients);
+    let ids: Vec<Value> = profiles::status_with(&clients, data, now)["profiles"].as_array().into_iter().flatten().map(|p| p["id"].clone()).collect();
+    let grant = json!({"capability": configure::CAPABILITY, "actor": op["payload"]["actor"], "workspace": a["workspace"], "installation": a["installation"],
+        "generation": a["generation"], "profiles": ids, "expires_at": op["expires_at"]});
+    let exe = install.join(format!("agentq{}", std::env::consts::EXE_SUFFIX));
+    let h = executor::Host { data: data.to_path_buf(), exe, clients, installation: crate::telemetry::installation(data), generation: a["generation"].as_u64().unwrap_or(0), grant };
+    let r = executor::execute(&h, &op["payload"].to_string(), now);
+    let named: Vec<&Value> = r["profiles"].as_array().into_iter().flatten().map(|p| &p["id"]).collect();
+    let all = crate::snapshot::configuration(Some(&json!({"configuration": profiles::status_with(&h.clients, data, now)})), now);
+    let readback: Value = all["profiles"].as_array().into_iter().flatten().filter(|p| named.contains(&&p["id"])).cloned().collect();
+    // ponytail: an over-limit readback is dropped, the result alone fits; DashQ reads the snapshot instead
+    let fits = json!({"result": r, "readback": readback}).to_string().len() <= enroll::MAX_PAYLOAD;
+    (r, if fits { readback } else { json!([]) })
 }
 
 /// Up to 100 records, oldest first. A durable `accepted` deletes a record; `rejected` (scope, replay, another grant)
@@ -135,7 +250,8 @@ pub fn enroll_with(data: &Path, destination: &str, wire: &mut dyn Wire) -> Resul
     }
     let d = seed(data)?;
     let host = crate::host();
-    enroll::pair(&d, destination, &Request { product: "agentq", host_label: &host, schemas: &[SCHEMA] }, wire)?;
+    let req = Request { installation: None, product: "agentq", host_label: &host, schemas: &[SCHEMA], scope: None, capabilities: &[configure::CAPABILITY] };
+    enroll::pair(&d, destination, &req, wire)?;
     let (rec, file) = queue_snapshot(data, wire.now())?;
     let id = rec["event_id"].as_str().unwrap_or_default().to_string();
     let (until, mut backoff, mut stage) = (wire.now() + COMPLETE, Backoff::default(), "delivery");
@@ -217,6 +333,7 @@ pub fn status(data: &Path) -> Value {
         "generation": a["generation"],
         "projected": verified.then(|| v["event_id"].clone()),
         "export": {"pending": records, "last_delivery": c["last_delivery"], "error": c["error"]},
+        "configure": {"granted": a["capabilities"].as_array().is_some_and(|c| c.contains(&json!(configure::CAPABILITY))), "error": c["operations_error"]},
         "revocation_pending": s["revoke"].as_array().map_or(0, Vec::len),
         "next": next,
     })
@@ -251,6 +368,11 @@ mod tests {
         creds: HashMap<String, (u64, bool)>,
         events: HashMap<(u64, String), Value>,
         sent: Vec<(String, Value)>,
+        /// Capabilities the browser approves of those asked for.
+        approve: Vec<&'static str>,
+        /// Queued operations and their stored results.
+        ops: Vec<Value>,
+        results: HashMap<String, Value>,
     }
 
     impl Dash {
@@ -265,7 +387,7 @@ mod tests {
                         (format!("cred{}", self.generation), self.generation)
                     }).clone();
                     self.approved = false;
-                    (200, json!({"protocol": 1, "credential": cred, "installation": "inst-1", "generation": g, "product": "agentq", "workspace": "ws", "schemas": [SCHEMA]}))
+                    (200, json!({"protocol": 1, "credential": cred, "installation": "inst-1", "generation": g, "product": "agentq", "workspace": "ws", "schemas": [SCHEMA], "capabilities": self.approve}))
                 }
                 "/connect/ack" => {
                     if let Some((c, g)) = self.staged.take() {
@@ -293,6 +415,22 @@ mod tests {
                         }
                     }).collect();
                     (200, json!({"protocol": 1, "receipts": receipts}))
+                }
+                "/operations" => {
+                    let g = live.unwrap();
+                    let pending: Vec<Value> = self.ops.iter().filter(|o| o["generation"] == g && !self.results.contains_key(o["operation"].as_str().unwrap())).cloned().collect();
+                    (200, json!({"protocol": 1, "operations": pending}))
+                }
+                "/operations/result" => {
+                    let id = b["operation"].as_str().unwrap().to_string();
+                    let Some(op) = self.ops.iter().find(|o| o["operation"] == id) else { return (200, json!({"protocol": 1, "operation": id, "state": "rejected", "reason": "unknown_operation"})) };
+                    if op["digest"] != b["digest"] {
+                        return (200, json!({"protocol": 1, "operation": id, "state": "rejected", "reason": "digest_mismatch"}));
+                    }
+                    match self.results.entry(id.clone()).or_insert_with(|| b["result"].clone()) {
+                        old if *old != b["result"] => (200, json!({"protocol": 1, "operation": id, "state": "rejected", "reason": "replay_mismatch"})),
+                        _ => (200, json!({"protocol": 1, "operation": id, "state": "accepted"})),
+                    }
                 }
                 "/connection/receipt" => {
                     let g = live.unwrap();
@@ -332,6 +470,24 @@ mod tests {
         fn show(&mut self, _: &str, _: &str) {
             self.approved = true;
         }
+    }
+
+    /// A Desktop Chat client root beside `data`, not yet set up.
+    fn desktop(data: &Path) -> Vec<profiles::Client> {
+        let root = data.parent().unwrap().join("desktop");
+        std::fs::create_dir_all(&root).unwrap();
+        vec![profiles::Client { kind: "claude-desktop-chat", agent: "claude-desktop", files: vec![root.join("claude_desktop_config.json")], root }]
+    }
+
+    /// Queues one operation of `generation` whose payload is the AgentQ request `kind` with `changes`.
+    fn queue_op(w: &mut Dash, id: &str, kind: &str, generation: u64, changes: Value, plan: Option<&Value>) -> Value {
+        let mut payload = json!({"schema": 1, "operation": id, "kind": kind, "actor": "u1", "workspace": "ws", "installation": "inst-1", "generation": generation, "issued_at": w.now, "expires_at": w.now + 300, "changes": changes});
+        if let Some(p) = plan {
+            payload["plan"] = json!({"revision": p["revision"], "digest": p["digest"]});
+        }
+        let op = json!({"operation": id, "capability": configure::CAPABILITY, "installation": "inst-1", "generation": generation, "expires_at": w.now + 300, "digest": enroll::digest(&payload), "payload": payload});
+        w.ops.push(op.clone());
+        op
     }
 
     fn records(data: &Path) -> usize {
@@ -442,6 +598,111 @@ mod tests {
         let id = old["event_id"].as_str().unwrap();
         assert!(!w.sent.iter().any(|s| s.0.starts_with("https://other.example") && s.1.to_string().contains(id)), "old record never reaches the new destination");
         assert_eq!(records(&d), 0, "rejected locally by grant");
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    /// #114 A1-A4: a granted host pulls a plan and an apply on its pass, applies under the lock and posts the result
+    /// with plan digest, configured state and readback. A lost reply, a restart and a duplicate delivery post the same
+    /// result without a second run; a changed payload under the same ID is refused.
+    #[test]
+    fn operations_plan_apply_and_duplicates() {
+        let d = data("ops");
+        let mut w = Dash { now: 1000, approve: vec![configure::CAPABILITY], ..Dash::default() };
+        enroll_with(&d, "https://dash.example", &mut w).unwrap();
+        assert_eq!(w.sent[0].1["capabilities"], json!([configure::CAPABILITY]), "asked for separately");
+        assert_eq!(status(&d)["configure"]["granted"], true);
+        let clients = desktop(&d);
+        let file = clients[0].files[0].clone();
+        let id = profiles::status_with(&clients, &d, w.now)["profiles"][0]["id"].clone();
+        let mcp = json!([{"profile": id, "field": "mcp", "value": "registered"}]);
+        let mut s = Sender { snapshot_at: u64::MAX / 2, clients: Some(clients.clone()), ..Sender::default() };
+
+        queue_op(&mut w, "d0000000000000000000000000000001", "plan", 1, mcp.clone(), None);
+        pass_with(&d, w.now, &mut s, &mut w);
+        let plan = w.results["d0000000000000000000000000000001"]["result"].clone();
+        assert_eq!((plan["kind"].as_str(), plan["writable"].as_bool()), (Some("plan"), Some(true)), "{plan}");
+        assert!(!file.exists(), "a plan writes nothing");
+
+        let op = queue_op(&mut w, "d0000000000000000000000000000002", "apply", 1, mcp.clone(), Some(&plan));
+        w.lose = Some("/operations/result");
+        pass_with(&d, w.now, &mut s, &mut w);
+        assert!(file.exists(), "applied");
+        let posted = w.results["d0000000000000000000000000000002"].clone();
+        let r = &posted["result"];
+        assert_eq!((r["operation"].clone(), r["outcome"].as_str(), r["plan"].clone()), (op["operation"].clone(), Some("applied"), plan["digest"].clone()), "{r}");
+        assert_eq!(posted["readback"][0]["mcp"], "registered");
+        assert_eq!(posted["readback"][0]["verification"]["state"], "unknown", "configured, not verified");
+        assert!(!posted.to_string().contains(&d.display().to_string()), "no path in the result");
+        assert!(status(&d)["configure"]["error"].as_str().unwrap().starts_with("no reply"));
+
+        // the reply was lost: DashQ stored it, the host posts it again unchanged, then a restart and a redelivery
+        // post the same result and never run it twice
+        let before = std::fs::read_to_string(&file).unwrap();
+        w.results.remove("d0000000000000000000000000000002");
+        std::fs::write(&file, "{}").unwrap();
+        let mut s = Sender { snapshot_at: u64::MAX / 2, clients: Some(clients.clone()), ..Sender::default() };
+        pass_with(&d, w.now + 60, &mut s, &mut w);
+        assert_eq!(w.results["d0000000000000000000000000000002"], posted, "same result after restart");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "{}", "not run again");
+        std::fs::write(&file, before).unwrap();
+        assert!(status(&d)["configure"]["error"].is_null());
+
+        // a changed payload under the same ID
+        let mut changed = queue_op(&mut w, "d0000000000000000000000000000002", "plan", 1, mcp, None);
+        w.ops.retain(|o| o["operation"] != "d0000000000000000000000000000002" || o["payload"]["kind"] == "plan");
+        w.results.remove("d0000000000000000000000000000002");
+        changed["payload"]["kind"] = json!("plan");
+        pass_with(&d, w.now + 61, &mut s, &mut w);
+        assert_eq!(w.results["d0000000000000000000000000000002"]["result"]["reason"], "payload_mismatch");
+        let _ = std::fs::remove_dir_all(d.parent().unwrap());
+    }
+
+    /// #114 A1, A4: expired, wrong-generation, unsupported and ungranted or revoked operations never apply; those of
+    /// this grant get a rejected result with the reason.
+    #[test]
+    fn operations_rejected_never_apply() {
+        let d = data("opsno");
+        let clients = desktop(&d);
+        let file = clients[0].files[0].clone();
+        let id = profiles::status_with(&clients, &d, 1000)["profiles"][0]["id"].clone();
+        let mcp = json!([{"profile": id, "field": "mcp", "value": "registered"}]);
+        let mut s = Sender { snapshot_at: u64::MAX / 2, clients: Some(clients), ..Sender::default() };
+
+        // observation-only grant: nothing pulled
+        let mut w = Dash { now: 1000, ..Dash::default() };
+        enroll_with(&d, "https://dash.example", &mut w).unwrap();
+        queue_op(&mut w, "e0000000000000000000000000000001", "plan", 1, mcp.clone(), None);
+        pass_with(&d, w.now, &mut s, &mut w);
+        assert!(!w.sent.iter().any(|x| x.0.ends_with("/operations")), "no pull without agentq.configure");
+        assert_eq!(status(&d)["configure"]["granted"], false);
+
+        w.approve = vec![configure::CAPABILITY];
+        w.ops.clear();
+        enroll_with(&d, "https://other.example", &mut w).unwrap();
+        let g = w.generation;
+        // a late (clock-skewed) delivery, an operation altered in transit, another generation's, an unsupported field
+        let late = queue_op(&mut w, "e0000000000000000000000000000002", "apply", g, mcp.clone(), Some(&json!({"revision": "0000000000000000", "digest": "0".repeat(64)})));
+        w.ops[0]["expires_at"] = json!(w.now);
+        w.ops[0]["digest"] = json!(enroll::digest(&late["payload"]));
+        queue_op(&mut w, "e0000000000000000000000000000003", "plan", g, mcp.clone(), None);
+        w.ops[1]["payload"]["changes"][0]["field"] = json!("hooks");
+        queue_op(&mut w, "e0000000000000000000000000000004", "plan", g - 1, mcp.clone(), None);
+        queue_op(&mut w, "e0000000000000000000000000000005", "plan", g, json!([{"profile": id, "field": "model", "value": "x"}]), None);
+        pass_with(&d, w.now, &mut s, &mut w);
+        let reason = |w: &Dash, op: &str| w.results.get(op).map(|r| r["result"]["reason"].clone());
+        assert_eq!(reason(&w, "e0000000000000000000000000000002"), Some(json!("expired")));
+        assert_eq!(reason(&w, "e0000000000000000000000000000003"), Some(json!("digest_mismatch")), "altered in transit");
+        assert_eq!(reason(&w, "e0000000000000000000000000000004"), None, "another generation's operation gets no result here");
+        assert_eq!(reason(&w, "e0000000000000000000000000000005"), Some(json!("unsupported_field")));
+        assert!(!file.exists(), "nothing applied");
+
+        // revoked by DashQ: the pass stops, a queued apply never runs
+        w.creds.values_mut().for_each(|c| c.1 = true);
+        queue_op(&mut w, "e0000000000000000000000000000007", "plan", g, mcp, None);
+        pass_with(&d, w.now, &mut s, &mut w);
+        pass_with(&d, w.now + 60, &mut s, &mut w);
+        assert!(!w.results.contains_key("e0000000000000000000000000000007"));
+        assert!(!file.exists());
         let _ = std::fs::remove_dir_all(d.parent().unwrap());
     }
 }

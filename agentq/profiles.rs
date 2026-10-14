@@ -18,6 +18,7 @@ pub const KINDS: [(&str, &str, &[&str], &[&str]); 4] = [
 ];
 
 /// One configuration root and the files whose bytes make its revision.
+#[derive(Clone)]
 pub struct Client {
     pub kind: &'static str,
     /// The agent key of `compression.agents` and routing (agentq.md § 3, § 5).

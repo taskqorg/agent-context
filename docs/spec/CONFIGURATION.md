@@ -58,7 +58,13 @@ Readback compares every changed field on a fresh profile read: all match `applie
 
 Verification: `agentq hook <agent> <event>` stamps `data/evidence/<agent>.<event>`. A profile is `verified` when its revision still equals the one read back after its newest applied operation and an event newer than that apply proves its effective state: Claude Code `PreToolUse` for the configured hook adapter; any event of that agent for `bypassed` or `disabled`. The provider and plugin adapters have no evidence source yet and stay unknown `no_evidence`; a later edit reads `revision_changed`.
 
-`agentq configure [<profile> <field>=<value>.. [--yes]]` is the local entry: no argument prints the profile projection, changes print the plan, `--yes` applies it. Its grant is local (actor and workspace `local`, generation 0, every current profile); remote delivery through the enrolled loop is a separate task.
+`agentq configure [<profile> <field>=<value>.. [--yes]]` is the local entry: no argument prints the profile projection, changes print the plan, `--yes` applies it. Its grant is local (actor and workspace `local`, generation 0, every current profile).
+
+### Enrolled delivery
+
+`agentq enroll` asks for `agentq.configure` beside the snapshot schema; the browser approves it separately and the host keeps only the granted subset (coreq wire v1 operations). Without it the service never pulls. With it, each 30 s service pass after snapshot delivery makes one `/operations` pull and runs each new operation through the host executor with the active grant's authority: its installation and generation, the workspace DashQ bound to it, the actor DashQ authenticated, every current local profile and the operation's expiry. Operations coreq rejects locally (`expired`, `digest_mismatch`, `scope`, `payload_too_large`) never run and get a `rejected` result with that reason; malformed, other-installation and other-generation ones get none. Revocation ends pulling at once.
+
+The posted result is `{result, readback}`: the plan or result envelope and the A2 projection of the profiles it names (dropped when over 16 KiB). It is stored in `data/connection/results/<operation>.json` before posting, so a lost reply, a restart or a redelivery with the same digest posts it unchanged without running again; a different digest under the same ID is `payload_mismatch`. Posted results keep at most 64, unposted ones never prune. `agentq connection status` shows `configure` granted and the last pull or post error. Snapshot writes stay `not_released` until A5 qualification.
 
 ## A5. Qualification and release
 

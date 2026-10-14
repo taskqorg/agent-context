@@ -99,8 +99,8 @@ fn verification(v: &Value, adapter: Option<&str>, revision: &str) -> Value {
 /// CONFIGURATION A2: profiles of status.json `configuration`. Labels, aliases and operations come from the kind,
 /// every other value from a fixed set; ids and revisions are 16 hex. Configured never reads as verified, and a stale,
 /// truncated, incomplete or conflicting profile is never writable.
-/// ponytail: writes stay `not_released` until the enrolled loop delivers operations.
-fn configuration(status: Option<&Value>, now: u64) -> Value {
+/// ponytail: writes stay `not_released` until host and consumer qualification (CONFIGURATION A5) enable them.
+pub fn configuration(status: Option<&Value>, now: u64) -> Value {
     let c = match status.map(|s| &s["configuration"]) {
         None => return json!({"state": "unknown", "reason": "no status"}),
         Some(Value::Null) => return json!({"state": "unknown", "reason": "older producer"}),

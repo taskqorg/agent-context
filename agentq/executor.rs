@@ -2,7 +2,7 @@
 //! lock, a durable operation record, journaled writes through `onboard`, fresh readback, reconciliation of interrupted
 //! records and hook evidence for verification. Acceptance itself stays in the pure `configure::handle`.
 //!
-//! ponytail: local entry only (`agentq configure`); delivery through the enrolled outbound loop is its own task.
+//! Entries: `agentq configure` (local grant) and the enrolled operation pass in `connect.rs`.
 
 use crate::{configure, onboard, profiles, routing};
 use coreq::write_atomic;
