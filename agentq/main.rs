@@ -106,12 +106,15 @@ fn main() {
         // ponytail: no-op `{}` until RTK qualifies commands (§ 3) and the service reports routing (§ 4)
         ["hook", agent @ ("codex" | "claude" | "hermes"), event] => {
             let data = t.install.join("data");
-            // println! panics on a closed stdout (exit 101); a hook always answers `{}` and exits 0
-            let run = std::io::read_to_string(std::io::stdin()).map_err(|e| format!("stdin: {e}"))
-                .and_then(|_| writeln!(std::io::stdout(), "{{}}").map_err(|e| format!("stdout: {e}")));
-            match run {
-                Ok(()) => executor::stamp(&data, agent, event, now()),
-                Err(e) => executor::hook_failed(&data, agent, event, now(), &e),
+            // println! panics on a closed stdout (exit 101); a hook always answers `{}` and exits 0, even after a
+            // stdin failure, and records every failure of the run
+            let read = std::io::read_to_string(std::io::stdin()).err().map(|e| format!("stdin: {e}"));
+            let wrote = writeln!(std::io::stdout(), "{{}}").err().map(|e| format!("stdout: {e}"));
+            let errors: Vec<String> = read.into_iter().chain(wrote).collect();
+            if errors.is_empty() {
+                executor::stamp(&data, agent, event, now());
+            } else {
+                executor::hook_failed(&data, agent, event, now(), &errors.join("; "));
             }
             0
         }

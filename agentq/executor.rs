@@ -315,8 +315,12 @@ pub fn hook_failures(data: &Path) -> Vec<String> {
     let mut out = vec![];
     for a in onboard::AGENTS {
         for e in EVENTS {
-            let Ok(s) = std::fs::read_to_string(data.join("evidence").join(format!("{a}.{e}.failed"))) else { continue };
-            let f: Value = serde_json::from_str(&s).unwrap_or_default();
+            // only a missing record means no failure; an unreadable one (invalid UTF-8, no access) is reported
+            let f: Value = match std::fs::read_to_string(data.join("evidence").join(format!("{a}.{e}.failed"))) {
+                Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => Value::Null,
+            };
             out.push(format!("{a} {e} ({})", f["error"].as_str().unwrap_or("unreadable failure record")));
         }
     }
