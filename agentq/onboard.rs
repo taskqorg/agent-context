@@ -478,8 +478,7 @@ mod tests {
         let orig = "{\n  \"model\": \"opus\",\n  \"permissions\": {\n    \"defaultMode\": \"plan\"\n  },\n  \"env\": {\n    \"MINE\": \"1\"\n  }\n}\n";
         std::fs::write(&s, orig).unwrap();
         let journal = d.join("owned.json");
-        let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let p = l.local_addr().unwrap().port();
+        let p = crate::routing::test_proxy(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap());
         let all = || -> Vec<Want> {
             let mut w = wants("claude", &d, &d.join(".claude.json"), Path::new("/x/agentq"));
             w.extend(routing_wants("claude", &d, p));
@@ -492,11 +491,13 @@ mod tests {
         assert_eq!((&v["model"], &v["permissions"]), (&json!("opus"), &json!({"defaultMode": "plan"})), "model and approvals unchanged");
         assert_eq!(crate::routing::state("claude", &d, Some(p)).0, "routed");
         assert_eq!(crate::routing::state("claude", &d, Some(p.wrapping_add(1))).0, "bypassed");
-        drop(l);
-        // port 1 refuses: proxy down reads unknown, not routed
+        // port 1 refuses and a silent listener never answers: proxy down or hung reads unknown, not routed
         let routed = std::fs::read_to_string(&s).unwrap();
-        std::fs::write(&s, routed.replace(&format!(":{p}\""), ":1\"")).unwrap();
-        assert_eq!(crate::routing::state("claude", &d, Some(1)), ("unknown", "proxy on 127.0.0.1:1 not answering".into()));
+        let silent = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        for q in [1, silent.local_addr().unwrap().port()] {
+            std::fs::write(&s, routed.replace(&format!(":{p}\""), &format!(":{q}\""))).unwrap();
+            assert_eq!(crate::routing::state("claude", &d, Some(q)), ("unknown", format!("proxy on 127.0.0.1:{q} not answering")));
+        }
         std::fs::write(&s, &routed).unwrap();
 
         assert_eq!(restore(&journal, false, Some(&["claude"])).unwrap().len(), 1);

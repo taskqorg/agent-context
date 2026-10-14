@@ -762,7 +762,7 @@ mod tests {
         // the service's first pass: one proxy per fixed port, as `routing::supervise` does
         let mut start = || {
             let p = routing::port(&data, "codex").ok_or("service started before the port was fixed")?;
-            proxy = Some(std::net::TcpListener::bind(("127.0.0.1", p)).map_err(|e| e.to_string())?);
+            proxy = Some(routing::test_proxy(std::net::TcpListener::bind(("127.0.0.1", p)).map_err(|e| e.to_string())?));
             Ok(())
         };
         let mut restarts = 0;
@@ -771,7 +771,7 @@ mod tests {
         assert_eq!(routed, [("codex", p, true)]);
         assert_eq!(restarts, 0);
         assert_eq!(routing::state("codex", &codex, Some(p)).0, "routed", "doctor right after onboard");
-        drop(proxy);
+        assert_eq!(proxy, Some(p));
         let _ = std::fs::remove_dir_all(&d);
     }
 

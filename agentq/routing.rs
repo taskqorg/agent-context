@@ -6,6 +6,7 @@
 
 use coreq::write_atomic;
 use serde_json::{Value, json};
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -44,8 +45,32 @@ pub fn anthropic_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
+/// headroom's liveness route answers locally (`/` would be forwarded upstream); a listener that accepts and stays
+/// silent, or another server on the port, is not routed.
 fn answers(port: u16) -> bool {
-    TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(1)).is_ok()
+    let probe = || -> std::io::Result<bool> {
+        let mut s = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(1))?;
+        s.set_write_timeout(Some(Duration::from_secs(1)))?;
+        s.set_read_timeout(Some(Duration::from_secs(2)))?;
+        s.write_all(b"GET /livez HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")?;
+        let mut head = [0u8; 12];
+        s.read_exact(&mut head)?;
+        Ok(head.starts_with(b"HTTP/1.") && head.ends_with(b" 200"))
+    };
+    probe().unwrap_or(false)
+}
+
+/// Test proxy on `l` that answers every request with an empty 200; the thread lives as long as the test process.
+#[cfg(test)]
+pub(crate) fn test_proxy(l: TcpListener) -> u16 {
+    let p = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut c in l.incoming().flatten() {
+            let _ = c.read(&mut [0u8; 1024]);
+            let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    p
 }
 
 /// Whether `port` answers within `limit`, polled twice a second.
@@ -313,24 +338,21 @@ mod tests {
     #[test]
     fn onboard_awaits_proxy() {
         let free = || TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let l = free();
-        let p = l.local_addr().unwrap().port();
+        let p = test_proxy(free());
         let mut restarts = 0;
         assert!(await_proxies(&[p], Duration::from_secs(5), &mut || restarts += 1).is_empty());
         assert_eq!(restarts, 0, "an answering proxy needs no restart");
-        drop(l);
+        let p = free().local_addr().unwrap().port();
         let late = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(700));
-            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, p)).unwrap();
-            std::thread::sleep(Duration::from_secs(3));
-            drop(l);
+            test_proxy(TcpListener::bind((Ipv4Addr::LOCALHOST, p)).unwrap());
         });
         assert!(await_proxies(&[p], Duration::from_secs(2), &mut || restarts += 1).is_empty());
         assert_eq!(restarts, 0, "the wait covers a slow start");
         late.join().unwrap();
         let q = free().local_addr().unwrap().port();
         let mut up = None;
-        assert!(await_proxies(&[q], Duration::from_millis(600), &mut || up = TcpListener::bind((Ipv4Addr::LOCALHOST, q)).ok()).is_empty());
+        assert!(await_proxies(&[q], Duration::from_millis(600), &mut || up = TcpListener::bind((Ipv4Addr::LOCALHOST, q)).ok().map(test_proxy)).is_empty());
         assert!(up.is_some(), "the restart starts the silent proxy");
         // port 1 refuses
         assert_eq!(await_proxies(&[1], Duration::from_millis(600), &mut || restarts += 1), [1]);
@@ -344,14 +366,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(state("codex", &d, None).0, "direct");
-        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let p = l.local_addr().unwrap().port();
+        let p = test_proxy(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap());
         let cfg = format!("model_provider = \"agent_context\"\n\n[model_providers.agent_context]\nbase_url = \"{}\"\n", base_url(p));
         std::fs::write(d.join("config.toml"), &cfg).unwrap();
         assert_eq!(state("codex", &d, Some(p)).0, "routed");
         assert_eq!(state("codex", &d, Some(p.wrapping_add(1))).0, "bypassed");
-        drop(l);
-        // a freed ephemeral port may serve a parallel test: port 1 refuses
+        // #136 A3: a listener that accepts and never answers is not routed
+        let silent = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let q = silent.local_addr().unwrap().port();
+        std::fs::write(d.join("config.toml"), cfg.replace(&base_url(p), &base_url(q))).unwrap();
+        assert_eq!(state("codex", &d, Some(q)), ("unknown", format!("proxy on 127.0.0.1:{q} not answering")));
+        // port 1 refuses
         std::fs::write(d.join("config.toml"), cfg.replace(&base_url(p), &base_url(1))).unwrap();
         assert_eq!(state("codex", &d, Some(1)).0, "unknown");
         std::fs::write(d.join("config.toml"), format!("[profiles.x]\n{cfg}")).unwrap();
