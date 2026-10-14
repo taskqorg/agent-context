@@ -19,6 +19,17 @@ pub struct Want {
     routing: Option<String>,
 }
 
+impl Want {
+    /// The configuration field this edit serves (CONFIGURATION A3): `routing`, `hooks` or `mcp`.
+    pub fn field(&self) -> &'static str {
+        match (&self.routing, self.key[0].as_str()) {
+            (Some(_), _) => "routing",
+            (None, "hooks") => "hooks",
+            _ => "mcp",
+        }
+    }
+}
+
 fn home() -> PathBuf {
     PathBuf::from(std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).unwrap_or_default())
 }
@@ -54,6 +65,8 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
             w(root.join("settings.json"), &["hooks", "PreToolUse"], json!({"matcher": "Bash", "hooks": [hook("PreToolUse")]}), true),
             w(claude_json.into(), &["mcpServers", "agent_context"], json!({"type": "stdio", "command": exe, "args": ["mcp", "claude"]}), false),
         ],
+        // Desktop Chat is MCP-only (CONFIGURATION A1); the same server as Claude Code
+        "claude-desktop" => vec![w(root.join("claude_desktop_config.json"), &["mcpServers", "agent_context"], json!({"command": exe, "args": ["mcp", "claude"]}), false)],
         _ => vec![w(root.join("config.yaml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "hermes"]}), false)],
     }
 }
@@ -70,7 +83,7 @@ pub fn routing_wants(agent: &str, root: &Path, port: u16) -> Vec<Want> {
     }
 }
 
-fn load(journal: &Path) -> Vec<Value> {
+pub(crate) fn load(journal: &Path) -> Vec<Value> {
     std::fs::read_to_string(journal).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
 }
 
@@ -139,13 +152,19 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
 /// Restores journaled edits newest first when the current value is still ours; later foreign edits stay. `routing`:
 /// only the routing edits of these agents, and the restored ones leave the journal (`agentq direct`).
 pub fn restore(journal: &Path, dry: bool, routing: Option<&[&str]>) -> Result<Vec<String>, String> {
+    let pick = |_: usize, e: &Value| routing.is_none_or(|r| e["routing"].as_str().is_some_and(|a| r.contains(&a)));
+    restore_where(journal, dry, routing.is_some(), &pick)
+}
+
+/// `restore` of the entries `pick` selects by journal index; `forget` drops the restored ones from the journal.
+pub fn restore_where(journal: &Path, dry: bool, forget: bool, pick: &dyn Fn(usize, &Value) -> bool) -> Result<Vec<String>, String> {
     let mut out = vec![];
     // a dry run restores in memory, so later entries of one file see the earlier ones
     let mut seen: std::collections::HashMap<PathBuf, String> = Default::default();
     let mut j = load(journal);
     let mut done = vec![];
     for (i, e) in j.iter().enumerate().rev() {
-        if routing.is_some_and(|r| !e["routing"].as_str().is_some_and(|a| r.contains(&a))) {
+        if !pick(i, e) {
             continue;
         }
         let f = PathBuf::from(e["file"].as_str().unwrap_or_default());
@@ -169,7 +188,7 @@ pub fn restore(journal: &Path, dry: bool, routing: Option<&[&str]>) -> Result<Ve
         out.push(format!("{}: {what}", if dry { "would restore" } else { "restored" }));
         done.push(i);
     }
-    if routing.is_some() && !dry && !done.is_empty() {
+    if forget && !dry && !done.is_empty() {
         for i in done {
             j.remove(i);
         }
