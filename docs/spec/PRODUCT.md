@@ -28,3 +28,5 @@ Our experiments support noisy-command reduction and selective retrieval. They do
 Technology, operating limits and rollout policy live in [agentq.md](../../agentq.md). New code must meet this contract; old product deletion/deployment is a separate authorized step.
 
 Accepted integration control interface: [CONFIGURATION A1–A5](CONFIGURATION.md), implementing R1/R4/R5/R7/R9 without model/provider/permission management.
+
+Accepted R9/R10 accounting and effect definitions: [ACCOUNTING O1–O4](ACCOUNTING.md).

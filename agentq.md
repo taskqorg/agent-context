@@ -55,6 +55,8 @@ Engine pins (version, per-platform URL, sha256) are built into the binary; no co
 
 ### Tool-result compression
 
+Accepted results target: [ACCOUNTING O1–O4](docs/spec/ACCOUNTING.md) defines outcome populations, paired byte measurements, coverage and whole-task evidence for PRODUCT R9/R10. This adds no optimizer, capture permission or universal savings claim.
+
 One core in the binary decides, compresses, retains and counts; adapters only translate. A new agent needs an adapter, never a new core path.
 
 - **Core.** Input: `agent`, `adapter` (`run`, `hook`, `provider`), `tool` (tool name), `command` (shell tools only; matched to a runner, never stored), `text`, native IDs when known. Steps: config off for the agent, under `min_bytes`, code or complete JSON: pass through (R3). Then only the built-in qualified list of that adapter selects an engine; anything off the list passes with reason `not_qualified`, so no generic post-filter. A result that is not smaller, an error or 3 s without an answer: the original text. A compressed result keeps the original under a `get_original` ref (`<engine>:<id>`, store and limits of `data/runs/`) and ends with one line naming that ref. Every call writes one stats record.
