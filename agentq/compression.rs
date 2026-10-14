@@ -508,9 +508,10 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
             }
             if kept.len() != s.len() {
                 coreq::write_atomic(&e.path(), &kept)?;
-                trimmed = Some(kept.lines().count());
+                trimmed = Some(s.lines().count() - kept.lines().count());
             }
-            lines.insert(oldest.clone(), json!(kept.lines().count()));
+            // Pre-trim count: the trim below subtracts only removed lines, so an earlier loss survives retention.
+            lines.insert(oldest.clone(), json!(s.lines().count()));
         } else if let Some(d) = stats_date(&name) {
             if let Ok(s) = std::fs::read_to_string(e.path()) {
                 lines.insert(d.to_string(), json!(s.lines().count()));
@@ -529,7 +530,8 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let counts = cov["counts"].as_object_mut().unwrap();
     counts.retain(|d, _| d.as_str() >= oldest.as_str());
     if let Some(n) = trimmed {
-        counts.insert(oldest.clone(), json!(n));
+        let held = counts.get(&oldest).and_then(Value::as_u64).unwrap_or(0);
+        counts.insert(oldest.clone(), json!(held.saturating_sub(n as u64)));
     }
     if appended.is_ok() {
         let day = crate::date(at);
@@ -845,6 +847,36 @@ mod tests {
             .join(format!("{}.jsonl", crate::date(crate::now())));
         std::fs::write(p, "bad\n").unwrap();
         assert!(stats(&d).unwrap_err().contains("malformed"));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: retention trims expired lines without hiding an earlier loss on the oldest day.
+    #[test]
+    fn retention_keeps_loss_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-retention-{}", crate::mcp::new_id()));
+        let stats_dir = d.join("stats");
+        std::fs::create_dir_all(&stats_dir).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let at = crate::now();
+        let day = crate::date(at - 7 * 86400);
+        let line = |t: u64| record("hermes", "hook", "terminal", &Value::Null, 10, t).to_string();
+        // Producer wrote 3 lines; one unexpired line is lost, one expired line remains to be trimmed.
+        std::fs::write(
+            stats_dir.join(format!("{day}.jsonl")),
+            format!("{}\n{}\n", line(at - 7 * 86400 - 120), line(at - 7 * 86400 + 3600)),
+        )
+        .unwrap();
+        std::fs::write(
+            stats_dir.join(COVERAGE),
+            json!({"schema":1,"since":at - 7 * 86400 - 200,"resets":[],"gaps":[],"counts":{&day:3}}).to_string(),
+        )
+        .unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"});
+        compress(&d, "hermes", &input.to_string()).unwrap();
+        let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
+        assert_eq!(j["counts"][&day], 2, "{j}");
+        let a = crate::accounting::local(&d, crate::now());
+        assert!(a.to_string().contains("stats records lost"), "{a}");
         std::fs::remove_dir_all(d).unwrap();
     }
 }
