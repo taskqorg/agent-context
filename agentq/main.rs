@@ -8,6 +8,7 @@ mod executor;
 mod legacy;
 mod mcp;
 mod onboard;
+mod profile;
 mod profiles;
 mod resource;
 mod routing;
@@ -26,7 +27,7 @@ const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
-const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -77,6 +78,21 @@ fn main() {
             },
             Err(e) if a.len()==2=>{println!("{}",serde_json::json!({"schema":1,"state":"unknown","reason":e,"groups":null}));1},
             Err(e)=>fail(&e,"run a tool through agentq; inspect data/stats if records are unreadable"),
+        },
+        ["profile"] => {
+            for l in profile::lines(&profile::report(&t.install.join("data"), now())) {
+                println!("{l}");
+            }
+            0
+        }
+        ["profile", "--json"] => println_code(&profile::report(&t.install.join("data"), now()).to_string()),
+        ["profile", "trace", "on", rest @ ..] if rest.len() <= 1 => match profile::trace_minutes(rest.first().copied()).and_then(|m| profile::set_trace(&t.install.join("data"), Some(m), now())) {
+            Ok(s) => println_code(&format!("profile: trace on until {}", s["until"])),
+            Err(e) => fail(&format!("profile trace: {e}"), "run `agentq profile trace on [1-60]`"),
+        },
+        ["profile", "trace", "off"] => match profile::set_trace(&t.install.join("data"), None, now()) {
+            Ok(_) => println_code("profile: trace off"),
+            Err(e) => fail(&format!("profile trace: {e}"), "fix data/config.json, then run `agentq profile trace off` again"),
         },
         ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
         ["service", cmd] => service_cmd(&t, cmd),

@@ -23,6 +23,7 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 | `agentq langfuse` | Standalone mode: read Langfuse host and keys from hidden stdin into protected storage (§ 6). |
 | `agentq run -- <cmd> [args..]` | Run a native command through RTK when qualified, else unchanged (§ 3). Exit code and stderr preserved. |
 | `agentq compress <agent>`, `agentq stats [--json]` | Tool-result compression core entry and its local stats (§ 3). |
+| `agentq profile [--json]`, `agentq profile trace on [<minutes>]\|off` | Ranked profile of measured operations against their budgets; detailed trace switch (§ 6 Profiling). |
 | `agentq mcp <agent>` | Stdio MCP server `agent_context` (§ 2). |
 | `agentq hook <agent> <event>` | Hook handler for § 4 events; JSON on stdin, JSON on stdout; 5 s budget, failure returns `{}`. Stamps the event time as configuration evidence. |
 | `agentq direct [agent..]` | Restore direct provider access: remove routing edits only, keep MCP and telemetry; works when the service is down (PRODUCT R4). `onboard --yes` routes again. |
@@ -134,6 +135,24 @@ Contract for dashq, `agentq.schema` 1, additive: consumers that ignore unknown s
 - Freshness and window: dashq shows the newest sample as stale after 900 s (three buckets) and draws a graph only from three or more samples, else says too few samples. A query spans at most 7 days (the queue cap); older history lasts as long as the Langfuse project retains traces. An outage delays samples within the queue caps; they arrive with their source timestamps.
 - Overhead: a sample is a few file reads or syscalls and one span of about 1 KiB: 288 spans per host per day; a test bounds one sample at 50 ms.
 
+### Profiling
+
+Follows [specq profiling](https://github.com/taskqorg/specq/blob/main/engineering/profiling.md). Reuses the § 3 stats records and the queue `state.json`; no second collector, process or network call.
+
+| Operation | Sample | p95 budget | Failure budget |
+|---|---|---|---|
+| `compress.run` | § 3 stats record, adapter `run` | none: `duration_ms` includes the native command; the 3 s filter budget is enforced inline | 1 % |
+| `compress.hook`, `compress.provider` | § 3 stats record of that adapter | 1000 ms | 1 % |
+| `export.langfuse` | one per send pass that posted or failed (§ 6 Queue) | 10 s | 5 % |
+| `export.dashq` | one per delivery of grant-bound records (ENROLLMENT) | 10 s | 5 % |
+| `proxy.request` | none: the headroom proxy serves model requests, agentq records none | unknown | unknown |
+
+- Counters: always on. A stats record is the compression sample: outcome `failed` is a failure and its `reason` the error class. An export sample is `[time, duration_ms, class]` in `data/queue/state.json` `profile.<operation>`, last 256 per operation; class null on success, else `auth`, `http`, `timeout`, `network`, `queue` (Langfuse) or `no_reply`, `stopped`, `rejected` (DashQ).
+- Traces: `agentq profile trace on [<minutes>]` sets `profile.trace_until` in `config.json`, default 15, at most 60 minutes; `off` removes it. While on, `compress.run` writes its `native` and `filter` steps and each export its posted batches as one line each to `data/traces/<YYYY-MM-DD>.jsonl`: `time`, `op`, `step`, `duration_ms`, `class`. Kept 7 days; a day stops at 1 MiB. `agentq profile` reports the switch state.
+- Store: operation names, numbers and class codes only; no secrets, arguments, content or paths.
+- Report: `agentq profile [--json]` over the 7 days up to the report time, later timestamps excluded: per operation its calls, failure rate and classes, p50/p95/max ms (nearest rank), mean, standard deviation and its coefficient of variation `cv`. Over budget: p95 above its budget (`time`), failure rate above its budget (`failures`), `cv` above 1 (`unstable`). Rank: the largest of p95/budget, failure rate/budget and `cv`, worst first; unknown operations last. Trace lines add per-step calls and p95.
+- Unknown: no samples in the window, an unreadable stats record (all `compress.*` operations) or unreadable export state reads unknown with the reason, never zero or ok; the other operations still report.
+
 ## 7. Incidents via coreq
 
 - coreq incident reports, option A: an issue in `taskqorg/agentq`, label `incident`, through the user's existing github.com login; dedup by fingerprint; no relay and no GitHub App.
@@ -143,7 +162,7 @@ Contract for dashq, `agentq.schema` 1, additive: consumers that ignore unknown s
 
 ## 8. State
 
-`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports, `compression`), `installation`, `resource-key` (§ 6), `langfuse` (fallback only, § 6), `originals/`, `runs/`, `stats/` (§ 3), `queue/` (with `state.json`: last delivery, last error, dropped), `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
+`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports, `compression`, `profile`), `installation`, `resource-key` (§ 6), `langfuse` (fallback only, § 6), `originals/`, `runs/`, `stats/` (§ 3), `traces/` (§ 6 Profiling), `queue/` (with `state.json`: last delivery, last error, dropped, export samples), `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
 
 Dashboard duties (fleet view, versions, last seen, health, usage, incidents, access control) move to dashq, which reads optional Langfuse events and authenticated snapshots under the accepted connection contract. agentq ships no panel and no dashboard JSON.
 
