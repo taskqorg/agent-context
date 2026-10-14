@@ -279,6 +279,7 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
     let q = queue(data);
     let body = q.join(format!("body-{}.tmp", std::process::id()));
     let mut sent = 0;
+    let start = std::time::Instant::now();
     let res = loop {
         let batch: Vec<_> = prune(&q, now).into_iter().take(BATCH).collect();
         if batch.is_empty() {
@@ -286,9 +287,11 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
         }
         let spans: Vec<Value> = batch.iter().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(&e.1).ok()?).ok()).collect();
         let otlp = json!({"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "agentq"}}]}, "scopeSpans": [{"scope": {"name": "agentq", "version": env!("CARGO_PKG_VERSION")}, "spans": spans}]}]});
+        let step = std::time::Instant::now();
         let posted = std::fs::write(&body, otlp.to_string()).map_err(|e| e.to_string()).and_then(|_| {
             curl(&format!("url = {}\nheader = \"Content-Type: application/json\"\ndata-binary = {}\n", quote(&format!("{}/api/public/otel/v1/traces", k.host)), quote(&format!("@{}", body.display()))), k)
         });
+        crate::profile::trace(data, "export.langfuse", "batch", step.elapsed(), posted.as_ref().err().map(|e| crate::profile::class(e)));
         let _ = std::fs::remove_file(&body);
         if let Err(e) = posted {
             break Err(e);
@@ -298,14 +301,21 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
         }
         sent += batch.len();
     };
-    update_state(&q, |s| match &res {
-        Ok(n) => {
-            if *n > 0 {
-                s["last_delivery"] = json!(now);
+    let took = start.elapsed();
+    update_state(&q, |s| {
+        match &res {
+            Ok(n) => {
+                if *n > 0 {
+                    s["last_delivery"] = json!(now);
+                }
+                s["error"] = Value::Null;
             }
-            s["error"] = Value::Null;
+            Err(e) => s["error"] = json!(e),
         }
-        Err(e) => s["error"] = json!(e),
+        // an empty pass posted nothing: no sample
+        if res != Ok(0) {
+            crate::profile::sample(s, "export.langfuse", now, took, res.as_ref().err().map(|e| crate::profile::class(e)));
+        }
     });
     res
 }
