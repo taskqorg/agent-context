@@ -27,3 +27,7 @@ Show sample size, versions and evidence references; state the scope and uncertai
 Publish schema/aggregation conformance fixtures for duplicate/late events, half-open boundaries, mixed versions/recipes, unknown profiles, valid zero, partial/offline sources, capped queries, malformed byte pairs and process resets. Verify exact outcome/reason sums, byte units and pair coverage. Test estimates and overlapping token fields cannot enter observed totals or cost savings.
 
 Qualify a real supported client path against local stats and delivered events with exact source/consumer versions. Record evidence and remaining adapter/platform gaps. Read-only results ship independently of profile management; no live configuration or rollout permission is implied.
+
+## Published schema
+
+`agentq.accounting/1`. Producer: the agentq.md § 3 stats record and its `agentq.compress` span. Aggregate: `agentq/accounting.rs`, also `agentq stats --accounting`. Input, output and conformance cases: [accounting-fixtures.json](accounting-fixtures.json); a consumer conforms when every case's `expect` holds. Additive keys keep the version; a changed meaning takes a new one. Qualification record: [VERIFICATION](VERIFICATION.md#accounting-qualification).

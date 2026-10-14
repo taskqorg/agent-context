@@ -29,6 +29,22 @@ Reuse selected LongBench/RULER cases and official scorers for content quality; u
 
 Quality, latency, resource and savings budgets must be agreed before engine selection/release. No code-level test suite or numeric target inherited from the old implementation.
 
+## Accounting qualification
+
+Live check for [ACCOUNTING O4](ACCOUNTING.md#o4-qualification) (#108). Persistent chain checks: `accounting::tests::consumer_fixtures` runs every published case; `tests/compression.rs` requires equal accounting from local stats and their queued spans.
+
+Run 2026-10-14 on Windows 11 Pro 10.0.26100, candidate commit 3e50182 (debug build, `agentq 0.0.0-dev`, unreleased), RTK 0.51.0 (pinned zip, sha256 matched), cargo 1.99.0, in an isolated install under the OS temp dir. Path: `agentq run -- cargo test|cargo test -q|cargo build|git --version` in a 150-test crate, `agentq compress hermes` (hook, `terminal`) and `agentq compress codex` (provider, `exec_command`); then `agentq telemetry verify` posted the queue through the real sender to a loopback OTLP stand-in (Python 3.12.10), whose body is the delivered events.
+
+| Check | Local stats | Delivered events |
+|---|---|---|
+| State | complete | partial (export carries no coverage) |
+| Calls, outcomes | 6: 1 compressed, 5 passed, 0 failed | same |
+| Reasons | compressed 1, short 2, not_qualified 3 | same |
+| Volume run/rtk | 1 paired: 5972 bytes in, 91 out, reduction 0.9848 | same |
+| Event IDs | 6 | the same 6 `agentq.compress` spans, plus `agentq.verify` |
+
+Cohorts were equal; no host path or session text appeared in either aggregate. Gaps: no real client turn (Claude Code `PreToolUse` into `agentq run`); hook and provider adapters have no qualified recipe, so Hermes and Codex calls pass as `not_qualified` and no real Hermes plugin or Codex provider call was made; no Langfuse or DashQ ingestion read-back; profile is unknown on every record; macOS, Linux and WSL untested.
+
 ## Resource sample qualification
 
 Procedure for the live task (#86) on each authorized host, at most 30 minutes per host; contract: [agentq.md § 6 Resource samples](../../agentq.md#resource-samples). Linux, macOS, Windows and WSL 2; WSL 1 reports CPU and memory unknown by design. An untested host is reported as untested, never as passed.
