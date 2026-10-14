@@ -4,6 +4,7 @@ mod engines;
 mod legacy;
 mod mcp;
 mod onboard;
+mod profiles;
 mod resource;
 mod routing;
 mod snapshot;
@@ -319,6 +320,7 @@ fn serve(t: &Tool) -> ! {
         s["queue"] = telemetry::status(&t.install.join("data"), now());
         s["agents"] = routing::agents(&t.install.join("data"));
         s["engines"] = engines::status(&t.install);
+        s["configuration"] = profiles::status(&t.install.join("data"), now());
         match write_atomic(&status_path(t), &serde_json::to_string_pretty(&s).unwrap_or_default()) {
             // ponytail: healthy after the first written status; add real checks when the service owns ports (§ 5)
             Ok(()) => {

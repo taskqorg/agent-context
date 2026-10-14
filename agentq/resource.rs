@@ -38,12 +38,12 @@ pub struct Sampler {
     prev: (Instant, u128, Result<Ticks, String>),
 }
 
-fn hex(b: &[u8]) -> String {
+pub(crate) fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// `data/resource-key`: 32 random bytes as hex, created on first use, never exported.
-fn key(data: &Path) -> hmac::Key {
+pub(crate) fn key(data: &Path) -> hmac::Key {
     let p = data.join("resource-key");
     let k = match std::fs::read_to_string(&p) {
         Ok(s) if s.trim().len() == 64 => s.trim().to_string(),

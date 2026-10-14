@@ -1,0 +1,302 @@
+//! Client profiles (docs/spec/CONFIGURATION.md A1, A2): read-only integration state per configuration root for
+//! status.json `configuration`. Typed values and fixed codes only; `snapshot.rs` re-validates each one before export.
+//!
+//! ponytail: read-only projection. Plans, guarded apply and verification evidence (A3–A5) join with their own task;
+//! until then writes stay disabled and verification unknown.
+
+use crate::{onboard, resource, routing};
+use ring::hmac;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+
+pub const SCHEMA: u64 = 1;
+/// Kind, display label, client aliases that share its configuration root, supported operations (A1).
+pub const KINDS: [(&str, &str, &[&str], &[&str]); 4] = [
+    ("codex", "Codex", &["codex-cli", "codex-desktop"], &["routing", "optimization", "mcp", "hooks"]),
+    ("claude-code", "Claude Code", &["claude-code-cli", "claude-desktop-code"], &["routing", "optimization", "mcp", "hooks"]),
+    ("claude-desktop-chat", "Claude Desktop Chat", &["claude-desktop-chat"], &["mcp"]),
+    ("hermes", "Hermes", &["hermes"], &["optimization", "mcp", "plugin"]),
+];
+
+/// One configuration root and the files whose bytes make its revision.
+pub struct Client {
+    pub kind: &'static str,
+    /// The agent key of `compression.agents` and routing (agentq.md § 3, § 5).
+    pub agent: &'static str,
+    pub root: PathBuf,
+    pub files: Vec<PathBuf>,
+}
+
+fn desktop_root() -> PathBuf {
+    let home = onboard::root("claude").parent().map(Path::to_path_buf).unwrap_or_default();
+    match std::env::consts::OS {
+        "macos" => home.join("Library/Application Support/Claude"),
+        "windows" => std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default().join("Claude"),
+        _ => std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config")).join("Claude"),
+    }
+}
+
+pub fn clients() -> Vec<Client> {
+    let c = |kind, agent, root: PathBuf, files: &[&str]| Client { kind, agent, files: files.iter().map(|f| root.join(f)).collect(), root };
+    let mut code = c("claude-code", "claude", onboard::root("claude"), &["settings.json"]);
+    code.files.push(onboard::claude_json());
+    vec![
+        c("codex", "codex", onboard::root("codex"), &["config.toml", "hooks.json"]),
+        code,
+        c("claude-desktop-chat", "claude-desktop", desktop_root(), &["claude_desktop_config.json"]),
+        c("hermes", "hermes", onboard::root("hermes"), &["config.yaml"]),
+    ]
+}
+
+fn sign(key: &hmac::Key, parts: &[&[u8]]) -> String {
+    let mut s = hmac::Context::with_key(key);
+    for p in parts {
+        s.update(&(p.len() as u64).to_le_bytes());
+        s.update(p);
+    }
+    resource::hex(s.sign().as_ref())[..16].to_string()
+}
+
+fn compression(data: &Path) -> Value {
+    let c = std::fs::read_to_string(data.join("config.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or_default();
+    c["compression"].clone()
+}
+
+/// status.json `configuration`: every client whose configuration root exists.
+pub fn status(data: &Path, now: u64) -> Value {
+    let key = resource::key(data);
+    let journal = data.join("owned.json");
+    let profiles: Vec<Value> = clients().iter().filter(|c| c.root.is_dir()).map(|c| profile(c, data, &journal, &key)).collect();
+    let c = compression(data);
+    let defaults = json!({"enabled": c["enabled"].as_bool().unwrap_or(true), "min_bytes": c["min_bytes"].as_u64().unwrap_or(2048), "stats": c["stats"].as_str().unwrap_or("queue")});
+    let revs: Vec<&[u8]> = profiles.iter().filter_map(|p| p["revision"].as_str()).map(str::as_bytes).collect();
+    json!({"schema": SCHEMA, "at": now, "revision": sign(&key, &revs), "defaults": defaults, "profiles": profiles})
+}
+
+/// The registered events of `hooks.<event>` entries whose command runs `agentq hook <agent> <event>`.
+fn hooked(doc: &Value, agent: &str, events: &[&str]) -> Vec<bool> {
+    events.iter().map(|e| doc["hooks"][e].as_array().into_iter().flatten().flat_map(|m| m["hooks"].as_array().into_iter().flatten()).any(|h| h["command"].as_str().is_some_and(|c| c.ends_with(&format!(" hook {agent} {e}"))))).collect()
+}
+
+fn hooks_state(h: &[bool]) -> &'static str {
+    match h.iter().filter(|x| **x).count() {
+        0 => "absent",
+        n if n == h.len() => "registered",
+        _ => "partial",
+    }
+}
+
+/// The indented lines of the top-level YAML block `head:`.
+fn yaml_block<'a>(text: &'a str, head: &str) -> Vec<&'a str> {
+    text.lines().skip_while(|l| l.trim_end() != format!("{head}:")).skip(1).take_while(|l| l.trim().is_empty() || l.starts_with([' ', '\t', '-'])).collect()
+}
+
+pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Value {
+    let (mut conflicts, mut incomplete) = (vec![], vec![]);
+    // ponytail: the revision signs whole files, so an unrelated edit also stales a plan; narrow to owned keys if
+    // needless revision changes start rejecting confirmed plans
+    let mut parts: Vec<Vec<u8>> = vec![c.kind.into(), compression(data)["agents"][c.agent].to_string().into(), routing::port(data, c.agent).unwrap_or(0).to_le_bytes().into()];
+    let mut unreadable = vec![];
+    let texts: Vec<Option<String>> = c
+        .files
+        .iter()
+        .map(|f| match std::fs::read(f) {
+            Ok(b) => {
+                parts.push(b.clone());
+                unreadable.push(false);
+                Some(String::from_utf8_lossy(&b).into_owned())
+            }
+            Err(e) => {
+                unreadable.push(e.kind() != std::io::ErrorKind::NotFound);
+                parts.push(format!("missing {:?}", e.kind()).into());
+                None
+            }
+        })
+        .collect();
+    if unreadable.contains(&true) {
+        incomplete.push("unreadable_config");
+    }
+    let files: Vec<String> = c.files.iter().map(|f| f.display().to_string()).collect();
+    let journal: Vec<Value> = std::fs::read_to_string(journal).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    let owned: Vec<&Value> = journal.iter().filter(|e| e["file"].as_str().is_some_and(|f| files.iter().any(|x| x == f))).collect();
+    parts.extend(owned.iter().map(|e| e.to_string().into_bytes()));
+    let unread = |i: usize| unreadable[i];
+    // a missing or empty file holds nothing; an unreadable or unparseable one is unknown
+    let docs: Vec<Option<Value>> = texts
+        .iter()
+        .zip(&unreadable)
+        .map(|(t, u)| match t.as_deref().map(|t| t.trim_start_matches('\u{feff}')) {
+            _ if *u => None,
+            None => Some(json!({})),
+            Some(t) if t.trim().is_empty() => Some(json!({})),
+            Some(t) => serde_json::from_str(t).ok(),
+        })
+        .collect();
+    let json_doc = |i: usize| docs[i].clone();
+    if c.files.iter().enumerate().any(|(i, f)| f.extension().is_some_and(|e| e == "json") && docs[i].is_none() && !unread(i)) {
+        conflicts.push("unparseable_config");
+    }
+    let present = |b: bool| if b { "registered" } else { "absent" };
+    let compress = compression(data);
+    let optimization = if compress["enabled"] == false || compress["agents"][c.agent] == false { "disabled" } else { "enabled" };
+    let route = || routing::state(c.agent, &c.root, routing::port(data, c.agent)).0;
+    // A1: project overrides are reported read-only, as a count only; None where unknown or the client has none
+    let mut overrides = None;
+    let (routing, mcp, hooks, plugin, adapter, effective) = match c.kind {
+        "codex" => {
+            let toml = texts[0].clone().unwrap_or_default();
+            if toml.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| l.split('=').next().is_some_and(|k| k.trim() == "model_provider") && !l.contains("\"agent_context\"")) {
+                conflicts.push("foreign_provider");
+            }
+            let r = route();
+            if !unread(0) {
+                overrides = Some(toml.lines().filter(|l| l.trim_start().starts_with("[profiles.")).count());
+            }
+            let h = json_doc(1).map(|d| hooked(&d, "codex", &["SessionStart", "Stop"]));
+            let mcp = if unread(0) { "unknown" } else { present(toml.lines().any(|l| l.trim() == "[mcp_servers.agent_context]")) };
+            let eff = match r {
+                "routed" => "configured",
+                "direct" | "bypassed" => "bypassed",
+                _ => "unknown",
+            };
+            (r, mcp, h.as_deref().map_or("unknown", hooks_state), "unsupported", "provider", eff)
+        }
+        "claude-code" => {
+            let r = route();
+            let h = json_doc(0).map(|d| hooked(&d, "claude", &["SessionStart", "PreToolUse"]));
+            let mcp = json_doc(1).map_or("unknown", |d| present(d["mcpServers"]["agent_context"].is_object()));
+            let set = |v: &Value| v.as_object().is_some_and(|o| !o.is_empty()) || v.as_array().is_some_and(|a| !a.is_empty());
+            overrides = json_doc(1).map(|d| d["projects"].as_object().into_iter().flatten().filter(|(_, p)| ["mcpServers", "env", "enabledMcpjsonServers"].iter().any(|k| set(&p[*k]))).count());
+            let eff = match &h {
+                Some(h) if h[1] => "configured",
+                Some(_) => "missing",
+                None => "unknown",
+            };
+            (r, mcp, h.as_deref().map_or("unknown", hooks_state), "unsupported", "hook", eff)
+        }
+        "claude-desktop-chat" => {
+            let mcp = json_doc(0).map_or("unknown", |d| present(d["mcpServers"]["agent_context"].is_object()));
+            ("unsupported", mcp, "unsupported", "unsupported", "", "unsupported")
+        }
+        _ => {
+            let yaml = texts[0].clone().unwrap_or_default();
+            let (mcp, plugin) = if unread(0) {
+                ("unknown", "unknown")
+            } else {
+                (present(yaml_block(&yaml, "mcp_servers").iter().any(|l| l.trim_start().starts_with("agent_context:"))), if yaml_block(&yaml, "plugins").iter().any(|l| l.contains("agent-context")) { "enabled" } else { "absent" })
+            };
+            let eff = match plugin {
+                "enabled" => "configured",
+                "absent" => "missing",
+                _ => "unknown",
+            };
+            ("unsupported", mcp, "unsupported", plugin, "plugin", eff)
+        }
+    };
+    if routing == "bypassed" && !conflicts.contains(&"foreign_provider") {
+        conflicts.push("foreign_provider");
+    }
+    let effective = if optimization == "disabled" && effective != "unsupported" { "disabled" } else { effective };
+    let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+    json!({
+        "kind": c.kind,
+        "id": sign(key, &[b"profile", c.kind.as_bytes(), c.root.display().to_string().as_bytes()]),
+        "revision": sign(key, &refs),
+        "routing": routing,
+        "mcp": mcp,
+        "hooks": hooks,
+        "plugin": plugin,
+        "optimization": optimization,
+        "effective": {"adapter": (!adapter.is_empty()).then_some(adapter), "state": effective},
+        "owned": !owned.is_empty(),
+        "overrides": overrides,
+        "conflicts": conflicts,
+        "incomplete": incomplete,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("agentq-profiles-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn client(d: &Path, kind: &'static str) -> Client {
+        let (agent, files): (_, &[&str]) = match kind {
+            "codex" => ("codex", &["config.toml", "hooks.json"]),
+            "claude-code" => ("claude", &["settings.json", ".claude.json"]),
+            "claude-desktop-chat" => ("claude-desktop", &["claude_desktop_config.json"]),
+            _ => ("hermes", &["config.yaml"]),
+        };
+        let root = d.join(kind);
+        std::fs::create_dir_all(&root).unwrap();
+        Client { kind, agent, files: files.iter().map(|f| root.join(f)).collect(), root }
+    }
+
+    /// #101 A2, A3: owned MCP/hooks show as configured, ids stay stable, an external edit changes the revision and a
+    /// foreign provider, unparseable or unreadable config is flagged; no path leaves the projection.
+    #[test]
+    fn profile_state_and_revision() {
+        let d = dir("state");
+        let (data, journal) = (d.join("data"), d.join("data/owned.json"));
+        let key = resource::key(&data);
+        let codex = client(&d, "codex");
+        let exe = d.join("agentq");
+        onboard::apply(&onboard::wants("codex", &codex.root, Path::new("unused.json"), &exe), &journal).unwrap();
+        let p = profile(&codex, &data, &journal, &key);
+        assert_eq!((p["mcp"].as_str(), p["hooks"].as_str(), p["routing"].as_str(), p["owned"].as_bool()), (Some("registered"), Some("registered"), Some("direct"), Some(true)));
+        assert_eq!(p["effective"], json!({"adapter": "provider", "state": "bypassed"}), "Direct bypasses provider optimization");
+        assert_eq!((p["plugin"].as_str(), p["overrides"].as_u64()), (Some("unsupported"), Some(0)));
+        let again = profile(&codex, &data, &journal, &key);
+        assert_eq!((again["id"].clone(), again["revision"].clone()), (p["id"].clone(), p["revision"].clone()));
+
+        let toml = codex.root.join("config.toml");
+        let text = std::fs::read_to_string(&toml).unwrap();
+        std::fs::write(&toml, format!("model_provider = \"other\"\n{text}")).unwrap();
+        let edited = profile(&codex, &data, &journal, &key);
+        assert_ne!(edited["revision"], p["revision"], "an external edit changes the revision");
+        assert_eq!(edited["id"], p["id"]);
+        assert_eq!(edited["conflicts"], json!(["foreign_provider"]));
+        std::fs::write(&toml, format!("{text}\n[profiles.work]\nmodel_provider = \"other\"\n")).unwrap();
+        assert_eq!(profile(&codex, &data, &journal, &key)["overrides"], 1, "a codex profile section is an override");
+        std::fs::write(&toml, format!("model_provider = \"other\"\n{text}")).unwrap();
+
+        std::fs::write(&data.join("config.json"), r#"{"compression": {"agents": {"codex": false}}}"#).unwrap();
+        let off = profile(&codex, &data, &journal, &key);
+        assert_eq!((off["optimization"].as_str(), off["effective"]["state"].as_str()), (Some("disabled"), Some("disabled")));
+        assert_ne!(off["revision"], edited["revision"], "the preference is a relevant setting");
+
+        let claude = client(&d, "claude-code");
+        std::fs::write(&claude.files[0], "{not json").unwrap();
+        std::fs::create_dir_all(&claude.files[1]).unwrap();
+        let c = profile(&claude, &data, &journal, &key);
+        assert_eq!((c["hooks"].as_str(), c["mcp"].as_str(), c["owned"].as_bool()), (Some("unknown"), Some("unknown"), Some(false)));
+        assert_eq!((c["conflicts"].clone(), c["incomplete"].clone()), (json!(["unparseable_config"]), json!(["unreadable_config"])));
+        assert_eq!(c["effective"], json!({"adapter": "hook", "state": "unknown"}));
+        assert!(c["overrides"].is_null(), "an unreadable .claude.json leaves overrides unknown");
+        std::fs::remove_dir(&claude.files[1]).unwrap();
+        let projects = json!({"projects": {"/Users/alice/secret": {"mcpServers": {"x": {"command": "sk-secret"}}}, "/Users/alice/plain": {"mcpServers": {}, "allowedTools": []}, "/Users/alice/env": {"env": {"TOKEN": "sk-secret"}}}});
+        std::fs::write(&claude.files[1], projects.to_string()).unwrap();
+        let o = profile(&claude, &data, &journal, &key);
+        assert_eq!(o["overrides"], 2, "projects with MCP servers or env override the profile");
+        assert!(!o.to_string().contains("alice") && !o.to_string().contains("sk-secret"));
+
+        let hermes = client(&d, "hermes");
+        std::fs::write(&hermes.files[0], "mcp_servers:\n  agent_context:\n    command: x\nplugins:\n  enabled:\n    - agent-context\n").unwrap();
+        let h = profile(&hermes, &data, &journal, &key);
+        assert_eq!((h["mcp"].as_str(), h["plugin"].as_str(), h["routing"].as_str(), h["effective"]["state"].as_str()), (Some("registered"), Some("enabled"), Some("unsupported"), Some("configured")));
+
+        let chat = client(&d, "claude-desktop-chat");
+        let ch = profile(&chat, &data, &journal, &key);
+        assert_eq!((ch["mcp"].as_str(), ch["hooks"].as_str(), ch["effective"]["adapter"].is_null(), ch["overrides"].is_null()), (Some("absent"), Some("unsupported"), true, true));
+
+        let text = [p, edited, c, h, ch].iter().map(Value::to_string).collect::<String>();
+        assert!(!text.contains(&d.display().to_string()) && !text.contains("agentq-profiles"), "no path in {text}");
+        let _ = std::fs::remove_dir_all(d);
+    }
+}
