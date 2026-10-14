@@ -330,7 +330,7 @@ pub fn hook_failures(data: &Path) -> Vec<String> {
 }
 
 /// Heartbeat `agentq.hooks` (#134): per agent and event with any record, the state of its latest run (`ok`, `failed`,
-/// or `unknown` when its success stamp, failure record or retained last failure is unreadable), its newest successful run and its last failure `{at, error}`, which
+/// or `unknown` with a `reason` when its success stamp, failure record or retained last failure is unreadable), its newest successful run and its last failure `{at, error}`, which
 /// stays after a later success; null when it never failed.
 pub fn hooks(data: &Path) -> Value {
     let unreadable = || json!({"at": null, "error": "unreadable failure record"});
@@ -354,13 +354,17 @@ pub fn hooks(data: &Path) -> Value {
                 continue;
             }
             // an unreadable success stamp or retained failure leaves the latest run unproved, never `ok` (R12)
-            let state = match (&failed, &last) {
-                _ if ok == Some(None) => "unknown",
-                (_, Some(f)) if f["at"].is_null() => "unknown",
-                (Some(_), _) => "failed",
-                _ => "ok",
+            let (state, reason) = match (&failed, &last) {
+                _ if ok == Some(None) => ("unknown", Some("unreadable success stamp")),
+                (_, Some(f)) if f["at"].is_null() => ("unknown", Some("unreadable failure record")),
+                (Some(_), _) => ("failed", None),
+                _ => ("ok", None),
             };
-            out.push(json!({"agent": a, "event": e, "state": state, "last_ok_at": ok.flatten(), "last_failure": last}));
+            let mut hook = json!({"agent": a, "event": e, "state": state, "last_ok_at": ok.flatten(), "last_failure": last});
+            if let Some(r) = reason {
+                hook["reason"] = r.into();
+            }
+            out.push(hook);
         }
     }
     out.into()
@@ -622,7 +626,7 @@ mod tests {
         // #134: the heartbeat keeps the last failure after the success that cleared it; unreadable reads unknown
         assert_eq!(hooks(&d), json!([
             {"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 400, "last_failure": {"at": 400, "error": "stdout: broken pipe"}},
-            {"agent": "claude", "event": "SessionStart", "state": "unknown", "last_ok_at": null, "last_failure": {"at": null, "error": "unreadable failure record"}},
+            {"agent": "claude", "event": "SessionStart", "state": "unknown", "reason": "unreadable failure record", "last_ok_at": null, "last_failure": {"at": null, "error": "unreadable failure record"}},
         ]));
         let _ = std::fs::remove_dir_all(&d);
     }

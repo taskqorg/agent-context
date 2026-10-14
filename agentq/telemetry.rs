@@ -460,12 +460,12 @@ mod tests {
         // a corrupt retained failure after that success reads unknown, never ok
         std::fs::write(d.join("evidence").join("codex.Stop.last_failure"), "{").unwrap();
         let s = beat(&json!({}));
-        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "last_ok_at": 200, "last_failure": {"at": null, "error": "unreadable failure record"}}]));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "reason": "unreadable failure record", "last_ok_at": 200, "last_failure": {"at": null, "error": "unreadable failure record"}}]));
         // a present but unreadable success stamp after a failure reads unknown, never ok; the entry stays
         std::fs::write(d.join("evidence").join("codex.Stop.last_failure"), failure.to_string()).unwrap();
         std::fs::write(d.join("evidence").join("codex.Stop"), "{").unwrap();
         let s = beat(&json!({}));
-        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "last_ok_at": null, "last_failure": failure}]));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "reason": "unreadable success stamp", "last_ok_at": null, "last_failure": failure}]));
         // the start heartbeat waits for a binding proxy, at most START_WAIT; hourly ones never wait
         let binding = json!({"codex": {"routing": "unknown", "reason": "proxy on 127.0.0.1:1 not answering"}});
         assert!(start_waits(&binding, 0, 1000, 1000 + START_WAIT - 1));
