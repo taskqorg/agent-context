@@ -18,6 +18,7 @@ mod telemetry;
 
 use coreq::{Tool, service, status, update, write_atomic};
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -43,8 +44,9 @@ fn main() {
     if let Some(code) = compression::replay() { std::process::exit(code); }
     let t = tool();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // the launcher copy only picks a release (coreq.md § Launcher)
-    if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && t.current().is_some() {
+    // the launcher copy only picks a release (coreq.md § Launcher); hooks run in place, so a release mid-update or a
+    // failed start never fails the client's hook (#132)
+    if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && t.current().is_some() && args.first().map(String::as_str) != Some("hook") {
         coreq::launcher::launch(&t, &args);
     }
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -103,9 +105,15 @@ fn main() {
         ["configure", rest @ ..] => configure_cmd(&t, rest),
         // ponytail: no-op `{}` until RTK qualifies commands (§ 3) and the service reports routing (§ 4)
         ["hook", agent @ ("codex" | "claude" | "hermes"), event] => {
-            let _ = std::io::read_to_string(std::io::stdin());
-            executor::stamp(&t.install.join("data"), agent, event, now());
-            println_code("{}")
+            let data = t.install.join("data");
+            // println! panics on a closed stdout (exit 101); a hook always answers `{}` and exits 0
+            let run = std::io::read_to_string(std::io::stdin()).map_err(|e| format!("stdin: {e}"))
+                .and_then(|_| writeln!(std::io::stdout(), "{{}}").map_err(|e| format!("stdout: {e}")));
+            match run {
+                Ok(()) => executor::stamp(&data, agent, event, now()),
+                Err(e) => executor::hook_failed(&data, agent, event, now(), &e),
+            }
+            0
         }
         ["langfuse"] => match telemetry::read_keys().and_then(|k| telemetry::save(&t.install.join("data"), &k)) {
             Ok(store) => println_code(&format!("langfuse: keys saved in {store}; the service sends on its next pass")),
@@ -188,7 +196,10 @@ fn doctor(t: &Tool) -> i32 {
     for (a, r) in agents.as_object().into_iter().flatten() {
         let want = r["intended"].as_str().unwrap_or("unknown");
         let fix = if want == "routed" && r["routing"] != "routed" { "; run `agentq onboard --yes`" } else { "" };
-        line(r["routing"] != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
+        line(r["routing"] != "unknown" && want != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
+    }
+    for f in executor::hook_failures(&t.install.join("data")) {
+        line(false, format!("hooks: {f} failed; its next successful run clears it"));
     }
     for d in routing::drift(&journal(t)) {
         line(false, format!("routing: drift: {d} changed since onboard; run `agentq onboard --yes`"));

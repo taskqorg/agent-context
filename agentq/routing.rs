@@ -142,7 +142,8 @@ pub fn state(agent: &str, root: &Path, port: Option<u16>) -> (&'static str, Stri
 
 /// Records `agentq direct` for `agents` in `config.json` `direct` (`on`), or clears it on `onboard --yes`.
 pub fn set_direct(data: &Path, agents: &[&str], on: bool) -> Result<(), String> {
-    let mut c = config(data);
+    // a corrupt config.json stops here instead of being replaced, so its ports and settings survive
+    let mut c = read_json(&data.join("config.json")).map_err(|_| format!("{} unreadable", data.join("config.json").display()))?.unwrap_or(json!({}));
     let mut list: Vec<String> = c["direct"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|a| !agents.contains(a)).map(String::from).collect();
     if on {
         list.extend(agents.iter().map(|a| a.to_string()));
@@ -155,17 +156,27 @@ pub fn set_direct(data: &Path, agents: &[&str], on: bool) -> Result<(), String> 
     write_atomic(&data.join("config.json"), &serde_json::to_string_pretty(&c).unwrap_or_default())
 }
 
+/// A JSON file: `None` when missing, `Err` when unreadable or corrupt.
+fn read_json(p: &Path) -> Result<Option<Value>, ()> {
+    match std::fs::read_to_string(p) {
+        Ok(s) => serde_json::from_str(&s).map(Some).map_err(|_| ()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+
 /// Whether the agent should be routed (#132): an onboarded agent with shipped routing and no `agentq direct`.
 /// ponytail: Claude Code and Hermes are intended direct until their routing ships (owner decision on #132).
 pub fn intended(data: &Path, agent: &str, root: &Path) -> (&'static str, &'static str) {
     if !ROUTED.contains(&agent) {
         return ("direct", "routing not shipped");
     }
-    if config(data)["direct"].as_array().is_some_and(|l| l.iter().any(|a| a == agent)) {
+    let Ok(c) = read_json(&data.join("config.json")) else { return ("unknown", "config.json unreadable") };
+    if c.is_some_and(|c| c["direct"].as_array().is_some_and(|l| l.iter().any(|a| a == agent))) {
         return ("direct", "`agentq direct`");
     }
-    let j: Vec<Value> = std::fs::read_to_string(data.join("owned.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-    if !j.iter().any(|e| e["file"].as_str().is_some_and(|f| Path::new(f).starts_with(root))) {
+    let Ok(j) = read_json(&data.join("owned.json")) else { return ("unknown", "owned.json unreadable") };
+    if !j.as_ref().and_then(Value::as_array).into_iter().flatten().any(|e| e["file"].as_str().is_some_and(|f| Path::new(f).starts_with(root))) {
         return ("direct", "not onboarded");
     }
     ("routed", "onboarded")
@@ -185,11 +196,15 @@ pub fn agents(data: &Path) -> Value {
     out.into()
 }
 
-/// Onboarded agents that should be routed but are not, as `<agent> <routing> (<reason>)` (doctor, heartbeat).
+/// Onboarded agents that should be routed but are not, as `<agent> <routing> (<reason>)`, and agents whose intent is
+/// unknown, as `<agent> intended unknown (<reason>)` (heartbeat).
 pub fn problems(agents: &Value) -> Vec<String> {
     agents.as_object().into_iter().flatten()
-        .filter(|(_, r)| r["intended"] == "routed" && r["routing"] != "routed")
-        .map(|(a, r)| format!("{a} {} ({})", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or("")))
+        .filter_map(|(a, r)| match (r["intended"].as_str(), r["routing"].as_str()) {
+            (Some("routed"), Some("routed")) | (Some("direct"), _) => None,
+            (Some("routed"), routing) => Some(format!("{a} {} ({})", routing.unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""))),
+            _ => Some(format!("{a} intended unknown ({})", r["intended_reason"].as_str().unwrap_or(""))),
+        })
         .collect()
 }
 
@@ -291,6 +306,13 @@ mod tests {
         assert!(problems(&row("direct")).is_empty());
         set_direct(&data, &["codex"], false).unwrap();
         assert_eq!(intended(&data, "codex", &root).0, "routed");
+        std::fs::write(data.join("owned.json"), "[{").unwrap();
+        assert_eq!(intended(&data, "codex", &root), ("unknown", "owned.json unreadable"), "corrupt journal is not intended direct");
+        std::fs::write(data.join("config.json"), "{").unwrap();
+        assert_eq!(intended(&data, "codex", &root), ("unknown", "config.json unreadable"));
+        assert!(set_direct(&data, &["codex"], true).is_err(), "a corrupt config.json is not replaced");
+        assert_eq!(std::fs::read_to_string(data.join("config.json")).unwrap(), "{");
+        assert_eq!(problems(&json!({"codex": {"routing": "direct", "intended": "unknown", "intended_reason": "owned.json unreadable"}})), ["codex intended unknown (owned.json unreadable)"]);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

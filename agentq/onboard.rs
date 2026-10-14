@@ -498,8 +498,12 @@ mod tests {
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         assert!(restore(&journal, false, Some(&["codex"])).unwrap().is_empty(), "repeat is safe");
 
+        crate::routing::set_direct(&d, &["codex"], true).unwrap();
+        assert_eq!(crate::routing::intended(&d, "codex", &d), ("direct", "`agentq direct`"));
+        crate::routing::set_direct(&d, &["codex"], false).unwrap();
         apply(&all(), &journal).unwrap();
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), routed, "onboard routes again");
+        assert_eq!(crate::routing::intended(&d, "codex", &d), ("routed", "onboarded"), "#132 A1: re-onboarded Codex is intended routed");
         // a user who drops the provider line is reported as drift
         std::fs::write(&cfg, routed.replacen("model_provider = \"agent_context\"\n", "", 1)).unwrap();
         assert_eq!(crate::routing::drift(&journal).len(), 1);
