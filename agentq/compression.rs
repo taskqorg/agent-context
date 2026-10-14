@@ -438,6 +438,8 @@ fn stats_date(name: &str) -> Option<&str> {
 
 /// The producer's coverage journal in `data/stats/` (ACCOUNTING O3).
 pub const COVERAGE: &str = "coverage.json";
+/// Left when a journal write fails: the journal no longer proves coverage until the next written journal resets it.
+pub const FAILED: &str = "coverage.failed";
 
 /// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
 /// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` here and adds a reset: the
@@ -520,7 +522,10 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     }
     let journal = dir.join(COVERAGE);
     let before = std::fs::read(&journal).ok();
-    let mut cov = coverage(before.as_deref(), held, &lines, at);
+    let failed = dir.join(FAILED);
+    // A stale journal after a failed write proves nothing; an empty one parses as unreadable and resets.
+    let proven = if failed.exists() { Some(&b""[..]) } else { before.as_deref() };
+    let mut cov = coverage(proven, held, &lines, at);
     let appended = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -546,10 +551,15 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
         });
     }
     let after = cov.to_string();
-    // A lost journal write keeps the previous, still true journal; the next record then reads a reset.
     if before.as_deref() != Some(after.as_bytes()) {
-        if let Err(e) = coreq::write_atomic(&journal, &after) {
-            eprintln!("agentq: stats coverage unknown: {e}");
+        match coreq::write_atomic(&journal, &after) {
+            Ok(()) => _ = std::fs::remove_file(&failed),
+            Err(e) => {
+                eprintln!("agentq: stats coverage unknown: {e}");
+                if let Err(e) = std::fs::write(&failed, at.to_string()) {
+                    eprintln!("agentq: stats coverage marker: {e}");
+                }
+            }
         }
     }
     appended?;
@@ -877,6 +887,34 @@ mod tests {
         assert_eq!(j["counts"][&day], 2, "{j}");
         let a = crate::accounting::local(&d, crate::now());
         assert!(a.to_string().contains("stats records lost"), "{a}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: a failed journal write stays unknown even after the day file is truncated to match it.
+    #[test]
+    fn journal_write_failure_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-journal-fail-{}", crate::mcp::new_id()));
+        let stats_dir = d.join("stats");
+        std::fs::create_dir_all(&stats_dir).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        compress(&d, "hermes", &input).unwrap();
+        // write_atomic stages coverage.tmp; a directory there fails every journal write on every platform.
+        let block = stats_dir.join("coverage.tmp");
+        std::fs::create_dir(&block).unwrap();
+        compress(&d, "hermes", &input).unwrap();
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let s = std::fs::read_to_string(&day).unwrap();
+        std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
+        let a = crate::accounting::local(&d, crate::now());
+        assert_eq!(a["unknown"], "coverage journal write failed", "{a}");
+        // The next written journal resets coverage and clears the marker.
+        std::fs::remove_dir(&block).unwrap();
+        compress(&d, "hermes", &input).unwrap();
+        assert!(!stats_dir.join(FAILED).exists());
+        let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
+        assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
+        assert!(crate::accounting::local(&d, crate::now())["unknown"].is_null());
         std::fs::remove_dir_all(d).unwrap();
     }
 }
