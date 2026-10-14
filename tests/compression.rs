@@ -295,6 +295,19 @@ fn execution_recovery_stats_chain() {
     let gone: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
     assert_eq!((&gone["state"], &gone["calls"]), (&json!("unknown"), &Value::Null), "{gone}");
     assert_eq!(gone["coverage"]["sources"][0]["reasons"][0]["detail"], "stats records lost", "{gone}");
+    // A reset rebuilds counts from the records held then: a later truncation reads lost records, never complete.
+    for _ in 0..3 {
+        cli(&root, &["run", "--", "cargo", "test"], None, &[]);
+    }
+    std::fs::remove_file(&journal).unwrap();
+    cli(&root, &["run", "--", "cargo", "test"], None, &[]);
+    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!(j["counts"][day.file_stem().unwrap().to_str().unwrap()], 4, "{j}");
+    let first = std::fs::read_to_string(&day).unwrap().lines().next().unwrap().to_string();
+    std::fs::write(&day, first + "\n").unwrap();
+    let cut: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
+    assert_eq!((&cut["state"], &cut["calls"], &cut["lower_bound"]), (&json!("partial"), &json!(1), &json!(true)), "{cut}");
+    assert_eq!(cut["coverage"]["sources"][0]["reasons"][0]["detail"], "stats records lost", "{cut}");
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {

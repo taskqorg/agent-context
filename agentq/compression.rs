@@ -441,9 +441,9 @@ pub const COVERAGE: &str = "coverage.json";
 
 /// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
 /// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` here and adds a reset: the
-/// older records stay countable but unproven.
-fn coverage(journal: Option<&[u8]>, held: bool, at: u64) -> Value {
-    let fresh = |resets: Vec<u64>| json!({"schema":1,"since":at,"resets":resets,"gaps":[],"counts":{}});
+/// older records stay countable but unproven, and `counts` restarts from the records held now.
+fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64) -> Value {
+    let fresh = |resets: Vec<u64>| json!({"schema":1,"since":at,"resets":resets,"gaps":[],"counts":lines});
     match journal {
         None if !held => fresh(vec![]),
         None => fresh(vec![at]),
@@ -488,6 +488,8 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let oldest = crate::date(cutoff);
     let mut held = false;
     let mut trimmed = None;
+    // ponytail: reads every held day file (at most 8) on each record; count only on a reset if this gets slow.
+    let mut lines = serde_json::Map::new();
     for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let e = e.map_err(|e| e.to_string())?;
         let name = e.file_name().to_string_lossy().into_owned();
@@ -508,11 +510,16 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
                 coreq::write_atomic(&e.path(), &kept)?;
                 trimmed = Some(kept.lines().count());
             }
+            lines.insert(oldest.clone(), json!(kept.lines().count()));
+        } else if let Some(d) = stats_date(&name) {
+            if let Ok(s) = std::fs::read_to_string(e.path()) {
+                lines.insert(d.to_string(), json!(s.lines().count()));
+            }
         }
     }
     let journal = dir.join(COVERAGE);
     let before = std::fs::read(&journal).ok();
-    let mut cov = coverage(before.as_deref(), held, at);
+    let mut cov = coverage(before.as_deref(), held, &lines, at);
     let appended = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
