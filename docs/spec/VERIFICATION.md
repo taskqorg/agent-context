@@ -75,3 +75,12 @@ Run 2026-10-14, 0.5.7 to 0.5.8, CLI `agentq update`. No host routes an agent, so
 | Windows | Windows 11 Pro 10.0.26100 | 9020 | 35096 | 02:58:53 | 02:59:17 (+24 s) | pass |
 
 Drain with an open proxied connection (deferral log, then restart once it closes) is covered by unit tests only; no routed host was available.
+
+## Heartbeat routing and hook state (#134)
+
+Live check for agentq.md § 6 `agentq.installation` (`agentq.routing`, `agentq.hooks`), release v0.6.0 (tag at bd2b4d9, release CI green), run 2026-10-15 on Windows 11 Pro 10.0.26100.
+
+- Isolated install (OS temp dir, no Langfuse keys, so spans stay queued): the released `agentq-0.6.0-windows-x86_64.exe` (sha256 matches `SHA256SUMS`) ran `hook codex Stop` with invalid UTF-8 stdin (answered `{}`, exit 0), then `service run`. Its start heartbeat carried `agentq.hooks` `[{"agent":"codex","event":"Stop","state":"failed","last_ok_at":null,"last_failure":{"at":…,"error":"stdin: stream did not contain valid UTF-8"}}]` and `agentq.routing` `{"codex":{"routing":"direct","reason":"config.toml selects no agent_context provider","intended":"direct","intended_reason":"not onboarded"}}`. After one successful `hook codex Stop`, the next heartbeat read `state` `ok` with the same `last_failure`, and `agentq.hook_failures` read `none`.
+- Working install: `agentq update` moved the service from 0.5.9 to 0.6.0. A forced `hook codex Stop` with invalid UTF-8 stdin made `doctor` report the failure. The 0.6.0 start heartbeat after it was delivered: `telemetry status` showed the last delivery 13 s after the start, error none.
+- Unverified: span contents read back from Langfuse or dashq (this worker has no read access), and mac and hermes-fra1 rollout (no host access; they pick up 0.6.0 through the hourly update).
+- Found: `agentq service restart` on this host ended the `AgentQ-host` task and then failed `schtasks /Create` with Access denied, leaving no service. `schtasks /Run /TN AgentQ-host` restored it.
