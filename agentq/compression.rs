@@ -278,11 +278,9 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
         "not_qualified"
     });
     if reason == "no_engine" && qualified {
-        r["engine"] = json!(if crate::engines::rtk_path(install).is_file() {
-            "rtk"
-        } else {
-            "none"
-        });
+        let rtk = crate::engines::rtk_path(install).is_file();
+        r["engine"] = json!(if rtk { "rtk" } else { "none" });
+        r["engine_version"] = json!(rtk.then_some(crate::engines::RTK));
         let step = Instant::now();
         let filtered = filter(install, cmd, &native.stdout, &native.stderr, code, &id);
         crate::profile::trace(
@@ -421,7 +419,8 @@ fn record(agent: &str, adapter: &str, tool: &str, input: &Value, bytes: usize, a
         "agent":agent,"adapter":adapter,"tool":tool,"runner":null,"engine":"none",
         "outcome":"passed","reason":"not_qualified","bytes_in":bytes,"bytes_out":bytes,
         "est_tokens_in":bytes.div_ceil(4),"est_tokens_out":bytes.div_ceil(4),"duration_ms":0,"ref":null,
-        "session":input["session"],"turn":input["turn"],"tool_call":input["tool_call"]})
+        "session":input["session"],"turn":input["turn"],"tool_call":input["tool_call"],
+        "version":env!("CARGO_PKG_VERSION"),"engine_version":null})
 }
 
 fn stats_date(name: &str) -> Option<&str> {
@@ -748,7 +747,7 @@ mod tests {
             .unwrap();
             let r: Value = serde_json::from_str(s.lines().last().unwrap()).unwrap();
             assert_eq!(r["reason"], why);
-            assert_eq!(r.as_object().unwrap().len(), 19);
+            assert_eq!(r.as_object().unwrap().len(), 21);
             assert!(!s.contains("secret") && !s.contains(text));
         }
         assert_eq!(stats(&d).unwrap()["groups"][0]["calls"], 3);
