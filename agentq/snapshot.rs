@@ -59,6 +59,99 @@ pub fn project(installation: &str, runtime: &str, status: Option<&Value>, resour
         "engines": engines,
         "queue": queue,
         "resource": resource.map_or_else(|| json!({"unknown": "no sample yet"}), project_resource),
+        "configuration": configuration(status, now),
+    })
+}
+
+/// At most this many profiles cross; more set `truncated` and disable every write.
+const PROFILES: usize = 16;
+const FIELDS: [(&str, &[&str]); 5] = [
+    ("routing", &["routed", "direct", "bypassed", "unknown"]),
+    ("optimization", &["enabled", "disabled"]),
+    ("mcp", &["registered", "absent", "unknown"]),
+    ("hooks", &["registered", "partial", "absent", "unknown"]),
+    ("plugin", &["enabled", "absent", "unknown"]),
+];
+const EFFECTIVE: [&str; 6] = ["configured", "disabled", "bypassed", "missing", "unknown", "unsupported"];
+const ADAPTERS: [&str; 3] = ["provider", "hook", "plugin"];
+const CONFLICTS: [&str; 2] = ["foreign_provider", "unparseable_config"];
+const INCOMPLETE: [&str; 1] = ["unreadable_config"];
+
+fn id16(v: &Value) -> Option<&str> {
+    v.as_str().filter(|s| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn codes(v: &Value, allowed: &[&str], other: &'static str) -> Vec<Value> {
+    let mut out: Vec<&str> = v.as_array().into_iter().flatten().map(|c| pick(c.as_str(), allowed)).map(|c| if c == "unknown" { other } else { c }).collect();
+    out.dedup();
+    out.into_iter().map(Value::from).collect()
+}
+
+/// CONFIGURATION A2: profiles of status.json `configuration`. Labels, aliases and operations come from the kind,
+/// every other value from a fixed set; ids and revisions are 16 hex. Configured never reads as verified, and a stale,
+/// truncated, incomplete or conflicting profile is never writable.
+/// ponytail: writes stay `not_released` and verification `no_evidence` until A3 apply and evidence correlation land.
+fn configuration(status: Option<&Value>, now: u64) -> Value {
+    let c = match status.map(|s| &s["configuration"]) {
+        None => return json!({"state": "unknown", "reason": "no status"}),
+        Some(Value::Null) => return json!({"state": "unknown", "reason": "older producer"}),
+        Some(c) if c["schema"] != crate::profiles::SCHEMA => return json!({"state": "unknown", "reason": "unsupported schema"}),
+        Some(c) => c,
+    };
+    let at = c["at"].as_u64();
+    let fresh = at.is_some_and(|a| a <= now && now - a <= STALE);
+    let all: Vec<&Value> = c["profiles"].as_array().into_iter().flatten().collect();
+    let truncated = all.len() > PROFILES;
+    let mut dropped = false;
+    let profiles: Vec<Value> = all
+        .into_iter()
+        .take(PROFILES)
+        .filter_map(|p| {
+            let kind = crate::profiles::KINDS.iter().find(|k| p["kind"] == k.0);
+            let (Some((kind, label, aliases, ops)), Some(id), Some(rev)) = (kind, id16(&p["id"]), id16(&p["revision"])) else {
+                dropped = true;
+                return None;
+            };
+            let mut out = json!({"id": id, "kind": kind, "label": label, "aliases": aliases, "revision": rev, "operations": ops});
+            let mut unavailable = Map::new();
+            for (f, allowed) in FIELDS {
+                if ops.contains(&f) {
+                    out[f] = json!(pick(p[f].as_str(), allowed));
+                } else {
+                    out[f] = json!("unsupported");
+                    unavailable.insert(f.into(), json!("unsupported_client"));
+                }
+            }
+            out["unavailable"] = unavailable.into();
+            let state = pick(p["effective"]["state"].as_str(), &EFFECTIVE);
+            let adapter = p["effective"]["adapter"].as_str().filter(|a| ADAPTERS.contains(a));
+            out["effective"] = json!({"adapter": adapter, "state": state});
+            out["configured"] = json!(state == "configured");
+            out["verification"] = json!({"state": "unknown", "reason": "no_evidence"});
+            out["owned"] = json!(p["owned"].as_bool());
+            let (conflicts, incomplete) = (codes(&p["conflicts"], &CONFLICTS, "other"), codes(&p["incomplete"], &INCOMPLETE, "other"));
+            let mut writes = vec!["not_released"];
+            for (bad, code) in [(!fresh, "stale"), (truncated, "truncated"), (!incomplete.is_empty(), "incomplete"), (!conflicts.is_empty(), "conflict")] {
+                if bad {
+                    writes.push(code);
+                }
+            }
+            out["conflicts"] = conflicts.into();
+            out["incomplete"] = incomplete.into();
+            out["writes"] = json!({"enabled": false, "reasons": writes});
+            Some(out)
+        })
+        .collect();
+    let d = &c["defaults"];
+    json!({
+        "schema": crate::profiles::SCHEMA,
+        "at": at,
+        "state": if fresh { "fresh" } else { "stale" },
+        "revision": id16(&c["revision"]),
+        "defaults": {"enabled": d["enabled"].as_bool(), "min_bytes": d["min_bytes"].as_u64(), "stats": d["stats"].as_str().filter(|s| ["queue", "off"].contains(s))},
+        "truncated": truncated,
+        "incomplete": dropped,
+        "profiles": profiles,
     })
 }
 
@@ -152,6 +245,79 @@ mod tests {
         assert_eq!(res["disks"][1]["unknown"], "probe failed", "a stat error names no probe path");
         let text = p.to_string();
         for leak in ["alice", "/Users", "/tmp", "/proc", "127.0.0.1", "lf.example", "sk-lf", "pid", "host"] {
+            assert!(!text.contains(leak), "{leak} in {text}");
+        }
+    }
+
+    fn with_profiles(at: u64, profiles: Value) -> Value {
+        let mut s = status();
+        s["configuration"] = json!({"schema": 1, "at": at, "revision": "00112233445566ff", "defaults": {"enabled": true, "min_bytes": 2048, "stats": "queue"}, "profiles": profiles});
+        s
+    }
+
+    fn codex(extra: Value) -> Value {
+        let mut p = json!({"kind": "codex", "id": "0123456789abcdef", "revision": "fedcba9876543210", "routing": "routed", "mcp": "registered", "hooks": "registered", "plugin": "unsupported", "optimization": "enabled",
+            "effective": {"adapter": "provider", "state": "configured"}, "owned": true, "conflicts": [], "incomplete": []});
+        for (k, v) in extra.as_object().into_iter().flatten() {
+            p[k] = v.clone();
+        }
+        p
+    }
+
+    /// #101 A1, A5: an older producer's status keeps every original field and reports configuration unknown; a
+    /// future schema is unknown too.
+    #[test]
+    fn old_producer_configuration_unknown() {
+        let old = project("inst", "macos", Some(&status()), None, 1030);
+        assert_eq!(old["configuration"], json!({"state": "unknown", "reason": "older producer"}));
+        let new = project("inst", "macos", Some(&with_profiles(1000, json!([codex(json!({}))]))), None, 1030);
+        for k in ["schema", "installation", "runtime", "version", "status_at", "service", "update", "routing", "engines", "queue", "resource"] {
+            assert_eq!(old[k], new[k], "{k} unchanged");
+        }
+        let mut future = with_profiles(1000, json!([]));
+        future["configuration"]["schema"] = json!(2);
+        assert_eq!(project("inst", "macos", Some(&future), None, 1030)["configuration"]["reason"], "unsupported schema");
+        assert_eq!(project("inst", "macos", None, None, 1030)["configuration"]["reason"], "no status");
+    }
+
+    /// #101 A2–A5: ids, aliases, capabilities and effective state cross; configured is never verified; stale,
+    /// truncated, incomplete or conflicting profiles disable writes; no path, credential, prompt or free text crosses.
+    #[test]
+    fn profile_projection() {
+        let profiles = json!([
+            codex(json!({})),
+            {"kind": "claude-desktop-chat", "id": "1111111111111111", "revision": "2222222222222222", "routing": "routed", "mcp": "registered", "hooks": "registered", "effective": {"adapter": "/bin/sh", "state": "unsupported"}},
+            codex(json!({"id": "3333333333333333", "conflicts": ["foreign_provider", "model sk-secret at /Users/alice/.codex"], "incomplete": ["unreadable_config"], "routing": "routed via /Users/alice", "label": "alice's prompt"})),
+            codex(json!({"id": "/Users/alice/.codex"})),
+            {"kind": "/tmp/evil", "id": "4444444444444444", "revision": "5555555555555555"},
+        ]);
+        let c = project("inst", "macos", Some(&with_profiles(1000, profiles)), None, 1030)["configuration"].clone();
+        assert_eq!((c["state"].as_str(), c["revision"].as_str(), c["incomplete"].as_bool(), c["truncated"].as_bool()), (Some("fresh"), Some("00112233445566ff"), Some(true), Some(false)));
+        let p = c["profiles"].as_array().unwrap();
+        assert_eq!(p.len(), 3, "an invalid id or kind does not cross");
+        assert_eq!(p[0]["aliases"], json!(["codex-cli", "codex-desktop"]), "one target, every alias shown");
+        assert_eq!((p[0]["routing"].as_str(), p[0]["effective"]["state"].as_str(), p[0]["configured"].as_bool()), (Some("routed"), Some("configured"), Some(true)));
+        assert_eq!(p[0]["verification"], json!({"state": "unknown", "reason": "no_evidence"}), "configured never implies verified");
+        assert_eq!(p[0]["writes"], json!({"enabled": false, "reasons": ["not_released"]}));
+        assert_eq!((p[1]["routing"].as_str(), p[1]["hooks"].as_str(), p[1]["mcp"].as_str(), p[1]["operations"].clone()), (Some("unsupported"), Some("unsupported"), Some("registered"), json!(["mcp"])));
+        assert_eq!(p[1]["unavailable"]["routing"], "unsupported_client", "unsupported is explicit, not off");
+        assert!(p[1]["effective"]["adapter"].is_null());
+        assert_eq!((p[2]["conflicts"].clone(), p[2]["incomplete"].clone(), p[2]["routing"].as_str()), (json!(["foreign_provider", "other"]), json!(["unreadable_config"]), Some("unknown")));
+        assert_eq!(p[2]["writes"]["reasons"], json!(["not_released", "incomplete", "conflict"]));
+        assert_eq!(p[2]["label"], "Codex", "labels come from the kind");
+
+        let stale = project("inst", "macos", Some(&with_profiles(1000, json!([codex(json!({}))]))), None, 2000)["configuration"].clone();
+        assert_eq!((stale["state"].as_str(), stale["profiles"][0]["writes"]["reasons"].clone()), (Some("stale"), json!(["not_released", "stale"])));
+        let future = project("inst", "macos", Some(&with_profiles(1100, json!([codex(json!({}))]))), None, 1030)["configuration"].clone();
+        assert_eq!(future["state"], "stale", "a future observation time is clock-uncertain");
+
+        let many: Vec<Value> = (0..20).map(|_| codex(json!({}))).collect();
+        let t = project("inst", "macos", Some(&with_profiles(1000, json!(many))), None, 1030)["configuration"].clone();
+        assert_eq!((t["truncated"].as_bool(), t["profiles"].as_array().map(Vec::len)), (Some(true), Some(16)));
+        assert!(t["profiles"][0]["writes"]["reasons"].as_array().unwrap().contains(&json!("truncated")));
+
+        let text = c.to_string();
+        for leak in ["alice", "/Users", "/tmp", "/bin", "sk-secret", "prompt", "model "] {
             assert!(!text.contains(leak), "{leak} in {text}");
         }
     }
