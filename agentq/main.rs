@@ -18,6 +18,7 @@ mod telemetry;
 
 use coreq::{Tool, service, status, update, write_atomic};
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -43,8 +44,9 @@ fn main() {
     if let Some(code) = compression::replay() { std::process::exit(code); }
     let t = tool();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // the launcher copy only picks a release (coreq.md § Launcher)
-    if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && t.current().is_some() {
+    // the launcher copy only picks a release (coreq.md § Launcher); hooks run in place, so a release mid-update or a
+    // failed start never fails the client's hook (#132)
+    if std::env::current_exe().ok() == Some(t.install.join(t.exe_name())) && t.current().is_some() && args.first().map(String::as_str) != Some("hook") {
         coreq::launcher::launch(&t, &args);
     }
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -103,9 +105,18 @@ fn main() {
         ["configure", rest @ ..] => configure_cmd(&t, rest),
         // ponytail: no-op `{}` until RTK qualifies commands (§ 3) and the service reports routing (§ 4)
         ["hook", agent @ ("codex" | "claude" | "hermes"), event] => {
-            let _ = std::io::read_to_string(std::io::stdin());
-            executor::stamp(&t.install.join("data"), agent, event, now());
-            println_code("{}")
+            let data = t.install.join("data");
+            // println! panics on a closed stdout (exit 101); a hook always answers `{}` and exits 0, even after a
+            // stdin failure, and records every failure of the run
+            let read = std::io::read_to_string(std::io::stdin()).err().map(|e| format!("stdin: {e}"));
+            let wrote = writeln!(std::io::stdout(), "{{}}").err().map(|e| format!("stdout: {e}"));
+            let errors: Vec<String> = read.into_iter().chain(wrote).collect();
+            if errors.is_empty() {
+                executor::stamp(&data, agent, event, now());
+            } else {
+                executor::hook_failed(&data, agent, event, now(), &errors.join("; "));
+            }
+            0
         }
         ["langfuse"] => match telemetry::read_keys().and_then(|k| telemetry::save(&t.install.join("data"), &k)) {
             Ok(store) => println_code(&format!("langfuse: keys saved in {store}; the service sends on its next pass")),
@@ -184,8 +195,14 @@ fn doctor(t: &Tool) -> i32 {
     for l in engines::check(&t.install) {
         line(!l.contains("unavailable"), l);
     }
-    for (a, r) in routing::agents(&t.install.join("data")).as_object().into_iter().flatten() {
-        line(r["routing"] != "unknown", format!("routing: {a} {} ({})", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or("")));
+    let agents = routing::agents(&t.install.join("data"));
+    for (a, r) in agents.as_object().into_iter().flatten() {
+        let want = r["intended"].as_str().unwrap_or("unknown");
+        let fix = if want == "routed" && r["routing"] != "routed" { "; run `agentq onboard --yes`" } else { "" };
+        line(r["routing"] != "unknown" && want != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
+    }
+    for f in executor::hook_failures(&t.install.join("data")) {
+        line(false, format!("hooks: {f} failed; its next successful run clears it"));
     }
     for d in routing::drift(&journal(t)) {
         line(false, format!("routing: drift: {d} changed since onboard; run `agentq onboard --yes`"));
@@ -516,6 +533,9 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
         }
     }
     let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("onboard: {e}"), "wait for it to finish, then run `agentq onboard --yes` again"));
+    if let Err(e) = routing::set_direct(&t.install.join("data"), &agents, false) {
+        fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again");
+    }
     match onboard::apply(&wants, &journal(t)) {
         Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
         Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
@@ -531,6 +551,9 @@ fn direct(t: &Tool, args: &[&str]) -> i32 {
     }
     let agents = if args.is_empty() { &onboard::AGENTS[..] } else { args };
     let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("direct: {e}"), "wait for it to finish, then run `agentq direct` again"));
+    if let Err(e) = routing::set_direct(&t.install.join("data"), agents, true) {
+        fail(&format!("direct: {e}"), "fix the file, then run `agentq direct` again");
+    }
     match onboard::restore(&journal(t), false, Some(agents)) {
         Ok(lines) if lines.is_empty() => println_code(&format!("direct: {} already direct", agents.join(", "))),
         Ok(lines) => {

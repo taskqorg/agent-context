@@ -292,12 +292,39 @@ pub fn reconcile(h: &Host) {
     }
 }
 
-/// `agentq hook <agent> <event>`: the newest time a client ran this event.
+/// `agentq hook <agent> <event>`: the newest time a client ran this event; a success clears the event's failure record,
+/// so the record exists only while the latest run failed, whatever the clock says (#132 A2).
 pub fn stamp(data: &Path, agent: &str, event: &str, now: u64) {
     if onboard::AGENTS.contains(&agent) && EVENTS.contains(&event) {
         let _ = std::fs::create_dir_all(data.join("evidence"));
         let _ = write_atomic(&data.join("evidence").join(format!("{agent}.{event}")), &now.to_string());
+        let _ = std::fs::remove_file(data.join("evidence").join(format!("{agent}.{event}.failed")));
     }
+}
+
+/// A hook run that could not finish (#132 A2): `evidence/<agent>.<event>.failed` keeps its time and error.
+pub fn hook_failed(data: &Path, agent: &str, event: &str, now: u64, error: &str) {
+    if onboard::AGENTS.contains(&agent) && EVENTS.contains(&event) {
+        let _ = std::fs::create_dir_all(data.join("evidence"));
+        let _ = write_atomic(&data.join("evidence").join(format!("{agent}.{event}.failed")), &json!({"at": now, "error": error}).to_string());
+    }
+}
+
+/// Hook events whose latest run failed, as `<agent> <event> (<error>)`.
+pub fn hook_failures(data: &Path) -> Vec<String> {
+    let mut out = vec![];
+    for a in onboard::AGENTS {
+        for e in EVENTS {
+            // only a missing record means no failure; an unreadable one (invalid UTF-8, no access) is reported
+            let f: Value = match std::fs::read_to_string(data.join("evidence").join(format!("{a}.{e}.failed"))) {
+                Ok(s) => serde_json::from_str(&s).unwrap_or_default(),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) => Value::Null,
+            };
+            out.push(format!("{a} {e} ({})", f["error"].as_str().unwrap_or("unreadable failure record")));
+        }
+    }
+    out
 }
 
 fn stamped(data: &Path, agent: &str, event: &str) -> Option<u64> {
@@ -532,5 +559,27 @@ mod tests {
             assert_eq!(r["profiles"], json!([{"id": codex, "state": "applied"}, {"id": desktop, "state": "restored"}]));
         }
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #132 A2: a recorded hook failure is a problem until a later run of the same event succeeds.
+    #[test]
+    fn hook_failure_stays_until_a_later_success() {
+        let d = std::env::temp_dir().join(format!("agentq-hookfail-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        stamp(&d, "codex", "Stop", 100);
+        hook_failed(&d, "codex", "Stop", 200, "stdin: broken pipe");
+        hook_failed(&d, "codex", "../x", 200, "ignored");
+        assert_eq!(hook_failures(&d), ["codex Stop (stdin: broken pipe)"]);
+        stamp(&d, "codex", "Stop", 300);
+        assert!(hook_failures(&d).is_empty());
+        // a failure after a success in the same second stays: order, not the clock, decides
+        stamp(&d, "codex", "Stop", 400);
+        hook_failed(&d, "codex", "Stop", 400, "stdout: broken pipe");
+        assert_eq!(hook_failures(&d), ["codex Stop (stdout: broken pipe)"]);
+        stamp(&d, "codex", "Stop", 400);
+        assert!(hook_failures(&d).is_empty());
+        std::fs::write(d.join("evidence").join("claude.SessionStart.failed"), "{").unwrap();
+        assert_eq!(hook_failures(&d), ["claude SessionStart (unreadable failure record)"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -323,6 +323,11 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
     res
 }
 
+/// `agentq.routing_problems` and `agentq.hook_failures` (#132): each problem, `none` when there is none.
+fn problems(p: Vec<String>) -> String {
+    if p.is_empty() { "none".into() } else { p.join(", ") }
+}
+
 /// The service's one sender: hourly `agentq.installation`, a resource sample per bucket, then a send pass every
 /// `every` seconds.
 pub fn sender(install: &Path, every: u64) -> ! {
@@ -338,7 +343,7 @@ pub fn sender(install: &Path, every: u64) -> ! {
             beat = now;
             let q = status(&data, now);
             let rtk = if crate::engines::rtk_path(install).exists() { crate::engines::RTK } else { "unavailable" };
-            emit(&data, "agentq.installation", "heartbeat", json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"], "agentq.ids_unknown": "an installation event has no session"}));
+            emit(&data, "agentq.installation", "heartbeat", json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"], "agentq.routing_problems": problems(crate::routing::problems(&crate::routing::agents(&data))), "agentq.hook_failures": problems(crate::executor::hook_failures(&data)), "agentq.ids_unknown": "an installation event has no session"}));
         }
         match load(&data) {
             Some(k) => {
