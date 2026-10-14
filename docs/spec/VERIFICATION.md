@@ -31,19 +31,20 @@ Quality, latency, resource and savings budgets must be agreed before engine sele
 
 ## Accounting qualification
 
-Live check for [ACCOUNTING O4](ACCOUNTING.md#o4-qualification) (#108). Persistent chain checks: `accounting::tests::consumer_fixtures` runs every published case; `tests/compression.rs` requires equal accounting from local stats and their queued spans.
+Live check for [ACCOUNTING O4](ACCOUNTING.md#o4-qualification) (#108). Persistent chain checks: `accounting::tests::consumer_fixtures` runs every published case, producer-path cases included; `tests/compression.rs` requires equal accounting from local stats and their queued spans, unknown for an empty store, and a gap, reset or unknown reason after a failed append, a lost journal or a corrupt one.
 
-Run 2026-10-14 on Windows 11 Pro 10.0.26100, candidate commit 3e50182 (debug build, `agentq 0.0.0-dev`, unreleased), RTK 0.51.0 (pinned zip, sha256 matched), cargo 1.99.0, in an isolated install under the OS temp dir. Path: `agentq run -- cargo test|cargo test -q|cargo build|git --version` in a 150-test crate, `agentq compress hermes` (hook, `terminal`) and `agentq compress codex` (provider, `exec_command`); then `agentq telemetry verify` posted the queue through the real sender to a loopback OTLP stand-in (Python 3.12.10), whose body is the delivered events.
+Run 2026-10-14 on Windows 11 Pro 10.0.26100, candidate commit a05b667 (debug build, `agentq 0.0.0-dev`, unreleased), RTK 0.51.0, cargo 1.99.0, git 2.46.0.windows.1, in an isolated install under the OS temp dir; no profile or working install changed. Client: Claude Code 2.1.299 headless (`claude -p`, model `claude-opus-5-5`, user settings excluded with `--setting-sources project`, two allowed Bash commands). In one real turn the model's Bash tool ran `agentq run -- cargo test` in a 150-test crate and `agentq run -- git --version`; `AGENTQ_AGENT=claude` and `AGENTQ_SESSION` = the client's session ID. The client received RTK's summary with the `get_original` ref line plus native stderr. Then `agentq telemetry verify` posted the queue through the real sender to a loopback Langfuse stand-in (Python 3.12.10); its stored body is the delivered events.
 
-| Check | Local stats | Delivered events |
+| Check | Local stats (`--from` journal `since`) | Delivered events |
 |---|---|---|
-| State | complete | partial (export carries no coverage) |
-| Calls, outcomes | 6: 1 compressed, 5 passed, 0 failed | same |
-| Reasons | compressed 1, short 2, not_qualified 3 | same |
-| Volume run/rtk | 1 paired: 5972 bytes in, 91 out, reduction 0.9848 | same |
-| Event IDs | 6 | the same 6 `agentq.compress` spans, plus `agentq.verify` |
+| State | complete, observed from the first record through now, no gap | partial: exported events carry no coverage |
+| Calls, outcomes | 2: 1 compressed, 1 passed, 0 failed | same |
+| Reasons | compressed 1, not_qualified 1 | same |
+| Volume run/rtk | 1 paired: 5222 bytes in, 132 out (stdout; stderr is never compressed), reduction 0.9747 | same |
+| Cohorts | agent `claude`, adapter `run`, runner `cargo test`/null, engine `rtk` 0.51.0/`none`, version 0.0.0-dev, profile unknown | same |
+| Event IDs | 2, session = client session | the same 2 `agentq.compress` spans, plus 3 `agentq.verify` |
 
-Cohorts were equal; no host path or session text appeared in either aggregate. Gaps: no real client turn (Claude Code `PreToolUse` into `agentq run`); hook and provider adapters have no qualified recipe, so Hermes and Codex calls pass as `not_qualified` and no real Hermes plugin or Codex provider call was made; no Langfuse or DashQ ingestion read-back; profile is unknown on every record; macOS, Linux and WSL untested.
+No host path, command argument or tool output appeared in either aggregate or the delivered body. Unsupported adapters: the Claude Code `PreToolUse` rewrite into `agentq run` is still a no-op hook, so the client ran `agentq run` as a command; the Codex loopback provider and the Hermes plugin do not call the core; hook and provider recipes are unqualified (`not_qualified`). Gaps: native turn and tool call IDs are unknown; no Langfuse or DashQ ingestion read-back (no authorization to write test events to a production project); profile is unknown on every record; macOS, Linux and WSL untested.
 
 ## Resource sample qualification
 
