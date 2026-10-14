@@ -57,18 +57,28 @@ pub fn sample(st: &mut Value, op: &str, at: u64, took: Duration, class: Option<&
     v.drain(..over);
 }
 
-fn config(data: &Path) -> Option<Value> {
-    serde_json::from_str(&std::fs::read_to_string(data.join("config.json")).ok()?).ok()
+/// `profile.trace_until` from `config.json`, None when absent; an unreadable config or invalid value is the reason
+/// the switch is unknown.
+fn trace_until(data: &Path) -> Result<Option<u64>, String> {
+    let s = match std::fs::read_to_string(data.join("config.json")) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("trace switch unknown: config.json: {e}")),
+    };
+    let c: Value = serde_json::from_str(&s).map_err(|_| "trace switch unknown: unreadable config.json")?;
+    let p = match c.as_object().ok_or("trace switch unknown: config.json is not a JSON object")?.get("profile") {
+        None => return Ok(None),
+        Some(Value::Object(p)) => p,
+        Some(_) => return Err("trace switch unknown: malformed profile".into()),
+    };
+    p.get("trace_until").map_or(Ok(None), |t| t.as_u64().map(Some).ok_or("trace switch unknown: invalid trace_until".into()))
 }
 
-fn trace_until(data: &Path) -> Option<u64> {
-    config(data)?["profile"]["trace_until"].as_u64()
-}
-
-/// While the switch is on, one trace line per step; best effort, never fails the caller.
+/// While the switch is on, one trace line per step; best effort, never fails the caller. An unknown switch writes
+/// nothing; the report names it.
 pub fn trace(data: &Path, op: &str, step: &str, took: Duration, class: Option<&str>) {
     let now = crate::now();
-    if trace_until(data).is_none_or(|t| now >= t) {
+    if !trace_until(data).is_ok_and(|t| t.is_some_and(|t| now < t)) {
         return;
     }
     let dir = data.join("traces");
@@ -120,8 +130,9 @@ pub fn trace_minutes(arg: Option<&str>) -> Result<u64, String> {
 
 fn trace_state(data: &Path, now: u64) -> Value {
     match trace_until(data) {
-        Some(t) if t > now => json!({"state": "on", "until": t}),
-        _ => json!({"state": "off", "until": null}),
+        Ok(Some(t)) if t > now => json!({"state": "on", "until": t}),
+        Ok(_) => json!({"state": "off", "until": null}),
+        Err(e) => json!({"state": "unknown", "until": null, "reason": e}),
     }
 }
 
@@ -170,10 +181,10 @@ fn export_state(data: &Path) -> Result<Map<String, Value>, String> {
         Err(e) => return Err(format!("export state unknown: {e}")),
     };
     let v: Value = serde_json::from_str(&s).map_err(|_| "export state unknown: unreadable state.json")?;
-    match &v["profile"] {
-        Value::Null => Ok(Map::new()),
-        Value::Object(m) => Ok(m.clone()),
-        _ => Err("export state unknown: malformed profile".into()),
+    match v.as_object().ok_or("export state unknown: state.json is not a JSON object")?.get("profile") {
+        None => Ok(Map::new()),
+        Some(Value::Object(m)) => Ok(m.clone()),
+        Some(_) => Err("export state unknown: malformed profile".into()),
     }
 }
 
@@ -197,7 +208,13 @@ fn export_samples(samples: &Value, cutoff: u64, now: u64) -> Result<Vec<(u64, Op
 fn steps(data: &Path, cutoff: u64, now: u64) -> Result<Map<String, Value>, String> {
     let mut g = std::collections::BTreeMap::<(String, String), Vec<(u64, Option<String>)>>::new();
     let oldest = crate::date(cutoff);
-    for e in std::fs::read_dir(data.join("traces")).into_iter().flatten().flatten() {
+    let entries = match std::fs::read_dir(data.join("traces")) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(format!("traces unknown: {e}")),
+    };
+    for e in entries {
+        let e = e.map_err(|e| format!("traces unknown: {e}"))?;
         if !e.file_name().to_string_lossy().strip_suffix(".jsonl").is_some_and(|d| d >= oldest.as_str()) {
             continue;
         }
@@ -207,6 +224,9 @@ fn steps(data: &Path, cutoff: u64, now: u64) -> Result<Map<String, Value>, Strin
             let (Some(at), Some(op), Some(step), Some(d)) = (v["time"].as_u64(), v["op"].as_str(), v["step"].as_str(), v["duration_ms"].as_u64()) else {
                 return Err("traces unknown: malformed line".into());
             };
+            if !v["class"].is_null() && !v["class"].is_string() {
+                return Err("traces unknown: malformed line".into());
+            }
             if at >= cutoff && at <= now {
                 g.entry((op.into(), step.into())).or_default().push((d, v["class"].as_str().map(String::from)));
             }
@@ -273,10 +293,10 @@ pub fn lines(r: &Value) -> Vec<String> {
         "profile: {} to {} UTC, trace {}{}",
         crate::date(r["window"]["start"].as_u64().unwrap_or(0)),
         crate::date(r["window"]["end"].as_u64().unwrap_or(0)),
-        t["state"].as_str().unwrap_or("off"),
+        t["state"].as_str().unwrap_or("unknown"),
         t["until"].as_u64().map_or(String::new(), |u| format!(" until {u}")),
     )];
-    if let Some(e) = t["unknown"].as_str() {
+    for e in [&t["reason"], &t["unknown"]].into_iter().filter_map(Value::as_str) {
         out.push(format!("trace: {e}"));
     }
     for o in r["operations"].as_array().into_iter().flatten() {
@@ -412,6 +432,47 @@ mod tests {
         assert_eq!(c, json!({"ports": {"codex": 1}}));
         std::fs::write(d.join("traces").join(format!("{}.jsonl", crate::date(now))), "bad\n").unwrap();
         assert!(report(&d, now)["trace"]["unknown"].as_str().unwrap().contains("malformed"));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// § 6 Profiling: a corrupt config, export state or trace store reads unknown with its reason, never trace off or
+    /// no samples; an unknown switch writes no trace.
+    #[test]
+    fn corrupt_switch_state_and_traces_are_unknown() {
+        let d = dir();
+        let now = crate::now();
+        for (config, reason) in [
+            ("{", "unreadable config.json"),
+            ("[]", "not a JSON object"),
+            (r#"{"profile":1}"#, "malformed profile"),
+            (r#"{"profile":{"trace_until":"soon"}}"#, "invalid trace_until"),
+            (r#"{"profile":{"trace_until":-1}}"#, "invalid trace_until"),
+        ] {
+            std::fs::write(d.join("config.json"), config).unwrap();
+            let t = &report(&d, now)["trace"];
+            assert_eq!(t["state"], "unknown", "{config}");
+            assert!(t["reason"].as_str().unwrap().contains(reason), "{config}: {t}");
+            assert!(lines(&report(&d, now))[0].contains("trace unknown"));
+            trace(&d, "compress.run", "native", Duration::from_millis(1), None);
+            assert!(!d.join("traces").exists());
+        }
+        for (state, reason) in [
+            ("[]", "not a JSON object"),
+            ("1", "not a JSON object"),
+            (r#"{"profile":null}"#, "malformed profile"),
+            (r#"{"profile":{"export.dashq":{}}}"#, "malformed samples"),
+        ] {
+            std::fs::write(d.join("queue/state.json"), state).unwrap();
+            let r = report(&d, now);
+            assert!(op(&r, "export.dashq")["reason"].as_str().unwrap().contains(reason), "{state}");
+        }
+        std::fs::write(d.join("traces"), "not a directory").unwrap();
+        assert!(report(&d, now)["trace"]["unknown"].as_str().unwrap().starts_with("traces unknown: "));
+        std::fs::remove_file(d.join("traces")).unwrap();
+        std::fs::create_dir(d.join("traces")).unwrap();
+        let line = json!({"time": now, "op": "compress.run", "step": "native", "duration_ms": 1, "class": 5});
+        std::fs::write(d.join("traces").join(format!("{}.jsonl", crate::date(now))), format!("{line}\n")).unwrap();
+        assert!(report(&d, now)["trace"]["unknown"].as_str().unwrap().contains("malformed line"));
         std::fs::remove_dir_all(d).unwrap();
     }
 
