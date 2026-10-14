@@ -29,6 +29,8 @@ const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
+/// `onboard --yes` waits this long for a started proxy to answer, before and after one restart (#137).
+const PROXY_START: Duration = Duration::from_secs(60);
 const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
@@ -250,9 +252,7 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
     let u = service::unit(t, &t.install, PROJECT);
     let res = match cmd {
         "run" => serve(t),
-        "install" => install_self(t)
-            .map(|_| engines::ensure(&t.install).iter().for_each(|l| println!("{l}")))
-            .and_then(|_| service::write_unit(&u)).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| service::run_all(&u.load, false)),
+        "install" => install_release(t).and_then(|_| start_unit(&u)),
         // the task first: its launcher would restart a killed service run (agentq.md § 5)
         "restart" => service::run_all(&u.stop, true).and_then(|_| {
             end_tree(t);
@@ -287,6 +287,51 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
         Ok(()) => println_code(&format!("service: {cmd} done")),
         Err(e) => fail(&format!("service {cmd}: {e}"), "run `agentq service status`"),
     }
+}
+
+/// `service install` before the unit: the release, then its engines.
+fn install_release(t: &Tool) -> Result<(), String> {
+    install_self(t).map(|_| engines::ensure(&t.install).iter().for_each(|l| println!("{l}")))
+}
+
+/// Writes the unit and (re)starts it.
+fn start_unit(u: &service::Unit) -> Result<(), String> {
+    service::write_unit(u).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| service::run_all(&u.load, false))
+}
+
+/// `onboard --yes` after the release (#137): fix each routed agent's port, apply `wants` plus routing edits, then
+/// `start` the service and wait for each proxy (one `restart` for a silent one). Each routed agent, its port and
+/// whether its proxy answers.
+#[allow(clippy::too_many_arguments)]
+fn route_and_start<'a>(
+    data: &Path,
+    root: &dyn Fn(&str) -> PathBuf,
+    agents: &[&'a str],
+    mut wants: Vec<onboard::Want>,
+    journal: &Path,
+    headroom: Result<(), String>,
+    limit: Duration,
+    start: &mut dyn FnMut() -> Result<(), String>,
+    restart: &mut dyn FnMut(),
+) -> Result<Vec<(&'a str, u16, bool)>, String> {
+    let mut ports = vec![];
+    for a in agents.iter().filter(|a| routing::ROUTED.contains(a)) {
+        match headroom.clone().and_then(|_| routing::fix_port(data, a)) {
+            Ok(port) => {
+                wants.extend(onboard::routing_wants(a, &root(a), port));
+                ports.push((*a, port));
+            }
+            Err(e) => println!("routing: {a} direct: {e}"),
+        }
+    }
+    {
+        let _lock = executor::lock(data).map_err(|e| format!("onboard: {e}"))?;
+        routing::set_direct(data, agents, false).map_err(|e| format!("onboard: {e}"))?;
+        onboard::apply(&wants, journal).map_err(|e| format!("onboard: {e}"))?.iter().for_each(|l| println!("{l}"));
+    }
+    start()?;
+    let silent = routing::await_proxies(&ports.iter().map(|p| p.1).collect::<Vec<_>>(), limit, restart);
+    Ok(ports.into_iter().map(|(a, p)| (a, p, !silent.contains(&p))).collect())
 }
 
 /// coreq `install_self` that skips copies already in place (agentq.md § 5): Windows refuses to overwrite a running exe.
@@ -523,22 +568,26 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
     }
     let agents: Vec<&str> = if picked.is_empty() { ready } else { picked.into_iter().filter(|a| ready.contains(a)).collect() };
     // engines first: routing points an agent at the loopback port only when headroom can serve it
-    service_cmd(t, "install");
+    if let Err(e) = install_release(t) {
+        fail(&format!("service install: {e}"), "run `agentq service status`");
+    }
     let exe = t.install.join(t.exe_name());
-    let mut wants: Vec<_> = agents.iter().flat_map(|a| onboard::wants(a, &onboard::root(a), &onboard::claude_json(), &exe)).collect();
-    for a in agents.iter().filter(|a| routing::ROUTED.contains(a)) {
-        match engines::headroom_exe(&t.install).ok_or("headroom unavailable".to_string()).and_then(|_| routing::fix_port(&t.install.join("data"), a)) {
-            Ok(port) => wants.extend(onboard::routing_wants(a, &onboard::root(a), port)),
-            Err(e) => println!("routing: {a} direct: {e}"),
-        }
-    }
-    let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("onboard: {e}"), "wait for it to finish, then run `agentq onboard --yes` again"));
-    if let Err(e) = routing::set_direct(&t.install.join("data"), &agents, false) {
-        fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again");
-    }
-    match onboard::apply(&wants, &journal(t)) {
-        Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
-        Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
+    let wants: Vec<_> = agents.iter().flat_map(|a| onboard::wants(a, &onboard::root(a), &onboard::claude_json(), &exe)).collect();
+    let headroom = engines::headroom_exe(&t.install).map(|_| ()).ok_or("headroom unavailable".to_string());
+    let unit = service::unit(t, &t.install, PROJECT);
+    let routed = route_and_start(&t.install.join("data"), &onboard::root, &agents, wants, &journal(t), headroom, PROXY_START, &mut || {
+        // the unit after the ports and edits (#137): its first pass starts the proxy on each fixed port
+        start_unit(&unit).map(|_| println!("service: install done")).map_err(|e| format!("service install: {e}"))
+    }, &mut || {
+        println!("routing: proxy not answering after {} s; restarting the service", PROXY_START.as_secs());
+        service_cmd(t, "restart");
+    });
+    match routed {
+        Ok(ports) => ports.iter().for_each(|(a, p, up)| {
+            let state = if *up { "answers" } else { "not answering; run `agentq service restart`" };
+            println!("routing: {a} proxy on 127.0.0.1:{p} {state}");
+        }),
+        Err(e) => fail(&e, "fix it, then run `agentq onboard --yes` again"),
     }
     doctor(t);
     println_code(&format!("verify: start a new {} session and call agent_context search_document", agents.join(", ")))
@@ -694,6 +743,33 @@ fn running(pids: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #137 A2: `onboard --yes` starts the service only after the port and the Codex edits exist, so the service's
+    /// first pass starts the proxy and doctor right after onboard reads codex routed. Fails with the 0.5.9 order
+    /// (service started first: its pass finds no port and starts no proxy).
+    #[test]
+    fn onboard_routes_before_service_start() {
+        let d = std::env::temp_dir().join(format!("agentq-onboard-route-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (data, codex) = (d.join("data"), d.join("codex"));
+        std::fs::create_dir_all(&codex).unwrap();
+        std::fs::write(codex.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        let mut proxy = None;
+        // the service's first pass: one proxy per fixed port, as `routing::supervise` does
+        let mut start = || {
+            let p = routing::port(&data, "codex").ok_or("service started before the port was fixed")?;
+            proxy = Some(std::net::TcpListener::bind(("127.0.0.1", p)).map_err(|e| e.to_string())?);
+            Ok(())
+        };
+        let mut restarts = 0;
+        let routed = route_and_start(&data, &|_| codex.clone(), &["codex"], vec![], &d.join("journal.json"), Ok(()), Duration::from_secs(5), &mut start, &mut || restarts += 1).unwrap();
+        let p = routing::port(&data, "codex").unwrap();
+        assert_eq!(routed, [("codex", p, true)]);
+        assert_eq!(restarts, 0);
+        assert_eq!(routing::state("codex", &codex, Some(p)).0, "routed", "doctor right after onboard");
+        drop(proxy);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     #[test]
     fn date_is_utc_civil() {

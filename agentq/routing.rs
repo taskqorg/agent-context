@@ -43,6 +43,29 @@ fn answers(port: u16) -> bool {
     TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(1)).is_ok()
 }
 
+/// Whether `port` answers within `limit`, polled twice a second.
+fn answers_within(port: u16, limit: Duration) -> bool {
+    let end = std::time::Instant::now() + limit;
+    while !answers(port) {
+        if std::time::Instant::now() >= end {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    true
+}
+
+/// `onboard --yes` (#137): each port answers within `limit`, else `restart` runs once and each silent port gets
+/// `limit` again. The ports that still do not answer.
+pub fn await_proxies(ports: &[u16], limit: Duration, restart: &mut dyn FnMut()) -> Vec<u16> {
+    let silent: Vec<u16> = ports.iter().copied().filter(|p| !answers_within(*p, limit)).collect();
+    if silent.is_empty() {
+        return silent;
+    }
+    restart();
+    silent.into_iter().filter(|p| !answers_within(*p, limit)).collect()
+}
+
 /// Service side: keep one passthrough headroom worker per fixed port; a dead or missing one is started again.
 pub fn supervise(install: &Path, workers: &mut Vec<(u16, Child)>) {
     workers.retain_mut(|(_, c)| matches!(c.try_wait(), Ok(None)));
@@ -273,6 +296,35 @@ mod tests {
         let _c = TcpStream::connect((Ipv4Addr::LOCALHOST, p)).unwrap();
         let _s = l.accept().unwrap();
         assert!(open_connections(&[p]).unwrap() >= 1);
+    }
+
+    /// #137 A2: onboard waits for a slow proxy start, restarts the service once for a silent one and names a proxy
+    /// that still does not answer.
+    #[test]
+    fn onboard_awaits_proxy() {
+        let free = || TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let l = free();
+        let p = l.local_addr().unwrap().port();
+        let mut restarts = 0;
+        assert!(await_proxies(&[p], Duration::from_secs(5), &mut || restarts += 1).is_empty());
+        assert_eq!(restarts, 0, "an answering proxy needs no restart");
+        drop(l);
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(700));
+            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, p)).unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            drop(l);
+        });
+        assert!(await_proxies(&[p], Duration::from_secs(2), &mut || restarts += 1).is_empty());
+        assert_eq!(restarts, 0, "the wait covers a slow start");
+        late.join().unwrap();
+        let q = free().local_addr().unwrap().port();
+        let mut up = None;
+        assert!(await_proxies(&[q], Duration::from_millis(600), &mut || up = TcpListener::bind((Ipv4Addr::LOCALHOST, q)).ok()).is_empty());
+        assert!(up.is_some(), "the restart starts the silent proxy");
+        // port 1 refuses
+        assert_eq!(await_proxies(&[1], Duration::from_millis(600), &mut || restarts += 1), [1]);
+        assert_eq!(restarts, 1, "one restart only");
     }
 
     /// #76 A1: status.json routing follows config.toml and whether the loopback port answers.

@@ -17,7 +17,7 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 | Command | Does |
 |---|---|
 | `agentq onboard [agent..]` | Read-only discovery: ready Codex, Claude Code, Claude Desktop, Hermes profiles per runtime; missing input; legacy install (§ 10); other optimizers. No writes. |
-| `agentq onboard --yes [agent..]` | Apply § 4 for the selected agents, install the service, run `doctor`, print what to verify by a real turn. Repeat is safe. |
+| `agentq onboard --yes [agent..]` | Install the release and engines, apply § 4 for the selected agents, then (re)start the service unit, so its first pass starts the proxy on each fixed port. It waits up to 60 s for each routed agent's proxy to answer; a silent one gets one `agentq service restart` and another 60 s, else the line names it (#137). Then it runs `doctor` and prints what to verify by a real turn. Repeat is safe. |
 | `agentq enroll <https url> [--headless]` | DashQ provider-backed browser approval (headless: link and code only); protected observation grant and projected snapshot receipt (§ 6). Implemented; not released until qualification #95. |
 | `agentq connection status [--json]`, `agentq disconnect` | Connection, projection, export and revocation state with the next action; disconnect stops sending at once and retries the revoke (§ 6). Same release gate. |
 | `agentq langfuse` | Standalone mode: read Langfuse host and keys from hidden stdin into protected storage (§ 6). |
