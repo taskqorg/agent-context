@@ -214,12 +214,20 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
         }
         return code;
     }
-    let native = match Command::new(&cmd[0])
+    let step = Instant::now();
+    let native = Command::new(&cmd[0])
         .args(&cmd[1..])
         .stdin(Stdio::inherit())
         .env_remove("AGENTQ_RUN_REPLAY")
-        .output()
-    {
+        .output();
+    crate::profile::trace(
+        &data,
+        "compress.run",
+        "native",
+        step.elapsed(),
+        native.as_ref().err().map(|_| "error"),
+    );
+    let native = match native {
         Ok(o) => o,
         Err(e) => {
             eprintln!("agentq: {}: {e}", cmd[0]);
@@ -273,7 +281,16 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
         let rtk = crate::engines::rtk_path(install).is_file();
         r["engine"] = json!(if rtk { "rtk" } else { "none" });
         r["engine_version"] = json!(rtk.then_some(crate::engines::RTK));
-        match filter(install, cmd, &native.stdout, &native.stderr, code, &id) {
+        let step = Instant::now();
+        let filtered = filter(install, cmd, &native.stdout, &native.stderr, code, &id);
+        crate::profile::trace(
+            &data,
+            "compress.run",
+            "filter",
+            step.elapsed(),
+            filtered.as_ref().err().copied(),
+        );
+        match filtered {
             Ok(mut candidate) => {
                 let reference = format!("rtk:{id}");
                 candidate.extend_from_slice(
@@ -603,7 +620,8 @@ pub fn compress(data: &Path, agent: &str, input: &str) -> Result<Value, String> 
     Ok(json!({"text":text,"ref":null}))
 }
 
-pub fn stats(data: &Path) -> Result<Value, String> {
+/// Valid stats records with `time >= cutoff`; one unreadable record makes the whole set unknown.
+pub fn records(data: &Path, cutoff: u64) -> Result<Vec<Value>, String> {
     let dir = data.join("stats");
     let entries = match std::fs::read_dir(&dir) {
         Ok(e) => e,
@@ -612,8 +630,7 @@ pub fn stats(data: &Path) -> Result<Value, String> {
         }
         Err(e) => return Err(format!("stats unknown: {e}")),
     };
-    let mut groups = std::collections::BTreeMap::<(String, String), Value>::new();
-    let cutoff = crate::now().saturating_sub(7 * 86400);
+    let mut out = vec![];
     let oldest = crate::date(cutoff);
     let mut files = 0;
     for e in entries {
@@ -630,12 +647,12 @@ pub fn stats(data: &Path) -> Result<Value, String> {
             if v["time"].as_u64().ok_or("stats unknown: missing time")? < cutoff {
                 continue;
             }
-            let agent = v["agent"].as_str().ok_or("stats unknown: missing agent")?;
-            let engine = v["engine"]
+            v["agent"].as_str().ok_or("stats unknown: missing agent")?;
+            v["engine"]
                 .as_str()
                 .filter(|e| ["none", "rtk", "headroom"].contains(e))
                 .ok_or("stats unknown: invalid engine")?;
-            let outcome = v["outcome"]
+            v["outcome"]
                 .as_str()
                 .filter(|o| ["compressed", "passed", "failed"].contains(o))
                 .ok_or("stats unknown: invalid outcome")?;
@@ -672,30 +689,44 @@ pub fn stats(data: &Path) -> Result<Value, String> {
             {
                 return Err("stats unknown: malformed record shape".into());
             }
-            let g=groups.entry((agent.into(),engine.into())).or_insert_with(||json!({"agent":agent,"engine":engine,"calls":0,"compressed":0,"passed":0,"failed":0,"bytes_in":0,"bytes_out":0}));
-            for (k, add) in [("calls", 1), (outcome, 1)] {
-                g[k] = json!(
-                    g[k].as_u64()
-                        .unwrap()
-                        .checked_add(add)
-                        .ok_or("stats unknown: count overflow")?
-                );
-            }
-            for k in ["bytes_in", "bytes_out"] {
-                g[k] = match (g[k].as_u64(), v[k].as_u64()) {
-                    (Some(a), Some(b)) => {
-                        json!(a.checked_add(b).ok_or("stats unknown: byte overflow")?)
-                    }
-                    _ => Value::Null,
-                };
-                if g[k].is_null() {
-                    g["bytes_unknown"] = json!("native output passed through without capture");
-                }
-            }
+            out.push(v);
         }
     }
     if files == 0 {
         return Err("stats unknown: no current stats file".into());
+    }
+    Ok(out)
+}
+
+pub fn stats(data: &Path) -> Result<Value, String> {
+    let mut groups = std::collections::BTreeMap::<(String, String), Value>::new();
+    for v in records(data, crate::now().saturating_sub(7 * 86400))? {
+        // records() checked these strings
+        let (agent, engine, outcome) = (
+            v["agent"].as_str().unwrap_or_default(),
+            v["engine"].as_str().unwrap_or_default(),
+            v["outcome"].as_str().unwrap_or_default(),
+        );
+        let g=groups.entry((agent.into(),engine.into())).or_insert_with(||json!({"agent":agent,"engine":engine,"calls":0,"compressed":0,"passed":0,"failed":0,"bytes_in":0,"bytes_out":0}));
+        for (k, add) in [("calls", 1), (outcome, 1)] {
+            g[k] = json!(
+                g[k].as_u64()
+                    .unwrap()
+                    .checked_add(add)
+                    .ok_or("stats unknown: count overflow")?
+            );
+        }
+        for k in ["bytes_in", "bytes_out"] {
+            g[k] = match (g[k].as_u64(), v[k].as_u64()) {
+                (Some(a), Some(b)) => {
+                    json!(a.checked_add(b).ok_or("stats unknown: byte overflow")?)
+                }
+                _ => Value::Null,
+            };
+            if g[k].is_null() {
+                g["bytes_unknown"] = json!("native output passed through without capture");
+            }
+        }
     }
     Ok(json!({"schema":1,"groups":groups.into_values().collect::<Vec<_>>()}))
 }

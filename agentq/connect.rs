@@ -216,6 +216,8 @@ fn deliver(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
     // an unreadable record is null: no grant, so coreq rejects it unsent
     let recs: Vec<Value> = files.iter().map(|p| read(p).unwrap_or_default()).collect();
     let (mut accepted, mut rejected) = (0, 0);
+    let start = std::time::Instant::now();
+    let mut class = None;
     let error = match enroll::deliver(&dir(data), &recs, &mut s.backoff, wire) {
         Ok(receipts) => {
             for (p, r) in files.iter().zip(&receipts) {
@@ -226,15 +228,25 @@ fn deliver(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
                 }
                 let _ = std::fs::remove_file(p);
             }
+            if rejected > 0 {
+                class = Some("rejected");
+            }
             (rejected > 0).then(|| format!("{rejected} records rejected"))
         }
         Err(Delivery::Retry(secs)) => {
             s.wait_until = now + secs;
+            class = Some("no_reply");
             Some(format!("no reply; retry in {secs} s"))
         }
-        Err(Delivery::Stopped(e)) => Some(e),
+        Err(Delivery::Stopped(e)) => {
+            class = Some("stopped");
+            Some(e)
+        }
     };
+    let took = start.elapsed();
+    crate::profile::trace(data, "export.dashq", "batch", took, class);
     update_state(&q, |st| {
+        crate::profile::sample(st, "export.dashq", now, took, class);
         st["dropped"] = json!(st["dropped"].as_u64().unwrap_or(0) + rejected);
         if accepted > 0 {
             st["connection"]["last_delivery"] = json!(now);
