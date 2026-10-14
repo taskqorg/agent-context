@@ -129,9 +129,12 @@ fn configuration(status: Option<&Value>, now: u64) -> Value {
             out["configured"] = json!(state == "configured");
             out["verification"] = json!({"state": "unknown", "reason": "no_evidence"});
             out["owned"] = json!(p["owned"].as_bool());
+            // A1: project overrides are read-only; any of them disables writes, an unknown count stays null
+            let overrides = p["overrides"].as_u64().map(|n| n.min(999));
+            out["overrides"] = json!(overrides);
             let (conflicts, incomplete) = (codes(&p["conflicts"], &CONFLICTS, "other"), codes(&p["incomplete"], &INCOMPLETE, "other"));
             let mut writes = vec!["not_released"];
-            for (bad, code) in [(!fresh, "stale"), (truncated, "truncated"), (!incomplete.is_empty(), "incomplete"), (!conflicts.is_empty(), "conflict")] {
+            for (bad, code) in [(!fresh, "stale"), (truncated, "truncated"), (!incomplete.is_empty(), "incomplete"), (!conflicts.is_empty(), "conflict"), (overrides.is_some_and(|n| n > 0), "project_override")] {
                 if bad {
                     writes.push(code);
                 }
@@ -305,6 +308,11 @@ mod tests {
         assert_eq!((p[2]["conflicts"].clone(), p[2]["incomplete"].clone(), p[2]["routing"].as_str()), (json!(["foreign_provider", "other"]), json!(["unreadable_config"]), Some("unknown")));
         assert_eq!(p[2]["writes"]["reasons"], json!(["not_released", "incomplete", "conflict"]));
         assert_eq!(p[2]["label"], "Codex", "labels come from the kind");
+        assert!(p[0]["overrides"].is_null() && p[1]["overrides"].is_null(), "an unknown override count stays null");
+
+        let o = project("inst", "macos", Some(&with_profiles(1000, json!([codex(json!({"overrides": 3})), codex(json!({"overrides": 0})), codex(json!({"overrides": "/Users/alice"}))]))), None, 1030)["configuration"].clone();
+        assert_eq!((o["profiles"][0]["overrides"].as_u64(), o["profiles"][0]["writes"]["reasons"].clone()), (Some(3), json!(["not_released", "project_override"])));
+        assert_eq!((o["profiles"][1]["writes"]["reasons"].clone(), o["profiles"][2]["overrides"].is_null()), (json!(["not_released"]), true));
 
         let stale = project("inst", "macos", Some(&with_profiles(1000, json!([codex(json!({}))]))), None, 2000)["configuration"].clone();
         assert_eq!((stale["state"].as_str(), stale["profiles"][0]["writes"]["reasons"].clone()), (Some("stale"), json!(["not_released", "stale"])));

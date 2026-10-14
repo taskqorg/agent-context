@@ -140,6 +140,8 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
     let compress = compression(data);
     let optimization = if compress["enabled"] == false || compress["agents"][c.agent] == false { "disabled" } else { "enabled" };
     let route = || routing::state(c.agent, &c.root, routing::port(data, c.agent)).0;
+    // A1: project overrides are reported read-only, as a count only; None where unknown or the client has none
+    let mut overrides = None;
     let (routing, mcp, hooks, plugin, adapter, effective) = match c.kind {
         "codex" => {
             let toml = texts[0].clone().unwrap_or_default();
@@ -147,6 +149,9 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
                 conflicts.push("foreign_provider");
             }
             let r = route();
+            if !unread(0) {
+                overrides = Some(toml.lines().filter(|l| l.trim_start().starts_with("[profiles.")).count());
+            }
             let h = json_doc(1).map(|d| hooked(&d, "codex", &["SessionStart", "Stop"]));
             let mcp = if unread(0) { "unknown" } else { present(toml.lines().any(|l| l.trim() == "[mcp_servers.agent_context]")) };
             let eff = match r {
@@ -160,6 +165,8 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
             let r = route();
             let h = json_doc(0).map(|d| hooked(&d, "claude", &["SessionStart", "PreToolUse"]));
             let mcp = json_doc(1).map_or("unknown", |d| present(d["mcpServers"]["agent_context"].is_object()));
+            let set = |v: &Value| v.as_object().is_some_and(|o| !o.is_empty()) || v.as_array().is_some_and(|a| !a.is_empty());
+            overrides = json_doc(1).map(|d| d["projects"].as_object().into_iter().flatten().filter(|(_, p)| ["mcpServers", "env", "enabledMcpjsonServers"].iter().any(|k| set(&p[*k]))).count());
             let eff = match &h {
                 Some(h) if h[1] => "configured",
                 Some(_) => "missing",
@@ -202,6 +209,7 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
         "optimization": optimization,
         "effective": {"adapter": (!adapter.is_empty()).then_some(adapter), "state": effective},
         "owned": !owned.is_empty(),
+        "overrides": overrides,
         "conflicts": conflicts,
         "incomplete": incomplete,
     })
@@ -243,7 +251,7 @@ mod tests {
         let p = profile(&codex, &data, &journal, &key);
         assert_eq!((p["mcp"].as_str(), p["hooks"].as_str(), p["routing"].as_str(), p["owned"].as_bool()), (Some("registered"), Some("registered"), Some("direct"), Some(true)));
         assert_eq!(p["effective"], json!({"adapter": "provider", "state": "bypassed"}), "Direct bypasses provider optimization");
-        assert_eq!(p["plugin"], "unsupported");
+        assert_eq!((p["plugin"].as_str(), p["overrides"].as_u64()), (Some("unsupported"), Some(0)));
         let again = profile(&codex, &data, &journal, &key);
         assert_eq!((again["id"].clone(), again["revision"].clone()), (p["id"].clone(), p["revision"].clone()));
 
@@ -254,6 +262,9 @@ mod tests {
         assert_ne!(edited["revision"], p["revision"], "an external edit changes the revision");
         assert_eq!(edited["id"], p["id"]);
         assert_eq!(edited["conflicts"], json!(["foreign_provider"]));
+        std::fs::write(&toml, format!("{text}\n[profiles.work]\nmodel_provider = \"other\"\n")).unwrap();
+        assert_eq!(profile(&codex, &data, &journal, &key)["overrides"], 1, "a codex profile section is an override");
+        std::fs::write(&toml, format!("model_provider = \"other\"\n{text}")).unwrap();
 
         std::fs::write(&data.join("config.json"), r#"{"compression": {"agents": {"codex": false}}}"#).unwrap();
         let off = profile(&codex, &data, &journal, &key);
@@ -267,6 +278,13 @@ mod tests {
         assert_eq!((c["hooks"].as_str(), c["mcp"].as_str(), c["owned"].as_bool()), (Some("unknown"), Some("unknown"), Some(false)));
         assert_eq!((c["conflicts"].clone(), c["incomplete"].clone()), (json!(["unparseable_config"]), json!(["unreadable_config"])));
         assert_eq!(c["effective"], json!({"adapter": "hook", "state": "unknown"}));
+        assert!(c["overrides"].is_null(), "an unreadable .claude.json leaves overrides unknown");
+        std::fs::remove_dir(&claude.files[1]).unwrap();
+        let projects = json!({"projects": {"/Users/alice/secret": {"mcpServers": {"x": {"command": "sk-secret"}}}, "/Users/alice/plain": {"mcpServers": {}, "allowedTools": []}, "/Users/alice/env": {"env": {"TOKEN": "sk-secret"}}}});
+        std::fs::write(&claude.files[1], projects.to_string()).unwrap();
+        let o = profile(&claude, &data, &journal, &key);
+        assert_eq!(o["overrides"], 2, "projects with MCP servers or env override the profile");
+        assert!(!o.to_string().contains("alice") && !o.to_string().contains("sk-secret"));
 
         let hermes = client(&d, "hermes");
         std::fs::write(&hermes.files[0], "mcp_servers:\n  agent_context:\n    command: x\nplugins:\n  enabled:\n    - agent-context\n").unwrap();
@@ -275,7 +293,7 @@ mod tests {
 
         let chat = client(&d, "claude-desktop-chat");
         let ch = profile(&chat, &data, &journal, &key);
-        assert_eq!((ch["mcp"].as_str(), ch["hooks"].as_str(), ch["effective"]["adapter"].is_null()), (Some("absent"), Some("unsupported"), true));
+        assert_eq!((ch["mcp"].as_str(), ch["hooks"].as_str(), ch["effective"]["adapter"].is_null(), ch["overrides"].is_null()), (Some("absent"), Some("unsupported"), true, true));
 
         let text = [p, edited, c, h, ch].iter().map(Value::to_string).collect::<String>();
         assert!(!text.contains(&d.display().to_string()) && !text.contains("agentq-profiles"), "no path in {text}");
