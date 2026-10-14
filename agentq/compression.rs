@@ -236,7 +236,7 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
                 });
             }
             r["duration_ms"] = json!(start.elapsed().as_millis() as u64);
-            if let Err(e) = save(&data, &config(&data).unwrap_or(Value::Null), &r) {
+            if let Err(e) = save(&data, &c.unwrap_or(Value::Null), &r) {
                 eprintln!("agentq: stats unknown: {e}");
             }
             return 127;
