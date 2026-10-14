@@ -437,7 +437,7 @@ mod tests {
 
     /// Chain #134 A1: per-client routing with reason and intent, and a hook's last failure, reach the exported
     /// `agentq.installation` span, and the failure stays after the client's next successful run. Risk: a heartbeat that
-    /// drops the failure before dashq Attention reads it, exports routing only as a summary, or exports a proxy still
+    /// drops the failure before dashq Attention reads it, reports a corrupt retained failure as `ok`, exports routing only as a summary, or exports a proxy still
     /// binding at service start as an hour of `unknown` routing.
     #[test]
     fn heartbeat_carries_routing_and_hooks() {
@@ -457,6 +457,10 @@ mod tests {
         let s = beat(&json!({}));
         assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 200, "last_failure": failure}]));
         assert_eq!((attr(&s, "agentq.hook_failures")["stringValue"].as_str(), attr(&s, "agentq.routing")["stringValue"].as_str()), (Some("none"), Some("{}")));
+        // a corrupt retained failure after that success reads unknown, never ok
+        std::fs::write(d.join("evidence").join("codex.Stop.last_failure"), "{").unwrap();
+        let s = beat(&json!({}));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "last_ok_at": 200, "last_failure": {"at": null, "error": "unreadable failure record"}}]));
         // the start heartbeat waits for a binding proxy, at most START_WAIT; hourly ones never wait
         let binding = json!({"codex": {"routing": "unknown", "reason": "proxy on 127.0.0.1:1 not answering"}});
         assert!(start_waits(&binding, 0, 1000, 1000 + START_WAIT - 1));

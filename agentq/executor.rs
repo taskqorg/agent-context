@@ -330,7 +330,7 @@ pub fn hook_failures(data: &Path) -> Vec<String> {
 }
 
 /// Heartbeat `agentq.hooks` (#134): per agent and event with any record, the state of its latest run (`ok`, `failed`,
-/// or `unknown` for an unreadable failure record), its newest successful run and its last failure `{at, error}`, which
+/// or `unknown` when its failure record or retained last failure is unreadable), its newest successful run and its last failure `{at, error}`, which
 /// stays after a later success; null when it never failed.
 pub fn hooks(data: &Path) -> Value {
     let unreadable = || json!({"at": null, "error": "unreadable failure record"});
@@ -347,10 +347,11 @@ pub fn hooks(data: &Path) -> Value {
             if ok.is_none() && last.is_none() {
                 continue;
             }
-            let state = match &failed {
-                None => "ok",
-                Some(f) if f["at"].is_null() => "unknown",
-                Some(_) => "failed",
+            // an unreadable retained failure leaves the latest run unproved, never `ok` (R12)
+            let state = match (&failed, &last) {
+                (_, Some(f)) if f["at"].is_null() => "unknown",
+                (Some(_), _) => "failed",
+                _ => "ok",
             };
             out.push(json!({"agent": a, "event": e, "state": state, "last_ok_at": ok, "last_failure": last}));
         }
