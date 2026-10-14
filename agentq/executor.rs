@@ -292,13 +292,15 @@ pub fn reconcile(h: &Host) {
     }
 }
 
-/// `agentq hook <agent> <event>`: the newest time a client ran this event; a success clears the event's failure record,
-/// so the record exists only while the latest run failed, whatever the clock says (#132 A2).
+/// `agentq hook <agent> <event>`: the newest time a client ran this event; a success moves the event's failure record
+/// to `.last_failure`, so `.failed` exists only while the latest run failed, whatever the clock says (#132 A2), and the
+/// heartbeat still names the last failure after the client recovered (#134).
 pub fn stamp(data: &Path, agent: &str, event: &str, now: u64) {
     if onboard::AGENTS.contains(&agent) && EVENTS.contains(&event) {
-        let _ = std::fs::create_dir_all(data.join("evidence"));
-        let _ = write_atomic(&data.join("evidence").join(format!("{agent}.{event}")), &now.to_string());
-        let _ = std::fs::remove_file(data.join("evidence").join(format!("{agent}.{event}.failed")));
+        let ev = data.join("evidence");
+        let _ = std::fs::create_dir_all(&ev);
+        let _ = write_atomic(&ev.join(format!("{agent}.{event}")), &now.to_string());
+        let _ = std::fs::rename(ev.join(format!("{agent}.{event}.failed")), ev.join(format!("{agent}.{event}.last_failure")));
     }
 }
 
@@ -325,6 +327,35 @@ pub fn hook_failures(data: &Path) -> Vec<String> {
         }
     }
     out
+}
+
+/// Heartbeat `agentq.hooks` (#134): per agent and event with any record, the state of its latest run (`ok`, `failed`,
+/// or `unknown` for an unreadable failure record), its newest successful run and its last failure `{at, error}`, which
+/// stays after a later success; null when it never failed.
+pub fn hooks(data: &Path) -> Value {
+    let unreadable = || json!({"at": null, "error": "unreadable failure record"});
+    let read = |name: String| match std::fs::read_to_string(data.join("evidence").join(name)) {
+        Ok(s) => Some(serde_json::from_str::<Value>(&s).ok().filter(|f| f["at"].is_u64() && f["error"].is_string()).unwrap_or_else(unreadable)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => Some(unreadable()),
+    };
+    let mut out = vec![];
+    for a in onboard::AGENTS {
+        for e in EVENTS {
+            let (ok, failed) = (stamped(data, a, e), read(format!("{a}.{e}.failed")));
+            let last = failed.clone().or_else(|| read(format!("{a}.{e}.last_failure")));
+            if ok.is_none() && last.is_none() {
+                continue;
+            }
+            let state = match &failed {
+                None => "ok",
+                Some(f) if f["at"].is_null() => "unknown",
+                Some(_) => "failed",
+            };
+            out.push(json!({"agent": a, "event": e, "state": state, "last_ok_at": ok, "last_failure": last}));
+        }
+    }
+    out.into()
 }
 
 fn stamped(data: &Path, agent: &str, event: &str) -> Option<u64> {
@@ -580,6 +611,11 @@ mod tests {
         assert!(hook_failures(&d).is_empty());
         std::fs::write(d.join("evidence").join("claude.SessionStart.failed"), "{").unwrap();
         assert_eq!(hook_failures(&d), ["claude SessionStart (unreadable failure record)"]);
+        // #134: the heartbeat keeps the last failure after the success that cleared it; unreadable reads unknown
+        assert_eq!(hooks(&d), json!([
+            {"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 400, "last_failure": {"at": 400, "error": "stdout: broken pipe"}},
+            {"agent": "claude", "event": "SessionStart", "state": "unknown", "last_ok_at": null, "last_failure": {"at": null, "error": "unreadable failure record"}},
+        ]));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

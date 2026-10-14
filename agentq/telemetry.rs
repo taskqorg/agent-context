@@ -328,6 +328,17 @@ fn problems(p: Vec<String>) -> String {
     if p.is_empty() { "none".into() } else { p.join(", ") }
 }
 
+/// `agentq.installation` attributes. `agents`: status.json `agents`, exported whole as `agentq.routing` (#134) beside
+/// its problem summary; `agentq.hooks` per hook with its last failure.
+fn heartbeat(install: &Path, data: &Path, now: u64, agents: Value) -> Value {
+    let q = status(data, now);
+    let rtk = if crate::engines::rtk_path(install).exists() { crate::engines::RTK } else { "unavailable" };
+    json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"],
+        "agentq.routing_problems": problems(crate::routing::problems(&agents)), "agentq.routing": agents,
+        "agentq.hook_failures": problems(crate::executor::hook_failures(data)), "agentq.hooks": crate::executor::hooks(data),
+        "agentq.ids_unknown": "an installation event has no session"})
+}
+
 /// The service's one sender: hourly `agentq.installation`, a resource sample per bucket, then a send pass every
 /// `every` seconds.
 pub fn sender(install: &Path, every: u64) -> ! {
@@ -341,9 +352,7 @@ pub fn sender(install: &Path, every: u64) -> ! {
         crate::connect::pass(&data, now, &mut dashq);
         if now >= beat + HEARTBEAT {
             beat = now;
-            let q = status(&data, now);
-            let rtk = if crate::engines::rtk_path(install).exists() { crate::engines::RTK } else { "unavailable" };
-            emit(&data, "agentq.installation", "heartbeat", json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"], "agentq.routing_problems": problems(crate::routing::problems(&crate::routing::agents(&data))), "agentq.hook_failures": problems(crate::executor::hook_failures(&data)), "agentq.ids_unknown": "an installation event has no session"}));
+            emit(&data, "agentq.installation", "heartbeat", heartbeat(install, &data, now, crate::routing::agents(&data)));
         }
         match load(&data) {
             Some(k) => {
@@ -411,6 +420,30 @@ mod tests {
         assert_eq!(e.len(), 2);
         let first: Value = serde_json::from_str(&std::fs::read_to_string(&e.iter().find(|e| e.1.to_string_lossy().contains(&id)).unwrap().1).unwrap()).unwrap();
         assert_eq!(attr(&first, "agentq.installation")["stringValue"], std::fs::read_to_string(d.join("installation")).unwrap(), "one installation ID");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Chain #134 A1: per-client routing with reason and intent, and a hook's last failure, reach the exported
+    /// `agentq.installation` span, and the failure stays after the client's next successful run. Risk: a heartbeat that
+    /// drops the failure before dashq Attention reads it, or exports routing only as a summary.
+    #[test]
+    fn heartbeat_carries_routing_and_hooks() {
+        let d = dir("beat");
+        crate::executor::hook_failed(&d, "codex", "Stop", 100, "stdin: stream did not contain valid UTF-8");
+        let agents = json!({"codex": {"routing": "direct", "reason": "config.toml selects no agent_context provider", "intended": "routed", "intended_reason": "onboarded"},
+            "claude": {"routing": "direct", "reason": "no ANTHROPIC_BASE_URL", "intended": "direct", "intended_reason": "routing not shipped"}});
+        let beat = |agents: &Value| span("agentq.installation", "heartbeat", heartbeat(&d, &d, 0, agents.clone()), 0, "inst", "h");
+        let s = beat(&agents);
+        let routing: Value = serde_json::from_str(attr(&s, "agentq.routing")["stringValue"].as_str().unwrap()).unwrap();
+        assert_eq!(routing, agents);
+        assert_eq!(attr(&s, "agentq.routing_problems")["stringValue"], "codex direct (config.toml selects no agent_context provider)");
+        let hooks = |s: &Value| serde_json::from_str::<Value>(attr(s, "agentq.hooks")["stringValue"].as_str().unwrap()).unwrap();
+        let failure = json!({"at": 100, "error": "stdin: stream did not contain valid UTF-8"});
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "failed", "last_ok_at": null, "last_failure": failure}]));
+        crate::executor::stamp(&d, "codex", "Stop", 200);
+        let s = beat(&json!({}));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 200, "last_failure": failure}]));
+        assert_eq!((attr(&s, "agentq.hook_failures")["stringValue"].as_str(), attr(&s, "agentq.routing")["stringValue"].as_str()), (Some("none"), Some("{}")));
         let _ = std::fs::remove_dir_all(d);
     }
 
