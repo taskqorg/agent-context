@@ -13,6 +13,8 @@ const CAP_BYTES: u64 = 64 * 1024 * 1024;
 const CAP_AGE: u64 = 7 * 86400;
 const BATCH: usize = 100;
 const HEARTBEAT: u64 = 3600;
+/// The start heartbeat waits at most this long for proxies the service just started.
+const START_WAIT: u64 = 300;
 const STORE: &str = "agentq-langfuse";
 /// Queue files bound to a DashQ grant (`connect.rs`); standalone spans are the other files.
 pub const RECORD: &str = ".rec.json";
@@ -328,10 +330,28 @@ fn problems(p: Vec<String>) -> String {
     if p.is_empty() { "none".into() } else { p.join(", ") }
 }
 
-/// The service's one sender: hourly `agentq.installation`, a resource sample per bucket, then a send pass every
-/// `every` seconds.
+/// `agentq.installation` attributes. `agents`: status.json `agents`, exported whole as `agentq.routing` (#134) beside
+/// its problem summary; `agentq.hooks` per hook with its last failure.
+fn heartbeat(install: &Path, data: &Path, now: u64, agents: Value) -> Value {
+    let q = status(data, now);
+    let rtk = if crate::engines::rtk_path(install).exists() { crate::engines::RTK } else { "unavailable" };
+    json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"],
+        "agentq.routing_problems": problems(crate::routing::problems(&agents)), "agentq.routing": agents,
+        "agentq.hook_failures": problems(crate::executor::hook_failures(data)), "agentq.hooks": crate::executor::hooks(data),
+        "agentq.ids_unknown": "an installation event has no session"})
+}
+
+/// Whether the start heartbeat waits: an agent still reads `unknown` (its proxy is binding) and `START_WAIT` has not
+/// passed since `start`. Hourly heartbeats never wait.
+fn start_waits(agents: &Value, beat: u64, start: u64, now: u64) -> bool {
+    beat == 0 && now < start + START_WAIT && agents.as_object().into_iter().flatten().any(|(_, a)| a["routing"] == "unknown")
+}
+
+/// The service's one sender: `agentq.installation` at start and hourly, a resource sample per bucket, then a send pass
+/// every `every` seconds.
 pub fn sender(install: &Path, every: u64) -> ! {
     let data = install.join("data");
+    let start = crate::now();
     let mut beat = 0;
     let mut sampler = crate::resource::Sampler::new(&data);
     let mut dashq = crate::connect::Sender::default();
@@ -340,10 +360,11 @@ pub fn sender(install: &Path, every: u64) -> ! {
         let now = crate::now();
         crate::connect::pass(&data, now, &mut dashq);
         if now >= beat + HEARTBEAT {
-            beat = now;
-            let q = status(&data, now);
-            let rtk = if crate::engines::rtk_path(install).exists() { crate::engines::RTK } else { "unavailable" };
-            emit(&data, "agentq.installation", "heartbeat", json!({"agentq.rtk_version": rtk, "agentq.headroom_pin": crate::engines::HEADROOM, "agentq.queue_pending": q["pending"], "agentq.queue_dropped": q["dropped"], "agentq.routing_problems": problems(crate::routing::problems(&crate::routing::agents(&data))), "agentq.hook_failures": problems(crate::executor::hook_failures(&data)), "agentq.ids_unknown": "an installation event has no session"}));
+            let agents = crate::routing::agents(&data);
+            if !start_waits(&agents, beat, start, now) {
+                beat = now;
+                emit(&data, "agentq.installation", "heartbeat", heartbeat(install, &data, now, agents));
+            }
         }
         match load(&data) {
             Some(k) => {
@@ -411,6 +432,46 @@ mod tests {
         assert_eq!(e.len(), 2);
         let first: Value = serde_json::from_str(&std::fs::read_to_string(&e.iter().find(|e| e.1.to_string_lossy().contains(&id)).unwrap().1).unwrap()).unwrap();
         assert_eq!(attr(&first, "agentq.installation")["stringValue"], std::fs::read_to_string(d.join("installation")).unwrap(), "one installation ID");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// Chain #134 A1: per-client routing with reason and intent, and a hook's last failure, reach the exported
+    /// `agentq.installation` span, and the failure stays after the client's next successful run. Risk: a heartbeat that
+    /// drops the failure before dashq Attention reads it, reports a corrupt retained failure as `ok`, exports routing only as a summary, or exports a proxy still
+    /// binding at service start as an hour of `unknown` routing.
+    #[test]
+    fn heartbeat_carries_routing_and_hooks() {
+        let d = dir("beat");
+        crate::executor::hook_failed(&d, "codex", "Stop", 100, "stdin: stream did not contain valid UTF-8");
+        let agents = json!({"codex": {"routing": "direct", "reason": "config.toml selects no agent_context provider", "intended": "routed", "intended_reason": "onboarded"},
+            "claude": {"routing": "direct", "reason": "no ANTHROPIC_BASE_URL", "intended": "direct", "intended_reason": "routing not shipped"}});
+        let beat = |agents: &Value| span("agentq.installation", "heartbeat", heartbeat(&d, &d, 0, agents.clone()), 0, "inst", "h");
+        let s = beat(&agents);
+        let routing: Value = serde_json::from_str(attr(&s, "agentq.routing")["stringValue"].as_str().unwrap()).unwrap();
+        assert_eq!(routing, agents);
+        assert_eq!(attr(&s, "agentq.routing_problems")["stringValue"], "codex direct (config.toml selects no agent_context provider)");
+        let hooks = |s: &Value| serde_json::from_str::<Value>(attr(s, "agentq.hooks")["stringValue"].as_str().unwrap()).unwrap();
+        let failure = json!({"at": 100, "error": "stdin: stream did not contain valid UTF-8"});
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "failed", "last_ok_at": null, "last_failure": failure}]));
+        crate::executor::stamp(&d, "codex", "Stop", 200);
+        let s = beat(&json!({}));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 200, "last_failure": failure}]));
+        assert_eq!((attr(&s, "agentq.hook_failures")["stringValue"].as_str(), attr(&s, "agentq.routing")["stringValue"].as_str()), (Some("none"), Some("{}")));
+        // a corrupt retained failure after that success reads unknown, never ok
+        std::fs::write(d.join("evidence").join("codex.Stop.last_failure"), "{").unwrap();
+        let s = beat(&json!({}));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "reason": "unreadable failure record", "last_ok_at": 200, "last_failure": {"at": null, "error": "unreadable failure record"}}]));
+        // a present but unreadable success stamp after a failure reads unknown, never ok; the entry stays
+        std::fs::write(d.join("evidence").join("codex.Stop.last_failure"), failure.to_string()).unwrap();
+        std::fs::write(d.join("evidence").join("codex.Stop"), "{").unwrap();
+        let s = beat(&json!({}));
+        assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "unknown", "reason": "unreadable success stamp", "last_ok_at": null, "last_failure": failure}]));
+        // the start heartbeat waits for a binding proxy, at most START_WAIT; hourly ones never wait
+        let binding = json!({"codex": {"routing": "unknown", "reason": "proxy on 127.0.0.1:1 not answering"}});
+        assert!(start_waits(&binding, 0, 1000, 1000 + START_WAIT - 1));
+        assert!(!start_waits(&binding, 0, 1000, 1000 + START_WAIT));
+        assert!(!start_waits(&agents, 0, 1000, 1000));
+        assert!(!start_waits(&binding, 1000, 1000, 1000 + HEARTBEAT));
         let _ = std::fs::remove_dir_all(d);
     }
 
