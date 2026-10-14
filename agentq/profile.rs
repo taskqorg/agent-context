@@ -407,14 +407,20 @@ mod tests {
             assert!(op(&r, o)["reason"].as_str().unwrap().contains("malformed"));
         }
         assert_eq!(op(&r, "export.langfuse")["state"], "measured");
-        // a corrupt export sample: that state unknown, compression measured again
+        // a corrupt export sample: only that operation unknown, the other export and compression measured
         std::fs::write(&stats, lines_.join("\n") + "\n").unwrap();
-        std::fs::write(d.join("queue/state.json"), r#"{"profile":{"export.langfuse":[[1,"x",null]]}}"#).unwrap();
+        let bad = format!(r#"{{"profile":{{"export.langfuse":[[1,"x",null]],"export.dashq":[[{},20,null]]}}}}"#, now - 1);
+        std::fs::write(d.join("queue/state.json"), bad).unwrap();
         let r = report(&d, now);
         assert!(op(&r, "export.langfuse")["reason"].as_str().unwrap().contains("malformed sample"));
+        assert_eq!(op(&r, "export.dashq")["state"], "measured");
         assert_eq!(op(&r, "compress.hook")["state"], "measured");
+        // unreadable state: every export unknown
         std::fs::write(d.join("queue/state.json"), "{").unwrap();
-        assert!(op(&report(&d, now), "export.dashq")["reason"].as_str().unwrap().contains("unreadable"));
+        let r = report(&d, now);
+        for o in ["export.langfuse", "export.dashq"] {
+            assert!(op(&r, o)["reason"].as_str().unwrap().contains("unreadable"), "{o}");
+        }
 
         // trace switch: bounded, keeps other config, steps join the report; off stops writing
         std::fs::write(d.join("config.json"), r#"{"ports":{"codex":1}}"#).unwrap();
