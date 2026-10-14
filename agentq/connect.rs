@@ -70,6 +70,25 @@ pub struct Sender {
     clients: Option<Vec<profiles::Client>>,
 }
 
+/// DashQ serves every machine route under `/machine/` (dashq#110); coreq posts `destination + route`, so the
+/// destination stays the DashQ origin the person named and only the route gains the prefix.
+struct Machine<'a>(&'a mut dyn Wire);
+
+impl Wire for Machine<'_> {
+    fn post(&mut self, destination: &str, route: &str, auth: Option<&str>, body: &Value) -> Result<(u16, Value), String> {
+        self.0.post(destination, &format!("/machine{route}"), auth, body)
+    }
+    fn now(&self) -> u64 {
+        self.0.now()
+    }
+    fn sleep(&mut self, secs: u64) {
+        self.0.sleep(secs);
+    }
+    fn show(&mut self, verification_uri: &str, user_code: &str) {
+        self.0.show(verification_uri, user_code);
+    }
+}
+
 /// One service pass over HTTPS.
 pub fn pass(data: &Path, now: u64, s: &mut Sender) {
     pass_with(data, now, s, &mut enroll::Https { browser: false });
@@ -79,6 +98,7 @@ pub fn pass(data: &Path, now: u64, s: &mut Sender) {
 /// nothing.
 // ponytail: offline revokes take one 10 s try each per pass, at most 16; skip them for a while if passes run late
 fn pass_with(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
+    let wire = &mut Machine(wire);
     let d = dir(data);
     if !d.join("connection.json").exists() {
         return;
@@ -261,6 +281,7 @@ pub fn enroll_with(data: &Path, destination: &str, wire: &mut dyn Wire) -> Resul
     if !destination.starts_with("https://") {
         return Err("destination must be https".into());
     }
+    let wire = &mut Machine(wire);
     let d = seed(data)?;
     let host = crate::host();
     let req = Request { installation: None, product: "agentq", host_label: &host, schemas: &[SCHEMA], scope: None, capabilities: &[configure::CAPABILITY] };
@@ -298,6 +319,7 @@ pub fn enroll_with(data: &Path, destination: &str, wire: &mut dyn Wire) -> Resul
 
 /// `agentq disconnect`: stop sending at once; the revoke retries until DashQ confirms it.
 pub fn disconnect_with(data: &Path, wire: &mut dyn Wire) -> Result<&'static str, String> {
+    let wire = &mut Machine(wire);
     let d = dir(data);
     let s = read(&d.join("connection.json")).unwrap_or_default();
     if !s["active"].is_object() && !s["pending"].is_object() && s["revoke"].as_array().is_none_or(Vec::is_empty) {
@@ -392,9 +414,9 @@ mod tests {
         fn handle(&mut self, route: &str, auth: Option<&str>, b: &Value) -> (u16, Value) {
             let live = auth.and_then(|c| self.creds.get(c)).filter(|c| !c.1).map(|c| c.0);
             match route {
-                "/connect/device" => (200, json!({"protocol": 1, "device_code": "dc", "user_code": "ABCD-1234", "verification_uri": "https://dash.example/connect", "expires_in": 600, "interval": 5})),
-                "/connect/token" if !self.approved && self.staged.is_none() => (400, json!({"protocol": 1, "error": "authorization_pending"})),
-                "/connect/token" => {
+                "/machine/connect/device" => (200, json!({"protocol": 1, "device_code": "dc", "user_code": "ABCD-1234", "verification_uri": "https://dash.example/connect", "expires_in": 600, "interval": 5})),
+                "/machine/connect/token" if !self.approved && self.staged.is_none() => (400, json!({"protocol": 1, "error": "authorization_pending"})),
+                "/machine/connect/token" => {
                     let (cred, g) = self.staged.get_or_insert_with(|| {
                         self.generation += 1;
                         (format!("cred{}", self.generation), self.generation)
@@ -402,20 +424,20 @@ mod tests {
                     self.approved = false;
                     (200, json!({"protocol": 1, "credential": cred, "installation": "inst-1", "generation": g, "product": "agentq", "workspace": "ws", "schemas": [SCHEMA], "capabilities": self.approve}))
                 }
-                "/connect/ack" => {
+                "/machine/connect/ack" => {
                     if let Some((c, g)) = self.staged.take() {
                         self.creds.insert(c, (g, false));
                     }
                     let g = live.or_else(|| auth.and_then(|c| self.creds.get(c)).map(|c| c.0));
                     (200, json!({"protocol": 1, "state": "active", "generation": g}))
                 }
-                "/connection/revoke" => {
+                "/machine/connection/revoke" => {
                     let c = self.creds.get_mut(auth.unwrap_or_default()).unwrap();
                     c.1 = true;
                     (200, json!({"protocol": 1, "state": "revoked", "generation": c.0}))
                 }
                 _ if live.is_none() => (401, json!({"protocol": 1, "error": "revoked"})),
-                "/ingest" => {
+                "/machine/ingest" => {
                     let g = live.unwrap();
                     let receipts: Vec<Value> = b["records"].as_array().unwrap().iter().map(|r| {
                         let id = r["event_id"].as_str().unwrap().to_string();
@@ -429,12 +451,12 @@ mod tests {
                     }).collect();
                     (200, json!({"protocol": 1, "receipts": receipts}))
                 }
-                "/operations" => {
+                "/machine/operations" => {
                     let g = live.unwrap();
                     let pending: Vec<Value> = self.ops.iter().filter(|o| o["generation"] == g && !self.results.contains_key(o["operation"].as_str().unwrap())).cloned().collect();
                     (200, json!({"protocol": 1, "operations": pending}))
                 }
-                "/operations/result" => {
+                "/machine/operations/result" => {
                     let id = b["operation"].as_str().unwrap().to_string();
                     let Some(op) = self.ops.iter().find(|o| o["operation"] == id) else { return (200, json!({"protocol": 1, "operation": id, "state": "rejected", "reason": "unknown_operation"})) };
                     if op["digest"] != b["digest"] {
@@ -445,7 +467,7 @@ mod tests {
                         _ => (200, json!({"protocol": 1, "operation": id, "state": "accepted"})),
                     }
                 }
-                "/connection/receipt" => {
+                "/machine/connection/receipt" => {
                     let g = live.unwrap();
                     match self.events.get(&(g, b["event_id"].as_str().unwrap().to_string())) {
                         Some(r) => (200, json!({"protocol": 1, "installation": "inst-1", "generation": g, "schema": r["schema"], "event_id": r["event_id"], "state": "projected"})),
@@ -457,7 +479,7 @@ mod tests {
         }
 
         fn ingested(&self) -> Vec<String> {
-            self.sent.iter().filter(|s| s.0.ends_with("/ingest")).flat_map(|s| s.1["records"].as_array().unwrap().iter().map(|r| r["event_id"].as_str().unwrap().to_string()).collect::<Vec<_>>()).collect()
+            self.sent.iter().filter(|s| s.0.ends_with("/machine/ingest")).flat_map(|s| s.1["records"].as_array().unwrap().iter().map(|r| r["event_id"].as_str().unwrap().to_string()).collect::<Vec<_>>()).collect()
         }
     }
 
@@ -525,6 +547,7 @@ mod tests {
         let id = enroll_with(&d, "https://dash.example", &mut w).unwrap();
         assert_eq!(w.sent[0].1["installation"], "inst-1", "existing identity");
         assert_eq!(w.sent[0].1["schemas"], json!([SCHEMA]));
+        assert!(w.sent.iter().all(|s| s.0.starts_with("https://dash.example/machine/")), "machine routes only");
         let rec = &w.events[&(1, id.clone())];
         assert_eq!((rec["payload"]["schema"].clone(), rec["payload"]["installation"].clone()), (json!(1), json!("inst-1")));
         assert_eq!(rec["payload"]["resource"]["cpu_unknown"], "warmup", "the newest sample, not a fake one");
@@ -545,7 +568,7 @@ mod tests {
     #[test]
     fn lost_replies_and_crash_recover() {
         let d = data("lost");
-        let mut w = Dash { now: 1000, lose: Some("/connect/ack"), ..Dash::default() };
+        let mut w = Dash { now: 1000, lose: Some("/machine/connect/ack"), ..Dash::default() };
         assert!(enroll_with(&d, "https://dash.example", &mut w).is_err());
         assert_eq!(status(&d)["state"], "pending approval");
         enroll_with(&d, "https://dash.example", &mut w).unwrap();
@@ -554,7 +577,7 @@ mod tests {
         // crash after the record was queued: the next service pass sends it
         let mut s = Sender { snapshot_at: u64::MAX / 2, ..Sender::default() };
         let (rec, file) = queue_snapshot(&d, w.now).unwrap();
-        w.lose = Some("/ingest");
+        w.lose = Some("/machine/ingest");
         pass_with(&d, w.now, &mut s, &mut w);
         assert!(file.exists(), "no reply: kept");
         assert!(status(&d)["export"]["error"].as_str().unwrap().starts_with("no reply"));
@@ -645,7 +668,7 @@ mod tests {
         assert!(!file.exists(), "a plan writes nothing");
 
         let op = queue_op(&mut w, "d0000000000000000000000000000002", "apply", 1, mcp.clone(), Some(&plan));
-        w.lose = Some("/operations/result");
+        w.lose = Some("/machine/operations/result");
         pass_with(&d, w.now, &mut s, &mut w);
         assert!(file.exists(), "applied");
         let posted = w.results["d0000000000000000000000000000002"].clone();
@@ -694,7 +717,7 @@ mod tests {
         enroll_with(&d, "https://dash.example", &mut w).unwrap();
         queue_op(&mut w, "e0000000000000000000000000000001", "plan", 1, mcp.clone(), None);
         pass_with(&d, w.now, &mut s, &mut w);
-        assert!(!w.sent.iter().any(|x| x.0.ends_with("/operations")), "no pull without agentq.configure");
+        assert!(!w.sent.iter().any(|x| x.0.ends_with("/machine/operations")), "no pull without agentq.configure");
         assert_eq!(status(&d)["configure"]["granted"], false);
 
         w.approve = vec![configure::CAPABILITY];
