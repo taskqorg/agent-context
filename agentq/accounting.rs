@@ -393,8 +393,8 @@ pub fn local(data: &Path, now: u64) -> Value {
     let journal = std::fs::read(dir.join(crate::compression::COVERAGE)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let mut observed = vec![];
     let mut resets = vec![];
-    if unknown.is_none() && dir.join(crate::compression::FAILED).exists() {
-        unknown = Some("coverage journal write failed");
+    if unknown.is_none() && !crate::compression::failed(&dir).is_empty() {
+        unknown = Some("stats write failed");
     }
     match journal.filter(crate::compression::journal_valid) {
         _ if unknown.is_some() => {}

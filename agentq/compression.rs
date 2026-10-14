@@ -438,21 +438,36 @@ fn stats_date(name: &str) -> Option<&str> {
 
 /// The producer's coverage journal in `data/stats/` (ACCOUNTING O3).
 pub const COVERAGE: &str = "coverage.json";
-/// Left when a journal write fails: the journal no longer proves coverage until the next written journal resets it.
+/// Prefix of markers left when a save fails before or at its journal write: the journal no longer proves coverage until
+/// the next written journal resets it. Each failure writes its own file, so a reset removes only the markers it saw.
 pub const FAILED: &str = "coverage.failed";
+
+/// Failure markers held in `dir`.
+pub fn failed(dir: &Path) -> Vec<std::path::PathBuf> {
+    let es = std::fs::read_dir(dir).into_iter().flatten().flatten();
+    es.filter(|e| e.file_name().to_string_lossy().starts_with(FAILED)).map(|e| e.path()).collect()
+}
+
+/// Durable unknown for a save that may have lost its record; works without the lifecycle lock.
+fn mark_failed(dir: &Path, at: u64) {
+    let name = format!("{FAILED}.{}.{}", std::process::id(), crate::mcp::new_id());
+    if let Err(e) = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(dir.join(name), at.to_string())) {
+        eprintln!("agentq: stats coverage marker: {e}");
+    }
+}
 
 /// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
 /// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` at the next second and adds a reset: the
 /// older records stay countable but unproven, and `counts` restarts from the records held now.
-fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64) -> Value {
+fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64, reset: u64) -> Value {
     let fresh = |since: u64, resets: Vec<u64>| json!({"schema":1,"since":since,"resets":resets,"gaps":[],"counts":lines});
     // A reset proves only the next second on: an earlier call in its own second may already be lost.
     match journal {
         None if !held => fresh(at, vec![]),
-        None => fresh(at + 1, vec![at]),
+        None => fresh(reset + 1, vec![reset]),
         Some(b) => match serde_json::from_slice::<Value>(b) {
             Ok(v) if journal_valid(&v) => v,
-            _ => fresh(at + 1, vec![at]),
+            _ => fresh(reset + 1, vec![reset]),
         },
     }
 }
@@ -475,8 +490,18 @@ pub fn journal_valid(v: &Value) -> bool {
             .is_some_and(|m| m.iter().all(|(k, n)| stats_date(&format!("{k}.jsonl")).is_some() && n.is_u64()))
 }
 
-/// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes.
+/// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes. A failure before
+/// the journal write (lock timeout, unreadable store) marks coverage unknown, since the record may be lost.
 fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
+    let mut journaled = false;
+    let res = save_locked(data, c, r, &mut journaled);
+    if res.is_err() && !journaled {
+        mark_failed(&data.join("stats"), r["time"].as_u64().unwrap_or_else(crate::now));
+    }
+    res
+}
+
+fn save_locked(data: &Path, c: &Value, r: &Value, journaled: &mut bool) -> Result<(), String> {
     let _lock = crate::executor::lock(data)?;
     let dir = data.join("stats");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -523,10 +548,12 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     }
     let journal = dir.join(COVERAGE);
     let before = std::fs::read(&journal).ok();
-    let failed = dir.join(FAILED);
-    // A stale journal after a failed write proves nothing; an empty one parses as unreadable and resets.
-    let proven = if failed.exists() { Some(&b""[..]) } else { before.as_deref() };
-    let mut cov = coverage(proven, held, &lines, at);
+    // Markers written after this read belong to calls not yet covered by this reset and stay.
+    let failed = failed(&dir);
+    // A stale journal after a failed save proves nothing; an empty one parses as unreadable and resets.
+    let proven = if failed.is_empty() { before.as_deref() } else { Some(&b""[..]) };
+    // A reset starts after now, not after this record's time: a locked-out call may be newer than this one.
+    let mut cov = coverage(proven, held, &lines, at, crate::now().max(at));
     let appended = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -554,15 +581,14 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let after = cov.to_string();
     if before.as_deref() != Some(after.as_bytes()) {
         match coreq::write_atomic(&journal, &after) {
-            Ok(()) => _ = std::fs::remove_file(&failed),
+            Ok(()) => failed.iter().for_each(|f| _ = std::fs::remove_file(f)),
             Err(e) => {
                 eprintln!("agentq: stats coverage unknown: {e}");
-                if let Err(e) = std::fs::write(&failed, at.to_string()) {
-                    eprintln!("agentq: stats coverage marker: {e}");
-                }
+                mark_failed(&dir, at);
             }
         }
     }
+    *journaled = true;
     appended?;
     if c["stats"] != "off" {
         let mut a = serde_json::Map::new();
@@ -908,11 +934,11 @@ mod tests {
         let s = std::fs::read_to_string(&day).unwrap();
         std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
         let a = crate::accounting::local(&d, crate::now());
-        assert_eq!(a["unknown"], "coverage journal write failed", "{a}");
+        assert_eq!(a["unknown"], "stats write failed", "{a}");
         // The next written journal resets coverage and clears the marker.
         std::fs::remove_dir(&block).unwrap();
         compress(&d, "hermes", &input).unwrap();
-        assert!(!stats_dir.join(FAILED).exists());
+        assert!(failed(&stats_dir).is_empty());
         let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
         assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
         assert!(crate::accounting::local(&d, crate::now())["unknown"].is_null());
@@ -941,6 +967,29 @@ mod tests {
         input["sources"] = json!([crate::accounting::local(&d, t)]);
         let a = crate::accounting::aggregate(&input).unwrap();
         assert_ne!(a["state"], "complete", "{a}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: a save that times out on the lifecycle lock writes no record; coverage stays unknown.
+    #[test]
+    fn lock_timeout_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-lock-timeout-{}", crate::mcp::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        compress(&d, "hermes", &input).unwrap();
+        let held = crate::executor::lock(&d).unwrap();
+        // Another process holds the lock: the std file lock is per open file, so this thread times out like one.
+        compress(&d, "hermes", &input).unwrap();
+        drop(held);
+        let a = crate::accounting::local(&d, crate::now());
+        assert_eq!(a["unknown"], "stats write failed", "{a}");
+        // A marker written by a call this save never saw survives its reset.
+        let late = d.join("stats").join(format!("{FAILED}.late"));
+        compress(&d, "hermes", &input).unwrap();
+        assert!(crate::accounting::local(&d, crate::now() + 1)["unknown"].is_null());
+        std::fs::write(&late, "0").unwrap();
+        assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], "stats write failed");
         std::fs::remove_dir_all(d).unwrap();
     }
 }
