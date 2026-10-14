@@ -71,6 +71,8 @@ Procedure per host. The candidate runs in a separate `AGENTQ_INSTALL`, so the wo
 |---|---|---|---|---|---|---|
 | 2026-10-15 | Windows 11, isolated install | `3c251d7` built as `0.6.0-rc95`; service status read back | not run: two codes expired unapproved | pass: abort leaves `pending approval`, no grant; repeat reuses the same code; expiry gives `expired_token`, no grant, next action `agentq enroll` | not run | incomplete |
 | 2026-10-15 | WSL 2 Ubuntu 24.04, same host, isolated install | `3c251d7` built as `0.6.0-rc95`; service status read back | not run: code expired unapproved | pass: expiry gives no grant and next action `agentq enroll` | not run | incomplete |
+| 2026-10-15 rerun | Windows 11, isolated install, same binary (sha256 matches a fresh build of `3c251d7`) | `3c251d7` as `0.6.0-rc95` | CLI and service pass: owner approved the code; `enroll` printed `Connected` and its snapshot `projected`; `connection status` reads `connected`, generation 1, `verified.json` holds the projected event; `service run` delivered again 6 min later with no error. Dashboard page: not read back by the worker (behind Access) | pass (previous run) | not run | incomplete |
+| 2026-10-15 rerun | WSL 2 Ubuntu 24.04, isolated install (`3c251d7` plus version bump only) | `3c251d7` as `0.6.0-rc95` | CLI and service pass, same readback as Windows; service delivered again 6 min after enroll with no error. Dashboard page: not read back by the worker | pass (previous run) | not run | incomplete |
 | — | macOS, FRA Linux (from the Mac over ssh) | — | not run | not run | not run | untested |
 
 ## Update restart qualification
