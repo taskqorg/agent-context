@@ -440,10 +440,10 @@ fn stats_date(name: &str) -> Option<&str> {
 pub const COVERAGE: &str = "coverage.json";
 
 /// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
-/// second. A missing journal over held records, or an unreadable one, restarts `since` here and adds a reset: the
+/// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` here and adds a reset: the
 /// older records stay countable but unproven.
 fn coverage(journal: Option<&[u8]>, held: bool, at: u64) -> Value {
-    let fresh = |resets: Vec<u64>| json!({"schema":1,"since":at,"resets":resets,"gaps":[]});
+    let fresh = |resets: Vec<u64>| json!({"schema":1,"since":at,"resets":resets,"gaps":[],"counts":{}});
     match journal {
         None if !held => fresh(vec![]),
         None => fresh(vec![at]),
@@ -467,6 +467,9 @@ pub fn journal_valid(v: &Value) -> bool {
                     && g[0].as_u64().zip(g[1].as_u64()).is_some_and(|(x, y)| x < y)
             })
         })
+        && v["counts"]
+            .as_object()
+            .is_some_and(|m| m.iter().all(|(k, n)| stats_date(&format!("{k}.jsonl")).is_some() && n.is_u64()))
 }
 
 /// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes.
@@ -484,6 +487,7 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let cutoff = at.saturating_sub(7 * 86400);
     let oldest = crate::date(cutoff);
     let mut held = false;
+    let mut trimmed = None;
     for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let e = e.map_err(|e| e.to_string())?;
         let name = e.file_name().to_string_lossy().into_owned();
@@ -502,6 +506,7 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
             }
             if kept.len() != s.len() {
                 coreq::write_atomic(&e.path(), &kept)?;
+                trimmed = Some(kept.lines().count());
             }
         }
     }
@@ -514,7 +519,16 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
         .open(dir.join(format!("{}.jsonl", crate::date(at))))
         .and_then(|mut f| writeln!(f, "{r}"))
         .map_err(|e| e.to_string());
-    if appended.is_err() {
+    let counts = cov["counts"].as_object_mut().unwrap();
+    counts.retain(|d, _| d.as_str() >= oldest.as_str());
+    if let Some(n) = trimmed {
+        counts.insert(oldest.clone(), json!(n));
+    }
+    if appended.is_ok() {
+        let day = crate::date(at);
+        let n = counts.get(&day).and_then(Value::as_u64).unwrap_or(0);
+        counts.insert(day, json!(n + 1));
+    } else {
         cov["gaps"].as_array_mut().unwrap().push(json!([at, at + 1]));
     }
     for k in ["resets", "gaps"] {

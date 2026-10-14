@@ -277,6 +277,7 @@ fn execution_recovery_stats_chain() {
         json!({"schema": 1, "since": since, "resets": ["x"], "gaps": []}),
         json!({"schema": 1, "since": since, "resets": 0, "gaps": []}),
         json!({"schema": 1, "since": since, "gaps": []}),
+        json!({"schema": 1, "since": since, "resets": [], "gaps": [], "counts": {"x": 1}}),
     ] {
         std::fs::write(&journal, bad.to_string()).unwrap();
         let got = accounting(&["--from", &from]);
@@ -287,6 +288,13 @@ fn execution_recovery_stats_chain() {
     cli(&root, &["run", "--", "cargo", "test"], None, &[]);
     let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
     assert_eq!((j["gaps"].clone(), j["resets"].clone()), (json!([]), json!([j["since"]])));
+    // A deleted day file under an intact journal is lost records: unknown with a reason, never complete or zero.
+    let held = accounting(&["--from", &from]);
+    assert_eq!((&held["state"], &held["calls"]), (&json!("partial"), &json!(11)));
+    std::fs::remove_file(&day).unwrap();
+    let gone: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
+    assert_eq!((&gone["state"], &gone["calls"]), (&json!("unknown"), &Value::Null), "{gone}");
+    assert_eq!(gone["coverage"]["sources"][0]["reasons"][0]["detail"], "stats records lost", "{gone}");
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {

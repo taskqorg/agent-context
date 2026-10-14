@@ -719,7 +719,8 @@ mod tests {
         let d = std::env::temp_dir().join(format!("agentq-leftover-{}", std::process::id()));
         std::fs::create_dir_all(d.join("incidents")).unwrap();
         std::fs::write(d.join("machine-id.json"), "{}").unwrap();
-        let mut p = Command::new("sh").args(["-c", "sleep 30; true"]).arg(d.join("launcher.mjs")).spawn().unwrap();
+        // `read` is a builtin: no forked child briefly carries the same command line (dash on Ubuntu).
+        let mut p = Command::new("sh").args(["-c", "read x"]).arg(d.join("launcher.mjs")).stdin(std::process::Stdio::piped()).spawn().unwrap();
         assert_eq!(legacy_pids(&d), vec![p.id().to_string()]);
         assert_eq!(legacy(&d, false), 0, "no launcher: nothing to uninstall");
         let _ = p.kill();

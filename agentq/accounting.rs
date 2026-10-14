@@ -371,6 +371,7 @@ pub fn local(data: &Path, now: u64) -> Value {
     let dir = data.join("stats");
     let mut records = vec![];
     let mut unknown = None;
+    let mut held = std::collections::HashMap::new();
     match std::fs::read_dir(&dir) {
         Ok(es) => {
             for e in es.flatten() {
@@ -378,7 +379,10 @@ pub fn local(data: &Path, now: u64) -> Value {
                     continue;
                 }
                 match std::fs::read_to_string(e.path()) {
-                    Ok(s) => records.extend(s.lines().map(|l| serde_json::from_str(l).unwrap_or(json!("unreadable")))),
+                    Ok(s) => {
+                        held.insert(e.file_name().to_string_lossy().trim_end_matches(".jsonl").to_string(), s.lines().count() as u64);
+                        records.extend(s.lines().map(|l| serde_json::from_str(l).unwrap_or(json!("unreadable"))))
+                    }
                     Err(_) => unknown = Some("stats file unreadable"),
                 }
             }
@@ -391,6 +395,10 @@ pub fn local(data: &Path, now: u64) -> Value {
     let mut resets = vec![];
     match journal.filter(crate::compression::journal_valid) {
         _ if unknown.is_some() => {}
+        // Fewer lines than the producer wrote: a deleted or truncated day file. Its calls are unprovable, never zero.
+        Some(j) if j["counts"].as_object().into_iter().flatten().any(|(d, n)| held.get(d).copied().unwrap_or(0) < n.as_u64().unwrap_or(0)) => {
+            unknown = Some("stats records lost")
+        }
         Some(j) => {
             let mut at = j["since"].as_u64().unwrap_or(u64::MAX).max(now.saturating_sub(RETENTION));
             let mut gaps: Vec<(u64, u64)> = j["gaps"].as_array().into_iter().flatten().filter_map(|g| g[0].as_u64().zip(g[1].as_u64())).collect();
