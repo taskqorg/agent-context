@@ -87,10 +87,19 @@ fn codes(v: &Value, allowed: &[&str], other: &'static str) -> Vec<Value> {
     out.into_iter().map(Value::from).collect()
 }
 
+/// A2 verification: `verified` only with a time, the profile's own adapter and revision and a 16-hex evidence ID;
+/// anything else is unknown with a fixed reason.
+fn verification(v: &Value, adapter: Option<&str>, revision: &str) -> Value {
+    match (v["state"].as_str(), v["at"].as_u64(), id16(&v["evidence"])) {
+        (Some("verified"), Some(at), Some(e)) if v["adapter"].as_str() == adapter && v["revision"] == revision => json!({"state": "verified", "at": at, "adapter": adapter, "revision": revision, "evidence": e}),
+        _ => json!({"state": "unknown", "reason": pick(v["reason"].as_str(), &["no_evidence", "revision_changed"]).replace("unknown", "no_evidence")}),
+    }
+}
+
 /// CONFIGURATION A2: profiles of status.json `configuration`. Labels, aliases and operations come from the kind,
 /// every other value from a fixed set; ids and revisions are 16 hex. Configured never reads as verified, and a stale,
 /// truncated, incomplete or conflicting profile is never writable.
-/// ponytail: writes stay `not_released` and verification `no_evidence` until A3 apply and evidence correlation land.
+/// ponytail: writes stay `not_released` until the enrolled loop delivers operations.
 fn configuration(status: Option<&Value>, now: u64) -> Value {
     let c = match status.map(|s| &s["configuration"]) {
         None => return json!({"state": "unknown", "reason": "no status"}),
@@ -127,7 +136,7 @@ fn configuration(status: Option<&Value>, now: u64) -> Value {
             let adapter = p["effective"]["adapter"].as_str().filter(|a| ADAPTERS.contains(a));
             out["effective"] = json!({"adapter": adapter, "state": state});
             out["configured"] = json!(state == "configured");
-            out["verification"] = json!({"state": "unknown", "reason": "no_evidence"});
+            out["verification"] = verification(&p["verification"], adapter, rev);
             out["owned"] = json!(p["owned"].as_bool());
             // A1: project overrides are read-only; any of them disables writes, an unknown count stays null
             let overrides = p["overrides"].as_u64().map(|n| n.min(999));
@@ -318,6 +327,13 @@ mod tests {
         assert_eq!((stale["state"].as_str(), stale["profiles"][0]["writes"]["reasons"].clone()), (Some("stale"), json!(["not_released", "stale"])));
         let future = project("inst", "macos", Some(&with_profiles(1100, json!([codex(json!({}))]))), None, 1030)["configuration"].clone();
         assert_eq!(future["state"], "stale", "a future observation time is clock-uncertain");
+
+        // #103 A5: verified crosses only for the profile's own adapter and revision with an evidence ID
+        let ok = json!({"state": "verified", "at": 1010, "adapter": "provider", "revision": "fedcba9876543210", "evidence": "abcdefabcdefabcd"});
+        let other = json!({"state": "verified", "at": 1010, "adapter": "hook", "revision": "fedcba9876543210", "evidence": "abcdefabcdefabcd"});
+        let v = project("inst", "macos", Some(&with_profiles(1000, json!([codex(json!({"verification": ok})), codex(json!({"verification": other})), codex(json!({"verification": {"state": "unknown", "reason": "at /Users/alice"}}))]))), None, 1030)["configuration"].clone();
+        assert_eq!(v["profiles"][0]["verification"], ok);
+        assert_eq!((v["profiles"][1]["verification"]["state"].as_str(), v["profiles"][2]["verification"]["reason"].as_str()), (Some("unknown"), Some("no_evidence")));
 
         let many: Vec<Value> = (0..20).map(|_| codex(json!({}))).collect();
         let t = project("inst", "macos", Some(&with_profiles(1000, json!(many))), None, 1030)["configuration"].clone();

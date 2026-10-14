@@ -24,8 +24,9 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 | `agentq run -- <cmd> [args..]` | Run a native command through RTK when qualified, else unchanged (§ 3). Exit code and stderr preserved. |
 | `agentq compress <agent>`, `agentq stats [--json]` | Tool-result compression core entry and its local stats (§ 3). |
 | `agentq mcp <agent>` | Stdio MCP server `agent_context` (§ 2). |
-| `agentq hook <agent> <event>` | Hook handler for § 4 events; JSON on stdin, JSON on stdout; 5 s budget, failure returns `{}`. |
+| `agentq hook <agent> <event>` | Hook handler for § 4 events; JSON on stdin, JSON on stdout; 5 s budget, failure returns `{}`. Stamps the event time as configuration evidence. |
 | `agentq direct [agent..]` | Restore direct provider access: remove routing edits only, keep MCP and telemetry; works when the service is down (PRODUCT R4). `onboard --yes` routes again. |
+| `agentq configure [<profile> <field>=<value>.. [--yes]]` | Profile projection, typed plan, or guarded apply with host readback under the lifecycle lock (CONFIGURATION "Host executor"). Not released. |
 | `agentq doctor` | Read-only: install, service, engines, owned edits count, telemetry queue and keys, legacy install, running legacy pids and files left in a retired legacy folder; exit 1 on a problem. Ports and routing drift join when the service owns them (§ 5); `onboard --yes` reapplies owned edits. |
 | `agentq telemetry status\|verify [agent]` | Queue backlog and last delivery; `verify` sends one synthetic span and reads it back; a miss names the query and Langfuse's last answer. |
 | `agentq incidents [list\|show]` | Local incident reports and what would be sent (§ 7). |
@@ -75,7 +76,7 @@ One core in the binary decides, compresses, retains and counts; adapters only tr
 
 ## 4. Hooks and config edits per runtime
 
-Accepted configuration target: [CONFIGURATION A1–A5](docs/spec/CONFIGURATION.md) owns extended profile projection and separately authorized typed management with revision checks, journaled apply, host readback and real-client verification. Observation enrollment grants no configuration authority; existing client/model/login/approval and ownership rules remain binding. Not yet released. Typed request/plan/result envelopes and host acceptance: `agentq/configure.rs` with shared fixtures `docs/spec/configuration-fixtures.json`; no write path yet.
+Accepted configuration target: [CONFIGURATION A1–A5](docs/spec/CONFIGURATION.md) owns extended profile projection and separately authorized typed management with revision checks, journaled apply, host readback and real-client verification. Observation enrollment grants no configuration authority; existing client/model/login/approval and ownership rules remain binding. Not yet released. Typed request/plan/result envelopes and host acceptance: `agentq/configure.rs` with shared fixtures `docs/spec/configuration-fixtures.json`. Local guarded apply, readback and hook evidence: `agentq configure`, `agentq/executor.rs` (CONFIGURATION "Host executor"); remote operations stay unreleased.
 
 Each edit is recorded in the ownership journal (§ 9) before it is written. Existing foreign optimizers or custom providers stop the edit for that file with a named conflict; nothing is replaced by guess. Loopback port per agent and runtime is fixed at install and kept across updates.
 

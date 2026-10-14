@@ -2,7 +2,7 @@
 //! result envelopes and host acceptance. Pure: the caller passes the raw request, the host's grant/storage state and
 //! `profiles::status`. Shared conformance fixtures: docs/spec/configuration-fixtures.json.
 //!
-//! ponytail: no write here. Durable storage, journaled apply, readback and verification evidence are #103.
+//! The executor (durable records, journaled apply, readback) is `executor.rs`.
 
 use ring::digest;
 use serde_json::{Value, json};
@@ -20,6 +20,8 @@ const FIELDS: [(&str, &[&str], bool); 5] = [
     ("hooks", &["registered"], true),
     ("plugin", &["enabled"], true),
 ];
+/// Kind, field and value the client supports but the host cannot write yet (CONFIGURATION "Host executor").
+const NO_WRITER: [(&str, &str, &str); 2] = [("claude-code", "routing", "routed"), ("hermes", "plugin", "enabled")];
 const REQUEST: [&str; 10] = ["schema", "operation", "kind", "actor", "workspace", "installation", "generation", "issued_at", "expires_at", "changes"];
 pub const OUTCOMES: [&str; 5] = ["rejected", "accepted", "applied", "partial", "unknown"];
 const PROFILE_STATES: [&str; 4] = ["applied", "unchanged", "restored", "unknown"];
@@ -130,7 +132,8 @@ pub fn plan(req: &Value, configuration: &Value) -> Value {
         let entry = profiles.iter_mut().find(|p| p["id"] == *id).expect("pushed above");
         let field = c["field"].as_str().unwrap_or("");
         let ops = crate::profiles::KINDS.iter().find(|k| entry["kind"] == k.0).map_or(&[][..], |k| k.3);
-        if entry["kind"].is_string() && !ops.contains(&field) && !entry["conflicts"].as_array().is_some_and(|a| a.contains(&json!("unsupported_client"))) {
+        let no_writer = NO_WRITER.iter().any(|w| entry["kind"] == w.0 && field == w.1 && c["value"] == w.2);
+        if entry["kind"].is_string() && (!ops.contains(&field) || no_writer) && !entry["conflicts"].as_array().is_some_and(|a| a.contains(&json!("unsupported_client"))) {
             entry["conflicts"].as_array_mut().expect("array").push("unsupported_client".into());
         }
         let old = configuration["profiles"].as_array().into_iter().flatten().find(|p| p["id"] == *id).map_or(Value::Null, |p| p[field].clone());

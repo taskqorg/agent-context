@@ -1,8 +1,7 @@
 //! Client profiles (docs/spec/CONFIGURATION.md A1, A2): read-only integration state per configuration root for
 //! status.json `configuration`. Typed values and fixed codes only; `snapshot.rs` re-validates each one before export.
 //!
-//! ponytail: read-only projection. Plans, guarded apply and verification evidence (A3–A5) join with their own task;
-//! until then writes stay disabled and verification unknown.
+//! Per profile `verification` comes from `executor::verification` (CONFIGURATION "Host executor").
 
 use crate::{onboard, resource, routing};
 use ring::hmac;
@@ -64,9 +63,21 @@ fn compression(data: &Path) -> Value {
 
 /// status.json `configuration`: every client whose configuration root exists.
 pub fn status(data: &Path, now: u64) -> Value {
+    status_with(&clients(), data, now)
+}
+
+pub fn status_with(clients: &[Client], data: &Path, now: u64) -> Value {
     let key = resource::key(data);
     let journal = data.join("owned.json");
-    let profiles: Vec<Value> = clients().iter().filter(|c| c.root.is_dir()).map(|c| profile(c, data, &journal, &key)).collect();
+    let profiles: Vec<Value> = clients
+        .iter()
+        .filter(|c| c.root.is_dir())
+        .map(|c| {
+            let mut p = profile(c, data, &journal, &key);
+            p["verification"] = crate::executor::verification(data, c.agent, &p);
+            p
+        })
+        .collect();
     let c = compression(data);
     let defaults = json!({"enabled": c["enabled"].as_bool().unwrap_or(true), "min_bytes": c["min_bytes"].as_u64().unwrap_or(2048), "stats": c["stats"].as_str().unwrap_or("queue")});
     let revs: Vec<&[u8]> = profiles.iter().filter_map(|p| p["revision"].as_str()).map(str::as_bytes).collect();

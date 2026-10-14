@@ -3,6 +3,7 @@
 mod configure;
 mod connect;
 mod engines;
+mod executor;
 mod legacy;
 mod mcp;
 mod onboard;
@@ -23,7 +24,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -59,9 +60,11 @@ fn main() {
         ["service", cmd] => service_cmd(&t, cmd),
         ["onboard", rest @ ..] => onboard(&t, rest),
         ["direct", rest @ ..] => direct(&t, rest),
+        ["configure", rest @ ..] => configure_cmd(&t, rest),
         // ponytail: no-op `{}` until RTK qualifies commands (§ 3) and the service reports routing (§ 4)
-        ["hook", "codex" | "claude" | "hermes", _] => {
+        ["hook", agent @ ("codex" | "claude" | "hermes"), event] => {
             let _ = std::io::read_to_string(std::io::stdin());
+            executor::stamp(&t.install.join("data"), agent, event, now());
             println_code("{}")
         }
         ["langfuse"] => match telemetry::read_keys().and_then(|k| telemetry::save(&t.install.join("data"), &k)) {
@@ -330,6 +333,10 @@ fn serve(t: &Tool) -> ! {
     std::thread::spawn(move || engines::ensure(&install).iter().for_each(|l| eprintln!("agentq: {l}")));
     let install = t.install.clone();
     std::thread::spawn(move || telemetry::sender(&install, PASS));
+    // CONFIGURATION "Host executor": an operation interrupted by the last stop resolves before anything else
+    if let Ok(_lock) = executor::lock(&t.install.join("data")) {
+        executor::reconcile(&executor::Host::local(&t.install, t.install.join(t.exe_name()), now()));
+    }
     let mut checked = 0;
     let mut error = None;
     let mut workers = vec![];
@@ -436,6 +443,7 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
             Err(e) => println!("routing: {a} direct: {e}"),
         }
     }
+    let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("onboard: {e}"), "wait for it to finish, then run `agentq onboard --yes` again"));
     match onboard::apply(&wants, &journal(t)) {
         Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
         Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
@@ -450,6 +458,7 @@ fn direct(t: &Tool, args: &[&str]) -> i32 {
         fail(&format!("unknown agent `{a}`"), &format!("usage: {USAGE}"));
     }
     let agents = if args.is_empty() { &onboard::AGENTS[..] } else { args };
+    let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("direct: {e}"), "wait for it to finish, then run `agentq direct` again"));
     match onboard::restore(&journal(t), false, Some(agents)) {
         Ok(lines) if lines.is_empty() => println_code(&format!("direct: {} already direct", agents.join(", "))),
         Ok(lines) => {
@@ -457,6 +466,38 @@ fn direct(t: &Tool, args: &[&str]) -> i32 {
             println_code("direct: done; `agentq onboard --yes` routes again")
         }
         Err(e) => fail(&format!("direct: {e}"), "fix the file, then run `agentq direct` again"),
+    }
+}
+
+/// CONFIGURATION "Host executor": no change prints the profiles; changes print the plan; `--yes` applies that plan.
+fn configure_cmd(t: &Tool, args: &[&str]) -> i32 {
+    let exe = t.install.join(t.exe_name());
+    let at = now();
+    let host = executor::Host::local(&t.install, exe, at);
+    let (profile, rest) = match args.iter().filter(|a| **a != "--yes").collect::<Vec<_>>().split_first() {
+        None => return println_code(&serde_json::to_string_pretty(&profiles::status_with(&host.clients, &host.data, at)).unwrap_or_default()),
+        Some((p, rest)) => (p.to_string(), rest.iter().map(|a| a.to_string()).collect::<Vec<_>>()),
+    };
+    let changes: Vec<Value> = rest.iter().map(|c| c.split_once('=').map_or(serde_json::json!({}), |(f, v)| serde_json::json!({"profile": profile, "field": f, "value": v}))).collect();
+    let mut op = [0u8; 16];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut op).unwrap_or_else(|_| fail("configure: no random source", "run `agentq configure` again"));
+    let mut req = serde_json::json!({"schema": configure::SCHEMA, "operation": resource::hex(&op), "kind": "plan", "actor": "local", "workspace": "local", "installation": host.installation,
+        "generation": host.generation, "issued_at": at, "expires_at": at + configure::EXPIRY, "changes": changes});
+    let plan = executor::execute(&host, &req.to_string(), at);
+    println!("{}", serde_json::to_string_pretty(&plan).unwrap_or_default());
+    if plan["kind"] != "plan" || plan["writable"] != true {
+        fail("configure: no writable plan", "fix the reason above, then run `agentq configure` again");
+    }
+    if !args.contains(&"--yes") {
+        return println_code("Next: run the same command with --yes to apply this plan");
+    }
+    req["kind"] = "apply".into();
+    req["plan"] = serde_json::json!({"revision": plan["revision"], "digest": plan["digest"]});
+    let r = executor::execute(&host, &req.to_string(), now());
+    println!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+    match r["outcome"].as_str() {
+        Some("applied") => println_code("Next: configured, not verified; start a new client session to verify"),
+        _ => fail("configure: not applied", "read the reason above; `agentq configure` shows the current state"),
     }
 }
 
