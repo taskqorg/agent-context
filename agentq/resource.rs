@@ -81,7 +81,10 @@ impl Sampler {
         let mut a = self.sample(read(), Instant::now(), ns);
         a.insert("agentq.event_id".into(), json!(event_id(&crate::telemetry::installation(data), bucket)));
         a.insert("agentq.ids_unknown".into(), json!("a resource sample has no session"));
-        crate::telemetry::emit_at(data, "agentq.resource", "sample", Value::Object(a), ns)
+        let id = crate::telemetry::emit_at(data, "agentq.resource", "sample", Value::Object(a), ns)?;
+        // the newest sample outlives its queue file for the enrollment snapshot (`connect.rs`)
+        let _ = std::fs::copy(crate::telemetry::queue(data).join(format!("{}-{id}.json", ns / 1_000_000_000)), data.join("resource.json"));
+        Some(id)
     }
 
     /// The `agentq.resource.*` attributes of one reading; it becomes the next CPU baseline.

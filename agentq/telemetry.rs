@@ -14,8 +14,10 @@ const CAP_AGE: u64 = 7 * 86400;
 const BATCH: usize = 100;
 const HEARTBEAT: u64 = 3600;
 const STORE: &str = "agentq-langfuse";
+/// Queue files bound to a DashQ grant (`connect.rs`); standalone spans are the other files.
+pub const RECORD: &str = ".rec.json";
 
-fn queue(data: &Path) -> PathBuf {
+pub(crate) fn queue(data: &Path) -> PathBuf {
     data.join("queue")
 }
 
@@ -96,7 +98,7 @@ pub fn emit_at(data: &Path, name: &str, stage: &str, attrs: Value, ns: u128) -> 
 }
 
 /// Queued events oldest first: (unix seconds, path, bytes).
-fn entries(q: &Path) -> Vec<(u64, PathBuf, u64)> {
+pub(crate) fn entries(q: &Path) -> Vec<(u64, PathBuf, u64)> {
     let mut v: Vec<_> = std::fs::read_dir(q)
         .into_iter()
         .flatten()
@@ -111,20 +113,20 @@ fn entries(q: &Path) -> Vec<(u64, PathBuf, u64)> {
     v
 }
 
-fn state(q: &Path) -> Value {
+pub(crate) fn state(q: &Path) -> Value {
     std::fs::read_to_string(q.join("state.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}))
 }
 
 // ponytail: read-modify-write without a lock; concurrent writers may lose a `dropped` increment. Add a lock file if
 // the count must be exact.
-fn update_state(q: &Path, f: impl FnOnce(&mut Value)) {
+pub(crate) fn update_state(q: &Path, f: impl FnOnce(&mut Value)) {
     let mut s = state(q);
     f(&mut s);
     let _ = write_atomic(&q.join("state.json"), &s.to_string());
 }
 
 /// Drop events past 7 days, then oldest until the queue fits 64 MiB; count them in `dropped`.
-fn prune(q: &Path, now: u64) -> Vec<(u64, PathBuf, u64)> {
+pub(crate) fn prune(q: &Path, now: u64) -> Vec<(u64, PathBuf, u64)> {
     let mut v = entries(q);
     let mut bytes: u64 = v.iter().map(|e| e.2).sum();
     let mut dropped = 0;
@@ -274,13 +276,14 @@ fn quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-/// Post queued events in batches of 100, deleting each after a 2xx; the last outcome goes to `state.json`.
+/// Post queued spans in batches of 100, deleting each after a 2xx; the last outcome goes to `state.json`. Grant-bound
+/// records keep their own destination (`connect.rs`).
 pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
     let q = queue(data);
     let body = q.join(format!("body-{}.tmp", std::process::id()));
     let mut sent = 0;
     let res = loop {
-        let batch: Vec<_> = prune(&q, now).into_iter().take(BATCH).collect();
+        let batch: Vec<_> = prune(&q, now).into_iter().filter(|e| !e.1.to_string_lossy().ends_with(RECORD)).take(BATCH).collect();
         if batch.is_empty() {
             break Ok(sent);
         }
@@ -316,9 +319,11 @@ pub fn sender(install: &Path, every: u64) -> ! {
     let data = install.join("data");
     let mut beat = 0;
     let mut sampler = crate::resource::Sampler::new(&data);
+    let mut dashq = crate::connect::Sender::default();
     loop {
         sampler.tick(&data);
         let now = crate::now();
+        crate::connect::pass(&data, now, &mut dashq);
         if now >= beat + HEARTBEAT {
             beat = now;
             let q = status(&data, now);

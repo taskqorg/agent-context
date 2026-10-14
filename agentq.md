@@ -18,7 +18,8 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 |---|---|
 | `agentq onboard [agent..]` | Read-only discovery: ready Codex, Claude Code, Claude Desktop, Hermes profiles per runtime; missing input; legacy install (§ 10); other optimizers. No writes. |
 | `agentq onboard --yes [agent..]` | Apply § 4 for the selected agents, install the service, run `doctor`, print what to verify by a real turn. Repeat is safe. |
-| `agentq enroll <https url>` | DashQ provider-backed browser approval; protected observation grant and projected snapshot receipt (§ 6). Accepted target, not shipped. |
+| `agentq enroll <https url> [--headless]` | DashQ provider-backed browser approval (headless: link and code only); protected observation grant and projected snapshot receipt (§ 6). Implemented; not released until qualification #95. |
+| `agentq connection status [--json]`, `agentq disconnect` | Connection, projection, export and revocation state with the next action; disconnect stops sending at once and retries the revoke (§ 6). Same release gate. |
 | `agentq langfuse` | Standalone mode: read Langfuse host and keys from hidden stdin into protected storage (§ 6). |
 | `agentq run -- <cmd> [args..]` | Run a native command through RTK when qualified, else unchanged (§ 3). Exit code and stderr preserved. |
 | `agentq compress <agent>`, `agentq stats [--json]` | Tool-result compression core entry and its local stats (§ 3). |
