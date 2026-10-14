@@ -184,8 +184,11 @@ fn doctor(t: &Tool) -> i32 {
     for l in engines::check(&t.install) {
         line(!l.contains("unavailable"), l);
     }
-    for (a, r) in routing::agents(&t.install.join("data")).as_object().into_iter().flatten() {
-        line(r["routing"] != "unknown", format!("routing: {a} {} ({})", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or("")));
+    let agents = routing::agents(&t.install.join("data"));
+    for (a, r) in agents.as_object().into_iter().flatten() {
+        let want = r["intended"].as_str().unwrap_or("unknown");
+        let fix = if want == "routed" && r["routing"] != "routed" { "; run `agentq onboard --yes`" } else { "" };
+        line(r["routing"] != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
     }
     for d in routing::drift(&journal(t)) {
         line(false, format!("routing: drift: {d} changed since onboard; run `agentq onboard --yes`"));
@@ -516,6 +519,9 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
         }
     }
     let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("onboard: {e}"), "wait for it to finish, then run `agentq onboard --yes` again"));
+    if let Err(e) = routing::set_direct(&t.install.join("data"), &agents, false) {
+        fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again");
+    }
     match onboard::apply(&wants, &journal(t)) {
         Ok(lines) => lines.iter().for_each(|l| println!("{l}")),
         Err(e) => fail(&format!("onboard: {e}"), "fix the file, then run `agentq onboard --yes` again"),
@@ -531,6 +537,9 @@ fn direct(t: &Tool, args: &[&str]) -> i32 {
     }
     let agents = if args.is_empty() { &onboard::AGENTS[..] } else { args };
     let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("direct: {e}"), "wait for it to finish, then run `agentq direct` again"));
+    if let Err(e) = routing::set_direct(&t.install.join("data"), agents, true) {
+        fail(&format!("direct: {e}"), "fix the file, then run `agentq direct` again");
+    }
     match onboard::restore(&journal(t), false, Some(agents)) {
         Ok(lines) if lines.is_empty() => println_code(&format!("direct: {} already direct", agents.join(", "))),
         Ok(lines) => {

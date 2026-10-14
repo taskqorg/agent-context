@@ -140,17 +140,57 @@ pub fn state(agent: &str, root: &Path, port: Option<u16>) -> (&'static str, Stri
     }
 }
 
-/// status.json `agents`: the routing of each agent whose config root exists.
+/// Records `agentq direct` for `agents` in `config.json` `direct` (`on`), or clears it on `onboard --yes`.
+pub fn set_direct(data: &Path, agents: &[&str], on: bool) -> Result<(), String> {
+    let mut c = config(data);
+    let mut list: Vec<String> = c["direct"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|a| !agents.contains(a)).map(String::from).collect();
+    if on {
+        list.extend(agents.iter().map(|a| a.to_string()));
+    }
+    if list.is_empty() && c["direct"].is_null() {
+        return Ok(());
+    }
+    c["direct"] = list.into();
+    std::fs::create_dir_all(data).map_err(|e| format!("{}: {e}", data.display()))?;
+    write_atomic(&data.join("config.json"), &serde_json::to_string_pretty(&c).unwrap_or_default())
+}
+
+/// Whether the agent should be routed (#132): an onboarded agent with shipped routing and no `agentq direct`.
+/// ponytail: Claude Code and Hermes are intended direct until their routing ships (owner decision on #132).
+pub fn intended(data: &Path, agent: &str, root: &Path) -> (&'static str, &'static str) {
+    if !ROUTED.contains(&agent) {
+        return ("direct", "routing not shipped");
+    }
+    if config(data)["direct"].as_array().is_some_and(|l| l.iter().any(|a| a == agent)) {
+        return ("direct", "`agentq direct`");
+    }
+    let j: Vec<Value> = std::fs::read_to_string(data.join("owned.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+    if !j.iter().any(|e| e["file"].as_str().is_some_and(|f| Path::new(f).starts_with(root))) {
+        return ("direct", "not onboarded");
+    }
+    ("routed", "onboarded")
+}
+
+/// status.json `agents`: the routing of each agent whose config root exists, and whether it is intended.
 pub fn agents(data: &Path) -> Value {
     let mut out = serde_json::Map::new();
     for a in crate::onboard::AGENTS {
         let root = crate::onboard::root(a);
         if root.exists() {
             let (routing, reason) = state(a, &root, port(data, a));
-            out.insert(a.into(), json!({"routing": routing, "reason": reason}));
+            let (intended, why) = intended(data, a, &root);
+            out.insert(a.into(), json!({"routing": routing, "reason": reason, "intended": intended, "intended_reason": why}));
         }
     }
     out.into()
+}
+
+/// Onboarded agents that should be routed but are not, as `<agent> <routing> (<reason>)` (doctor, heartbeat).
+pub fn problems(agents: &Value) -> Vec<String> {
+    agents.as_object().into_iter().flatten()
+        .filter(|(_, r)| r["intended"] == "routed" && r["routing"] != "routed")
+        .map(|(a, r)| format!("{a} {} ({})", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or("")))
+        .collect()
 }
 
 /// Routing edits in the journal that are no longer in their file.
@@ -229,6 +269,28 @@ mod tests {
         assert_eq!(state("codex", &d, Some(1)).0, "unknown");
         std::fs::write(d.join("config.toml"), format!("[profiles.x]\n{cfg}")).unwrap();
         assert_eq!(state("codex", &d, Some(p)).0, "direct", "a profile key is not the top-level provider");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #132 A1/A2: an onboarded Codex without routing is a problem; `agentq direct`, no onboarding and unshipped
+    /// routing are intended direct; `onboard --yes` clears the `direct` record.
+    #[test]
+    fn intended_routing() {
+        let d = std::env::temp_dir().join(format!("agentq-intended-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let (data, root) = (d.join("data"), d.join(".codex"));
+        std::fs::create_dir_all(&data).unwrap();
+        assert_eq!(intended(&data, "codex", &root), ("direct", "not onboarded"));
+        std::fs::write(data.join("owned.json"), json!([{"file": root.join("config.toml"), "key": ["mcp_servers", "agent_context"]}]).to_string()).unwrap();
+        assert_eq!(intended(&data, "codex", &root), ("routed", "onboarded"));
+        assert_eq!(intended(&data, "claude", &d.join(".claude")).0, "direct");
+        let row = |i: &str| json!({"codex": {"routing": "direct", "reason": "config.toml selects no agent_context provider", "intended": i}, "claude": {"routing": "direct", "intended": "direct"}});
+        assert_eq!(problems(&row("routed")), ["codex direct (config.toml selects no agent_context provider)"]);
+        set_direct(&data, &["codex"], true).unwrap();
+        assert_eq!(intended(&data, "codex", &root), ("direct", "`agentq direct`"));
+        assert!(problems(&row("direct")).is_empty());
+        set_direct(&data, &["codex"], false).unwrap();
+        assert_eq!(intended(&data, "codex", &root).0, "routed");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
