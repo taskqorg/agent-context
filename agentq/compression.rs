@@ -278,11 +278,9 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
         "not_qualified"
     });
     if reason == "no_engine" && qualified {
-        r["engine"] = json!(if crate::engines::rtk_path(install).is_file() {
-            "rtk"
-        } else {
-            "none"
-        });
+        let rtk = crate::engines::rtk_path(install).is_file();
+        r["engine"] = json!(if rtk { "rtk" } else { "none" });
+        r["engine_version"] = json!(rtk.then_some(crate::engines::RTK));
         let step = Instant::now();
         let filtered = filter(install, cmd, &native.stdout, &native.stderr, code, &id);
         crate::profile::trace(
@@ -421,7 +419,8 @@ fn record(agent: &str, adapter: &str, tool: &str, input: &Value, bytes: usize, a
         "agent":agent,"adapter":adapter,"tool":tool,"runner":null,"engine":"none",
         "outcome":"passed","reason":"not_qualified","bytes_in":bytes,"bytes_out":bytes,
         "est_tokens_in":bytes.div_ceil(4),"est_tokens_out":bytes.div_ceil(4),"duration_ms":0,"ref":null,
-        "session":input["session"],"turn":input["turn"],"tool_call":input["tool_call"]})
+        "session":input["session"],"turn":input["turn"],"tool_call":input["tool_call"],
+        "version":env!("CARGO_PKG_VERSION"),"engine_version":null})
 }
 
 fn stats_date(name: &str) -> Option<&str> {
@@ -437,8 +436,73 @@ fn stats_date(name: &str) -> Option<&str> {
     .then_some(d)
 }
 
-/// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes.
+/// The producer's coverage journal in `data/stats/` (ACCOUNTING O3).
+pub const COVERAGE: &str = "coverage.json";
+/// Prefix of markers left in `data/` when a save fails before or at its journal write: the journal no longer proves
+/// coverage until the next written journal resets it. Each failure writes its own file, so a reset removes only the
+/// markers it saw. They live outside `data/stats/`, so an unwritable stats folder still leaves evidence.
+pub const FAILED: &str = "coverage.failed";
+
+/// Failure markers held in `data`.
+pub fn failed(data: &Path) -> Vec<std::path::PathBuf> {
+    let es = std::fs::read_dir(data).into_iter().flatten().flatten();
+    es.filter(|e| e.file_name().to_string_lossy().starts_with(FAILED)).map(|e| e.path()).collect()
+}
+
+/// Durable unknown for a save that may have lost its record; works without the lifecycle lock.
+fn mark_failed(data: &Path, at: u64) {
+    let name = format!("{FAILED}.{}.{}", std::process::id(), crate::mcp::new_id());
+    if let Err(e) = std::fs::create_dir_all(data).and_then(|()| std::fs::write(data.join(name), at.to_string())) {
+        eprintln!("agentq: stats coverage marker: {e}");
+    }
+}
+
+/// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
+/// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` at the next second and adds a reset: the
+/// older records stay countable but unproven, and `counts` restarts from the records held now.
+fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64, reset: u64) -> Value {
+    let fresh = |since: u64, resets: Vec<u64>| json!({"schema":1,"since":since,"resets":resets,"gaps":[],"counts":lines});
+    // A reset proves only the next second on: an earlier call in its own second may already be lost.
+    match journal {
+        None if !held => fresh(at, vec![]),
+        None => fresh(reset + 1, vec![reset]),
+        Some(b) => match serde_json::from_slice::<Value>(b) {
+            Ok(v) if journal_valid(&v) => v,
+            _ => fresh(reset + 1, vec![reset]),
+        },
+    }
+}
+
+/// The whole journal shape, as the producer writes it; anything else proves no coverage.
+pub fn journal_valid(v: &Value) -> bool {
+    v["schema"] == 1
+        && v["since"].is_u64()
+        && v["resets"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(Value::is_u64))
+        && v["gaps"].as_array().is_some_and(|a| {
+            a.iter().all(|g| {
+                g.as_array().is_some_and(|p| p.len() == 2)
+                    && g[0].as_u64().zip(g[1].as_u64()).is_some_and(|(x, y)| x < y)
+            })
+        })
+        && v["counts"]
+            .as_object()
+            .is_some_and(|m| m.iter().all(|(k, n)| stats_date(&format!("{k}.jsonl")).is_some() && n.is_u64()))
+}
+
+/// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes. A failure before
+/// the journal write (lock timeout, unreadable store) marks coverage unknown, since the record may be lost.
 fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
+    let mut journaled = false;
+    let res = save_locked(data, c, r, &mut journaled);
+    if res.is_err() && !journaled {
+        mark_failed(data, r["time"].as_u64().unwrap_or_else(crate::now));
+    }
+    res
+}
+
+fn save_locked(data: &Path, c: &Value, r: &Value, journaled: &mut bool) -> Result<(), String> {
     let _lock = crate::executor::lock(data)?;
     let dir = data.join("stats");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -451,9 +515,14 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
     let at = r["time"].as_u64().ok_or("missing time")?;
     let cutoff = at.saturating_sub(7 * 86400);
     let oldest = crate::date(cutoff);
+    let mut held = false;
+    let mut trimmed = None;
+    // ponytail: reads every held day file (at most 8) on each record; count only on a reset if this gets slow.
+    let mut lines = serde_json::Map::new();
     for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
         let e = e.map_err(|e| e.to_string())?;
         let name = e.file_name().to_string_lossy().into_owned();
+        held |= stats_date(&name).is_some_and(|d| d >= oldest.as_str());
         if stats_date(&name).is_some_and(|d| d < oldest.as_str()) {
             std::fs::remove_file(e.path()).map_err(|e| e.to_string())?;
         } else if stats_date(&name) == Some(oldest.as_str()) {
@@ -468,15 +537,60 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
             }
             if kept.len() != s.len() {
                 coreq::write_atomic(&e.path(), &kept)?;
+                trimmed = Some(s.lines().count() - kept.lines().count());
+            }
+            // Pre-trim count: the trim below subtracts only removed lines, so an earlier loss survives retention.
+            lines.insert(oldest.clone(), json!(s.lines().count()));
+        } else if let Some(d) = stats_date(&name) {
+            if let Ok(s) = std::fs::read_to_string(e.path()) {
+                lines.insert(d.to_string(), json!(s.lines().count()));
             }
         }
     }
-    let mut f = std::fs::OpenOptions::new()
+    let journal = dir.join(COVERAGE);
+    let before = std::fs::read(&journal).ok();
+    // Markers written after this read belong to calls not yet covered by this reset and stay.
+    let failed = failed(data);
+    // A stale journal after a failed save proves nothing; an empty one parses as unreadable and resets.
+    let proven = if failed.is_empty() { before.as_deref() } else { Some(&b""[..]) };
+    // A reset starts after now, not after this record's time: a locked-out call may be newer than this one.
+    let mut cov = coverage(proven, held, &lines, at, crate::now().max(at));
+    let appended = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join(format!("{}.jsonl", crate::date(at))))
-        .map_err(|e| e.to_string())?;
-    writeln!(f, "{r}").map_err(|e| e.to_string())?;
+        .and_then(|mut f| writeln!(f, "{r}"))
+        .map_err(|e| e.to_string());
+    let counts = cov["counts"].as_object_mut().unwrap();
+    counts.retain(|d, _| d.as_str() >= oldest.as_str());
+    if let Some(n) = trimmed {
+        let held = counts.get(&oldest).and_then(Value::as_u64).unwrap_or(0);
+        counts.insert(oldest.clone(), json!(held.saturating_sub(n as u64)));
+    }
+    if appended.is_ok() {
+        let day = crate::date(at);
+        let n = counts.get(&day).and_then(Value::as_u64).unwrap_or(0);
+        counts.insert(day, json!(n + 1));
+    } else {
+        cov["gaps"].as_array_mut().unwrap().push(json!([at, at + 1]));
+    }
+    for k in ["resets", "gaps"] {
+        cov[k].as_array_mut().unwrap().retain(|v| {
+            v.as_u64().or_else(|| v[1].as_u64()).is_some_and(|t| t > cutoff)
+        });
+    }
+    let after = cov.to_string();
+    if before.as_deref() != Some(after.as_bytes()) {
+        match coreq::write_atomic(&journal, &after) {
+            Ok(()) => failed.iter().for_each(|f| _ = std::fs::remove_file(f)),
+            Err(e) => {
+                eprintln!("agentq: stats coverage unknown: {e}");
+                mark_failed(data, at);
+            }
+        }
+    }
+    *journaled = true;
+    appended?;
     if c["stats"] != "off" {
         let mut a = serde_json::Map::new();
         for (k, v) in r.as_object().ok_or("invalid record")? {
@@ -625,21 +739,10 @@ pub fn records(data: &Path, cutoff: u64) -> Result<Vec<Value>, String> {
                     .as_str()
                     .is_some_and(|s| ["run", "hook", "provider"].contains(&s))
                 || v["tool"].as_str().is_none()
-                || !v["reason"].as_str().is_some_and(|s| {
-                    [
-                        "compressed",
-                        "disabled",
-                        "short",
-                        "code",
-                        "json",
-                        "not_qualified",
-                        "not_smaller",
-                        "no_engine",
-                        "timeout",
-                        "error",
-                    ]
-                    .contains(&s)
-                })
+                || !v["reason"]
+                    .as_str()
+                    .and_then(crate::accounting::outcome_of)
+                    .is_some_and(|o| v["outcome"] == o)
                 || ["runner", "ref", "session", "turn", "tool_call"]
                     .iter()
                     .any(|k| v.get(k).is_none() || (!v[k].is_null() && !v[k].is_string()))
@@ -728,7 +831,7 @@ mod tests {
             .unwrap();
             let r: Value = serde_json::from_str(s.lines().last().unwrap()).unwrap();
             assert_eq!(r["reason"], why);
-            assert_eq!(r.as_object().unwrap().len(), 19);
+            assert_eq!(r.as_object().unwrap().len(), 21);
             assert!(!s.contains("secret") && !s.contains(text));
         }
         assert_eq!(stats(&d).unwrap()["groups"][0]["calls"], 3);
@@ -782,6 +885,166 @@ mod tests {
             .join(format!("{}.jsonl", crate::date(crate::now())));
         std::fs::write(p, "bad\n").unwrap();
         assert!(stats(&d).unwrap_err().contains("malformed"));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: retention trims expired lines without hiding an earlier loss on the oldest day.
+    #[test]
+    fn retention_keeps_loss_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-retention-{}", crate::mcp::new_id()));
+        let stats_dir = d.join("stats");
+        std::fs::create_dir_all(&stats_dir).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let at = crate::now();
+        let day = crate::date(at - 7 * 86400);
+        let line = |t: u64| record("hermes", "hook", "terminal", &Value::Null, 10, t).to_string();
+        // Producer wrote 3 lines; one unexpired line is lost, one expired line remains to be trimmed.
+        std::fs::write(
+            stats_dir.join(format!("{day}.jsonl")),
+            format!("{}\n{}\n", line(at - 7 * 86400 - 120), line(at - 7 * 86400 + 3600)),
+        )
+        .unwrap();
+        std::fs::write(
+            stats_dir.join(COVERAGE),
+            json!({"schema":1,"since":at - 7 * 86400 - 200,"resets":[],"gaps":[],"counts":{&day:3}}).to_string(),
+        )
+        .unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"});
+        compress(&d, "hermes", &input.to_string()).unwrap();
+        let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
+        assert_eq!(j["counts"][&day], 2, "{j}");
+        let a = crate::accounting::local(&d, crate::now());
+        assert!(a.to_string().contains("stats records lost"), "{a}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: a failed journal write stays unknown even after the day file is truncated to match it.
+    #[test]
+    fn journal_write_failure_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-journal-fail-{}", crate::mcp::new_id()));
+        let stats_dir = d.join("stats");
+        std::fs::create_dir_all(&stats_dir).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        compress(&d, "hermes", &input).unwrap();
+        // write_atomic stages coverage.tmp; a directory there fails every journal write on every platform.
+        let block = stats_dir.join("coverage.tmp");
+        std::fs::create_dir(&block).unwrap();
+        compress(&d, "hermes", &input).unwrap();
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let s = std::fs::read_to_string(&day).unwrap();
+        std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
+        let a = crate::accounting::local(&d, crate::now());
+        assert_eq!(a["unknown"], "stats write failed", "{a}");
+        // The next written journal resets coverage and clears the marker.
+        std::fs::remove_dir(&block).unwrap();
+        compress(&d, "hermes", &input).unwrap();
+        assert!(failed(&d).is_empty());
+        let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
+        assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
+        assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], crate::accounting::UNPROVEN);
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: a reset leaves its own second unproven, so a call lost earlier in that second is never complete.
+    #[test]
+    fn same_second_reset_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-same-second-{}", crate::mcp::new_id()));
+        let stats_dir = d.join("stats");
+        std::fs::create_dir_all(&stats_dir).unwrap();
+        let c = json!({"stats":"off"});
+        let t = crate::now();
+        let save_at = || save(&d, &c, &record("hermes", "hook", "terminal", &Value::Null, 10, t)).unwrap();
+        save_at();
+        let block = stats_dir.join("coverage.tmp");
+        std::fs::create_dir(&block).unwrap();
+        save_at();
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(t)));
+        let s = std::fs::read_to_string(&day).unwrap();
+        std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
+        std::fs::remove_dir(&block).unwrap();
+        save_at();
+        let mut input = json!({"window": {"start": t, "end": t + 1}, "now": t});
+        input["sources"] = json!([crate::accounting::local(&d, t)]);
+        let a = crate::accounting::aggregate(&input).unwrap();
+        assert_ne!(a["state"], "complete", "{a}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: a save that times out on the lifecycle lock writes no record; coverage stays unknown.
+    #[test]
+    fn lock_timeout_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-lock-timeout-{}", crate::mcp::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        compress(&d, "hermes", &input).unwrap();
+        let held = crate::executor::lock(&d).unwrap();
+        // Another process holds the lock: the std file lock is per open file, so this thread times out like one.
+        compress(&d, "hermes", &input).unwrap();
+        drop(held);
+        let a = crate::accounting::local(&d, crate::now());
+        assert_eq!(a["unknown"], "stats write failed", "{a}");
+        // A marker written by a call this save never saw survives its reset.
+        let late = d.join(format!("{FAILED}.late"));
+        compress(&d, "hermes", &input).unwrap();
+        assert_eq!(crate::accounting::local(&d, crate::now() + 1)["unknown"], crate::accounting::UNPROVEN);
+        std::fs::write(&late, "0").unwrap();
+        assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], "stats write failed");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: an immutable stats folder and day file lose the call; evidence outside them keeps it unknown.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn unwritable_stats_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-unwritable-{}", crate::mcp::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        compress(&d, "hermes", &input).unwrap();
+        let stats_dir = d.join("stats");
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let flags = |f: &str| {
+            let ok = Command::new("chflags").arg(f).args([&day, &stats_dir]).status().unwrap().success();
+            assert!(ok);
+        };
+        flags("uchg");
+        compress(&d, "hermes", &input).unwrap();
+        flags("nouchg");
+        let a = crate::accounting::local(&d, crate::now());
+        assert_eq!(a["unknown"], "stats write failed", "{a}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: with data, stats and the day file immutable a call leaves no evidence; a later call must
+    /// not read the period as complete.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_evidence_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-no-evidence-{}", crate::mcp::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        let start = crate::now();
+        compress(&d, "hermes", &input).unwrap();
+        let stats_dir = d.join("stats");
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let flags = |f: &str| {
+            let ok = Command::new("chflags").arg(f).args([&day, &stats_dir, &d]).status().unwrap().success();
+            assert!(ok);
+        };
+        flags("uchg");
+        compress(&d, "hermes", &input).unwrap();
+        flags("nouchg");
+        assert!(failed(&d).is_empty(), "the lost call left no marker");
+        compress(&d, "hermes", &input).unwrap();
+        let now = crate::now();
+        let mut q = json!({"window": {"start": start, "end": now + 1}, "now": now});
+        q["sources"] = json!([crate::accounting::local(&d, now)]);
+        let a = crate::accounting::aggregate(&q).unwrap();
+        assert_eq!((&a["state"], &a["lower_bound"], &a["calls"]), (&json!("partial"), &json!(true), &json!(2)), "{a}");
+        assert_eq!(a["coverage"]["sources"][0]["reasons"][0]["reason"], "unproven", "{a}");
         std::fs::remove_dir_all(d).unwrap();
     }
 }

@@ -1,0 +1,333 @@
+{
+  "schema": "agentq.accounting/1",
+  "contract": "docs/spec/ACCOUNTING.md O1-O4; producer record agentq.md § 3 Stats record; aggregate agentq/accounting.rs",
+  "rules": [
+    "A case record that is an object without `attributes` is `base_record` overlaid with its keys; a value \"$absent\" removes that key. Other records (spans, strings) are used as written.",
+    "`expect` is a subset of the aggregate: each listed object key matches recursively; an array matches in length and element by element; scalars match exactly.",
+    "A case with `error` instead of `expect` is rejected as a whole: the error names that field, and no totals are produced.",
+    "Copies of one event ID count once only when they agree on every known value; a copy may fill a provenance key another left null, else the ID is conflicting_duplicate.",
+    "Every case with a known state also satisfies: outcomes sum = reasons sum = cohort calls sum = calls.",
+    "Times are unix seconds; windows and observed intervals are half-open [start, end)."
+  ],
+  "input": {
+    "window": "{start, end}: half-open source event time interval",
+    "now": "observation time; a record later than now + 300 s is future_time and never enters totals",
+    "cap": "optional records read per query (default 100000); reaching it sets coverage.capped",
+    "bucket": "optional seconds; adds buckets[] with each sub-window's own state, calls and outcomes",
+    "sources": "[{installation, runtime, observed: [[from, to]..], dropped, resets: count | [reset unix times], capped, unknown: why the source has no coverage, records: [§3 record | agentq.compress span | agentq.run span | other]}]"
+  },
+  "producer": {
+    "journal": "data/stats/coverage.json {schema: 1, since, resets: [unix], gaps: [[from, to]..], counts: {\"YYYY-MM-DD\": records}}, written by the § 3 core with each record; a save failing before or at its journal write (lock timeout, unreadable store, failed write) leaves its own data/coverage.failed.* marker (outside data/stats, so an unwritable stats folder still leaves it) until a later written journal resets coverage and removes the markers it saw",
+    "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it at the next second (the reset second stays unproven) and appends a reset",
+    "gaps": "a record append that failed: [time, time + 1)",
+    "counts": "records each held day file data/stats/YYYY-MM-DD.jsonl must contain: +1 per appended record, less the lines retention trims from the oldest file (an earlier loss stays visible), rebuilt from the lines held when the journal restarts",
+    "local source": "observed = [max(since, now - 7 days), now + 1) less gaps, always with unknown \"calls that wrote no evidence are undetectable\" (a call whose record and marker writes both fail leaves nothing), so local totals are lower bounds; no stats folder, no journal, an unreadable journal or stats file, a coverage.failed.* marker (\"stats write failed\") or a day file with fewer lines than its count (\"stats records lost\"): observed [] and unknown with that reason",
+    "exported source": "observed [] and unknown \"exported events carry no coverage\"; a queue folder adds its dropped count"
+  },
+  "output": {
+    "state": "complete: every source covers the window, nothing excluded, no legacy cohort, not capped; unknown: no coverage and no events; else partial",
+    "lower_bound": "true when partial: totals are observed counts, never a complete-period rate",
+    "calls, outcomes, reasons": "distinct event IDs in the window; null when unknown",
+    "volume": "per adapter and engine, compressed calls only: compressed, paired, bytes_in, bytes_out (unit byte; MiB = 2^20 bytes), reduction = 1 - sum(out)/sum(in), excluded {unmeasured, invalid}, estimated_tokens {kind: estimate}",
+    "cohorts": "per installation, runtime, version, profile, agent, adapter, tool, runner, engine, engine_version (null = unknown, never inferred): calls, outcomes, reasons, evidence (at most 3 event IDs)",
+    "coverage": "sources[{state, observed, gaps, dropped, resets, records, reasons: [{reason: no_observation (with detail; no observed interval) | unproven (with detail; observed intervals under an unknown reason) | gap | reset | dropped | capped}]}], read, counted, duplicates, out_of_window, excluded {malformed, unsupported_schema, future_time, conflicting_duplicate}, legacy_run, capped, profile_unknown",
+    "observed_tokens, task_effect": "unknown with a reason: core records carry no observed usage, and whole-task effect needs a separate paired experiment cohort"
+  },
+  "base_record": {
+    "schema": 1,
+    "time": 1500,
+    "agent": "claude",
+    "adapter": "run",
+    "tool": "shell",
+    "runner": "cargo test",
+    "engine": "rtk",
+    "outcome": "compressed",
+    "reason": "compressed",
+    "bytes_in": 4096,
+    "bytes_out": 1024,
+    "est_tokens_in": 1024,
+    "est_tokens_out": 256,
+    "duration_ms": 40,
+    "ref": "rtk:fixture",
+    "session": null,
+    "turn": null,
+    "tool_call": null,
+    "exit_code": 0,
+    "version": "0.6.0",
+    "engine_version": "0.51.0"
+  },
+  "cases": [
+    {
+      "name": "valid_zero",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[0, 5000]], "records": []}]},
+      "expect": {"state": "complete", "lower_bound": false, "calls": 0, "outcomes": {"compressed": 0, "passed": 0, "failed": 0}, "reasons": {}, "volume": [], "cohorts": []}
+    },
+    {
+      "name": "missing_source_is_unknown",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [], "records": []}]},
+      "expect": {"state": "unknown", "calls": null, "outcomes": null, "reasons": null, "coverage": {"sources": [{"state": "unknown", "gaps": [[1000, 2000]]}]}}
+    },
+    {
+      "name": "late_and_duplicate_delivery",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000e1", "time": 1500},
+        {"event_id": "000000000000000000000000000000e2", "time": 1100},
+        {"event_id": "000000000000000000000000000000e1", "time": 1500}
+      ]}]},
+      "expect": {"state": "complete", "calls": 2, "outcomes": {"compressed": 2, "passed": 0, "failed": 0}, "coverage": {"read": 3, "counted": 2, "duplicates": 1},
+        "volume": [{"adapter": "run", "engine": "rtk", "compressed": 2, "paired": 2, "bytes_in": 8192, "bytes_out": 2048, "reduction": 0.75}]}
+    },
+    {
+      "name": "conflicting_duplicate_counts_nowhere",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000e1"},
+        {"event_id": "000000000000000000000000000000e1", "outcome": "passed", "reason": "not_smaller", "bytes_out": 4096},
+        {"event_id": "000000000000000000000000000000e2"}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"excluded": {"conflicting_duplicate": 1}}}
+    },
+    {
+      "name": "conflicting_known_provenance_counts_nowhere",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [
+        {"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+          {"event_id": "000000000000000000000000000000e1", "profile": "opaque-p1"},
+          {"event_id": "000000000000000000000000000000e3", "version": "0.6.0"},
+          {"event_id": "000000000000000000000000000000e3", "version": "0.6.1"},
+          {"event_id": "000000000000000000000000000000e2"}
+        ]},
+        {"installation": "i2", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+          {"event_id": "000000000000000000000000000000e1", "profile": "opaque-p1"}
+        ]}
+      ]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"counted": 1, "excluded": {"conflicting_duplicate": 2}},
+        "cohorts": [{"installation": "i1", "calls": 1, "evidence": ["000000000000000000000000000000e2"]}]}
+    },
+    {
+      "name": "compatible_duplicate_fills_unknown_provenance",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000e1", "version": "$absent"},
+        {"event_id": "000000000000000000000000000000e1", "profile": "opaque-p1"}
+      ]}]},
+      "expect": {"state": "complete", "calls": 1, "coverage": {"duplicates": 1, "excluded": {}, "profile_unknown": 0},
+        "cohorts": [{"profile": "opaque-p1", "version": "0.6.0", "calls": 1}]}
+    },
+    {
+      "name": "half_open_boundaries",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000b1", "time": 999},
+        {"event_id": "000000000000000000000000000000b2", "time": 1000},
+        {"event_id": "000000000000000000000000000000b3", "time": 1999},
+        {"event_id": "000000000000000000000000000000b4", "time": 2000}
+      ]}]},
+      "expect": {"state": "complete", "calls": 2, "coverage": {"out_of_window": 2, "counted": 2}}
+    },
+    {
+      "name": "mixed_versions_and_recipes",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000c1"},
+        {"event_id": "000000000000000000000000000000c2", "agent": "codex", "adapter": "provider", "tool": "exec_command", "engine": "headroom", "engine_version": "0.40.0", "version": "0.6.1", "bytes_in": 2000, "bytes_out": 1500, "est_tokens_in": 500, "est_tokens_out": 375, "exit_code": "$absent", "ref": "headroom:fixture"},
+        {"event_id": "000000000000000000000000000000c3", "version": "$absent", "engine_version": "$absent", "bytes_in": 3904, "bytes_out": 976, "est_tokens_in": 976, "est_tokens_out": 244}
+      ]}]},
+      "expect": {"state": "complete", "calls": 3,
+        "volume": [
+          {"adapter": "provider", "engine": "headroom", "unit": "byte", "compressed": 1, "paired": 1, "bytes_in": 2000, "bytes_out": 1500, "reduction": 0.25, "excluded": {}},
+          {"adapter": "run", "engine": "rtk", "unit": "byte", "compressed": 2, "paired": 2, "bytes_in": 8000, "bytes_out": 2000, "reduction": 0.75, "excluded": {},
+            "estimated_tokens": {"kind": "estimate", "method": "ceil(bytes/4)", "paired": 2, "tokens_in": 2000, "tokens_out": 500}}
+        ],
+        "cohorts": [
+          {"version": "0.6.0", "engine_version": "0.51.0", "engine": "rtk", "calls": 1},
+          {"version": "0.6.1", "engine_version": "0.40.0", "engine": "headroom", "calls": 1},
+          {"version": null, "engine_version": null, "engine": "rtk", "calls": 1, "evidence": ["000000000000000000000000000000c3"]}
+        ]}
+    },
+    {
+      "name": "unknown_profile_is_own_cohort",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000d1", "profile": "opaque-p1"},
+        {"event_id": "000000000000000000000000000000d2"}
+      ]}]},
+      "expect": {"state": "complete", "calls": 2, "coverage": {"profile_unknown": 1}, "cohorts": [{"profile": "opaque-p1", "calls": 1}, {"profile": null, "calls": 1}]}
+    },
+    {
+      "name": "partial_source_is_lower_bound",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[900, 1500]], "records": [
+        {"event_id": "000000000000000000000000000000f1", "time": 1200}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "observed": [[1000, 1500]], "gaps": [[1500, 2000]], "records": 1}]}}
+    },
+    {
+      "name": "offline_source_with_dropped_events",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [
+        {"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [{"event_id": "000000000000000000000000000000a1"}]},
+        {"installation": "i2", "runtime": "windows", "observed": [[1000, 2000]], "dropped": 3, "records": [{"event_id": "000000000000000000000000000000a2", "agent": "codex"}]},
+        {"installation": "i3", "runtime": "macos", "observed": [], "records": []}
+      ]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 2, "coverage": {"sources": [{"installation": "i1", "state": "complete"}, {"installation": "i2", "state": "partial", "dropped": 3}, {"installation": "i3", "state": "unknown"}]}}
+    },
+    {
+      "name": "capped_query",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "cap": 2, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000a1"},
+        {"event_id": "000000000000000000000000000000a2"},
+        {"event_id": "000000000000000000000000000000a3"}
+      ]}]},
+      "expect": {"state": "partial", "calls": 2, "coverage": {"read": 2, "capped": true}}
+    },
+    {
+      "name": "malformed_byte_pairs",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000a1"},
+        {"event_id": "000000000000000000000000000000a2", "bytes_out": null},
+        {"event_id": "000000000000000000000000000000a3", "bytes_in": -5},
+        {"event_id": "000000000000000000000000000000a4", "bytes_in": 1.5}
+      ]}]},
+      "expect": {"state": "complete", "calls": 4, "outcomes": {"compressed": 4, "passed": 0, "failed": 0},
+        "volume": [{"compressed": 4, "paired": 1, "bytes_in": 4096, "bytes_out": 1024, "reduction": 0.75, "excluded": {"unmeasured": 1, "invalid": 2}, "estimated_tokens": {"paired": 1, "tokens_in": 1024, "tokens_out": 256}}]}
+    },
+    {
+      "name": "malformed_unsupported_and_future_records",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        "{not json",
+        {"time": 1500},
+        {"event_id": "000000000000000000000000000000a2", "outcome": "passed"},
+        {"event_id": "000000000000000000000000000000a3", "time": "1500"},
+        {"event_id": "000000000000000000000000000000a4", "schema": 2},
+        {"event_id": "000000000000000000000000000000a5", "time": 3400},
+        {"event_id": "000000000000000000000000000000a6"}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"read": 7, "counted": 1, "excluded": {"malformed": 4, "unsupported_schema": 1, "future_time": 1}}}
+    },
+    {
+      "name": "process_reset_with_gap",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "resets": 1, "observed": [[1000, 1400], [1600, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1100},
+        {"event_id": "000000000000000000000000000000a1", "time": 1100},
+        {"event_id": "000000000000000000000000000000a2", "time": 1700}
+      ]}]},
+      "expect": {"state": "partial", "calls": 2, "coverage": {"duplicates": 1, "sources": [{"state": "partial", "resets": 1, "gaps": [[1400, 1600]]}]}}
+    },
+    {
+      "name": "process_reset_continuous",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "resets": 1, "observed": [[1000, 1500], [1500, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1400},
+        {"event_id": "000000000000000000000000000000a1", "time": 1400}
+      ]}]},
+      "expect": {"state": "complete", "calls": 1, "coverage": {"duplicates": 1, "sources": [{"state": "complete", "observed": [[1000, 2000]], "gaps": []}]}}
+    },
+    {
+      "name": "pass_through_and_failure_are_distinct",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000a1"},
+        {"event_id": "000000000000000000000000000000a2", "outcome": "passed", "reason": "not_qualified", "runner": null, "engine": "none", "engine_version": null, "bytes_in": null, "bytes_out": null, "est_tokens_in": null, "est_tokens_out": null, "ref": null},
+        {"event_id": "000000000000000000000000000000a3", "outcome": "failed", "reason": "no_engine", "engine": "none", "engine_version": null, "bytes_in": null, "bytes_out": null, "est_tokens_in": null, "est_tokens_out": null, "ref": null},
+        {"event_id": "000000000000000000000000000000a4", "outcome": "failed", "reason": "timeout", "bytes_out": 4096, "ref": null}
+      ]}]},
+      "expect": {"state": "complete", "calls": 4, "outcomes": {"compressed": 1, "passed": 1, "failed": 2}, "reasons": {"compressed": 1, "not_qualified": 1, "no_engine": 1, "timeout": 1},
+        "volume": [{"compressed": 1, "paired": 1, "bytes_in": 4096, "bytes_out": 1024}]}
+    },
+    {
+      "name": "estimates_and_usage_stay_separate",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "records": [
+        {"event_id": "000000000000000000000000000000a1", "input_tokens": 999, "cache_read_tokens": 500, "output_tokens": 20, "cost_usd": 1.25}
+      ]}]},
+      "expect": {"state": "complete", "calls": 1,
+        "volume": [{"bytes_in": 4096, "bytes_out": 1024, "estimated_tokens": {"kind": "estimate", "tokens_in": 1024, "tokens_out": 256}}],
+        "observed_tokens": {"state": "unknown"}, "task_effect": {"state": "unknown", "reason": "no paired experiment cohort"}}
+    },
+    {
+      "name": "exported_spans_and_legacy_run",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": null, "runtime": null, "observed": [[1000, 2000]], "records": [
+        {"traceId": "000000000000000000000000000000a1", "name": "agentq.compress", "startTimeUnixNano": "1500000000000", "attributes": [
+          {"key": "agentq.schema", "value": {"intValue": 1}}, {"key": "agentq.event_id", "value": {"stringValue": "000000000000000000000000000000a1"}},
+          {"key": "agentq.installation", "value": {"stringValue": "inst-export"}}, {"key": "agentq.runtime", "value": {"stringValue": "windows"}},
+          {"key": "agentq.version", "value": {"stringValue": "0.6.0"}}, {"key": "host.name", "value": {"stringValue": "private-host"}},
+          {"key": "agentq.time", "value": {"intValue": "1500"}}, {"key": "agentq.agent", "value": {"stringValue": "claude"}},
+          {"key": "agentq.adapter", "value": {"stringValue": "run"}}, {"key": "agentq.tool", "value": {"stringValue": "shell"}},
+          {"key": "agentq.runner", "value": {"stringValue": "cargo test"}}, {"key": "agentq.engine", "value": {"stringValue": "rtk"}},
+          {"key": "agentq.engine_version", "value": {"stringValue": "0.51.0"}}, {"key": "agentq.outcome", "value": {"stringValue": "compressed"}},
+          {"key": "agentq.reason", "value": {"stringValue": "compressed"}}, {"key": "agentq.bytes_in", "value": {"intValue": 4096}},
+          {"key": "agentq.bytes_out", "value": {"intValue": 1024}}, {"key": "agentq.est_tokens_in", "value": {"intValue": 1024}},
+          {"key": "agentq.est_tokens_out", "value": {"intValue": 256}}, {"key": "agentq.est_tokens_kind", "value": {"stringValue": "estimate"}},
+          {"key": "agentq.session", "value": {"stringValue": "null"}}, {"key": "agentq.profile", "value": {"stringValue": "null"}}
+        ]},
+        {"event_id": "000000000000000000000000000000a1", "version": "$absent", "engine_version": "$absent"},
+        {"traceId": "000000000000000000000000000000b9", "name": "agentq.run", "startTimeUnixNano": "1600000000000", "attributes": [
+          {"key": "agentq.event_id", "value": {"stringValue": "000000000000000000000000000000b9"}}, {"key": "agentq.exit_code", "value": {"intValue": 0}}
+        ]},
+        {"traceId": "000000000000000000000000000000c9", "name": "agentq.resource", "startTimeUnixNano": "1600000000000", "attributes": []}
+      ]}]},
+      "expect": {"state": "partial", "calls": 1, "coverage": {"read": 4, "duplicates": 1, "legacy_run": 1, "profile_unknown": 1},
+        "cohorts": [{"installation": "inst-export", "runtime": "windows", "version": "0.6.0", "engine_version": "0.51.0", "profile": null, "calls": 1}]}
+    },
+    {
+      "name": "producer_empty_store_is_unknown",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "windows", "observed": [], "resets": [], "unknown": "no stats recorded", "records": []}]},
+      "expect": {"state": "unknown", "calls": null, "coverage": {"sources": [{"state": "unknown", "reasons": [{"reason": "no_observation", "detail": "no stats recorded"}]}]}}
+    },
+    {
+      "name": "producer_since_bounds_coverage",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 1800, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[1500, 1801]], "resets": [], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1500}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "observed": [[1500, 1801]], "gaps": [[1000, 1500], [1801, 2000]], "reasons": [{"reason": "gap"}]}]}}
+    },
+    {
+      "name": "producer_journal_is_unproven",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[900, 2501]], "resets": [], "unknown": "calls that wrote no evidence are undetectable", "records": [
+        {"event_id": "000000000000000000000000000000a2", "time": 1500}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "observed": [[1000, 2000]], "gaps": [], "reasons": [{"reason": "unproven", "detail": "calls that wrote no evidence are undetectable"}]}]}}
+    },
+    {
+      "name": "producer_failed_append_gap",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[900, 1700], [1701, 2501]], "resets": [], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1200}
+      ]}]},
+      "expect": {"state": "partial", "calls": 1, "coverage": {"sources": [{"state": "partial", "gaps": [[1700, 1701]], "reasons": [{"reason": "gap"}]}]}}
+    },
+    {
+      "name": "producer_lost_journal_reset",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[1600, 2501]], "resets": [400, 1600], "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1200},
+        {"event_id": "000000000000000000000000000000a2", "time": 1650}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 2, "coverage": {"sources": [{"state": "partial", "resets": 1, "gaps": [[1000, 1600]], "records": 2, "reasons": [{"reason": "gap"}, {"reason": "reset"}]}]}}
+    },
+    {
+      "name": "producer_unreadable_journal_keeps_records",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [], "resets": [], "unknown": "coverage journal unreadable", "records": [
+        {"event_id": "000000000000000000000000000000a1", "time": 1200}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "records": 1, "reasons": [{"reason": "no_observation", "detail": "coverage journal unreadable"}]}]}}
+    },
+    {
+      "name": "corrupt_resets_are_rejected",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "resets": [1500, "x"], "records": []}]},
+      "error": "resets"
+    },
+    {
+      "name": "corrupt_dropped_is_rejected",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000]], "dropped": "3", "records": []}]},
+      "error": "dropped"
+    },
+    {
+      "name": "corrupt_observed_is_rejected",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 3000, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 2000, 3000]], "records": []}]},
+      "error": "observed"
+    },
+    {
+      "name": "buckets_on_event_time",
+      "input": {"window": {"start": 1000, "end": 1400}, "now": 3000, "bucket": 100, "sources": [{"installation": "i1", "runtime": "linux", "observed": [[1000, 1200]], "records": [
+        {"event_id": "000000000000000000000000000000a2", "time": 1150},
+        {"event_id": "000000000000000000000000000000a1", "time": 1050},
+        {"event_id": "000000000000000000000000000000a3", "time": 1250}
+      ]}]},
+      "expect": {"state": "partial", "calls": 3, "buckets": [
+        {"start": 1000, "end": 1100, "state": "complete", "calls": 1, "outcomes": {"compressed": 1, "passed": 0, "failed": 0}},
+        {"start": 1100, "end": 1200, "state": "complete", "calls": 1, "outcomes": {"compressed": 1, "passed": 0, "failed": 0}},
+        {"start": 1200, "end": 1300, "state": "partial", "calls": 1, "outcomes": {"compressed": 1, "passed": 0, "failed": 0}},
+        {"start": 1300, "end": 1400, "state": "unknown", "calls": null, "outcomes": null}
+      ]}
+    }
+  ]
+}

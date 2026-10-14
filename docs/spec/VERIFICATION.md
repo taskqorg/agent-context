@@ -31,6 +31,23 @@ Reuse selected LongBench/RULER cases and official scorers for content quality; u
 
 Quality, latency, resource and savings budgets must be agreed before engine selection/release. No code-level test suite or numeric target inherited from the old implementation.
 
+## Accounting qualification
+
+Live check for [ACCOUNTING O4](ACCOUNTING.md#o4-qualification) (#108). Persistent chain checks: `accounting::tests::consumer_fixtures` runs every published case, producer-path cases included; `tests/compression.rs` requires equal accounting from local stats and their queued spans, unknown for an empty store, and a gap, reset or unknown reason after a failed append, a lost journal or a corrupt one, and unknown for a deleted day file under an intact journal. A call that can write neither its record nor a failure marker leaves no evidence, so local observed intervals carry reason `unproven` and local totals stay lower bounds (`compression::tests::no_evidence_chain`).
+
+Run 2026-10-14 on Windows 11 Pro 10.0.26100, candidate commit a05b667 (debug build, `agentq 0.0.0-dev`, unreleased), RTK 0.51.0, cargo 1.99.0, git 2.46.0.windows.1, in an isolated install under the OS temp dir; no profile or working install changed. Client: Claude Code 2.1.299 headless (`claude -p`, model `claude-opus-5-5`, user settings excluded with `--setting-sources project`, two allowed Bash commands). In one real turn the model's Bash tool ran `agentq run -- cargo test` in a 150-test crate and `agentq run -- git --version`; `AGENTQ_AGENT=claude` and `AGENTQ_SESSION` = the client's session ID. The client received RTK's summary with the `get_original` ref line plus native stderr. Then `agentq telemetry verify` posted the queue through the real sender to a loopback Langfuse stand-in (Python 3.12.10); its stored body is the delivered events.
+
+| Check | Local stats (`--from` journal `since`) | Delivered events |
+|---|---|---|
+| State | complete, observed from the first record through now, no gap (since then: partial, `unproven`, see below) | partial: exported events carry no coverage |
+| Calls, outcomes | 2: 1 compressed, 1 passed, 0 failed | same |
+| Reasons | compressed 1, not_qualified 1 | same |
+| Volume run/rtk | 1 paired: 5222 bytes in, 132 out (stdout; stderr is never compressed), reduction 0.9747 | same |
+| Cohorts | agent `claude`, adapter `run`, runner `cargo test`/null, engine `rtk` 0.51.0/`none`, version 0.0.0-dev, profile unknown | same |
+| Event IDs | 2, session = client session | the same 2 `agentq.compress` spans, plus 3 `agentq.verify` |
+
+No host path, command argument or tool output appeared in either aggregate or the delivered body. Unsupported adapters: the Claude Code `PreToolUse` rewrite into `agentq run` is still a no-op hook, so the client ran `agentq run` as a command; the Codex loopback provider and the Hermes plugin do not call the core; hook and provider recipes are unqualified (`not_qualified`). Gaps: native turn and tool call IDs are unknown; no Langfuse or DashQ ingestion read-back (no authorization to write test events to a production project); profile is unknown on every record; macOS, Linux and WSL untested.
+
 ## Resource sample qualification
 
 Procedure for the live task (#86) on each authorized host, at most 30 minutes per host; contract: [agentq.md § 6 Resource samples](../../agentq.md#resource-samples). Linux, macOS, Windows and WSL 2; WSL 1 reports CPU and memory unknown by design. An untested host is reported as untested, never as passed.
