@@ -77,6 +77,47 @@ pub fn stop(workers: &mut Vec<(u16, Child)>) {
     workers.clear();
 }
 
+/// Established TCP connections with an end on one of `ports` (§ 5 restart drain): Linux `/proc/net/tcp{,6}`, macOS `lsof`
+/// (its `netstat` lists no TCP sockets on recent releases), Windows `netstat -an`.
+pub fn open_connections(ports: &[u16]) -> Result<usize, String> {
+    if ports.is_empty() {
+        return Ok(0);
+    }
+    let list = if cfg!(target_os = "linux") {
+        ["/proc/net/tcp", "/proc/net/tcp6"].iter().filter_map(|p| std::fs::read_to_string(p).ok()).collect::<String>()
+    } else {
+        let (cmd, args) = if cfg!(target_os = "macos") { ("lsof", &["-nP", "-iTCP", "-sTCP:ESTABLISHED"][..]) } else { ("netstat", &["-an"][..]) };
+        let o = coreq::quiet(Command::new(cmd).args(args)).output().map_err(|e| format!("{cmd}: {e}"))?;
+        // lsof exits 1 with no output when nothing matches
+        if o.stdout.is_empty() && o.stderr.is_empty() && cmd == "lsof" {
+            return Ok(0);
+        }
+        String::from_utf8_lossy(&o.stdout).into_owned()
+    };
+    if list.is_empty() {
+        return Err("no connection list".into());
+    }
+    Ok(established_in(&list, ports))
+}
+
+/// Counts `netstat -an` lines (`127.0.0.1.8787`, `127.0.0.1:8787`), `lsof` names (`127.0.0.1:8787->127.0.0.1:54321`)
+/// and `/proc/net/tcp` rows (`0100007F:2253 .. 01`).
+fn established_in(list: &str, ports: &[u16]) -> usize {
+    let hit = |a: &str, sep: char, hex: bool| {
+        a.rsplit_once(sep).and_then(|(_, p)| if hex { u16::from_str_radix(p, 16).ok() } else { p.parse().ok() }).is_some_and(|p| ports.contains(&p))
+    };
+    list.lines()
+        .filter(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if l.contains("ESTABLISHED") {
+                f.iter().flat_map(|a| a.split("->")).any(|a| hit(a, ':', false) || hit(a, '.', false))
+            } else {
+                f.len() > 3 && f[3] == "01" && f[0].ends_with(':') && (hit(f[1], ':', true) || hit(f[2], ':', true))
+            }
+        })
+        .count()
+}
+
 /// `routing` (routed, direct, bypassed, unknown) and its reason for one agent (§ 5).
 pub fn state(agent: &str, root: &Path, port: Option<u16>) -> (&'static str, String) {
     match agent {
@@ -138,6 +179,35 @@ mod tests {
         assert_eq!(fix_port(&d, "codex").unwrap(), p, "kept across installs");
         assert_eq!(port(&d, "codex"), Some(p));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #111 A2: the restart drain counts live proxied connections on macOS, Windows and Linux; listeners and other ports are not.
+    #[test]
+    fn established_on_proxy_ports() {
+        let mac = "tcp4  0  0  127.0.0.1.8787   127.0.0.1.54321  ESTABLISHED\n\
+                   tcp4  0  0  127.0.0.1.54321  127.0.0.1.8787   ESTABLISHED\n\
+                   tcp4  0  0  127.0.0.1.8787   *.*              LISTEN\n\
+                   tcp4  0  0  10.0.0.2.18787   1.2.3.4.443      ESTABLISHED\n";
+        assert_eq!(established_in(mac, &[8787]), 2);
+        let win = "  TCP    127.0.0.1:8787   127.0.0.1:54321   ESTABLISHED\r\n  TCP    0.0.0.0:8787   0.0.0.0:0   LISTENING\r\n";
+        assert_eq!(established_in(win, &[8787]), 1);
+        let lsof = "COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n\
+                    headroom 7 u 9u IPv4 0x1 0t0 TCP 127.0.0.1:8787->127.0.0.1:54321 (ESTABLISHED)\n\
+                    Python 8 u 13u IPv6 0x2 0t0 TCP [2405::1]:58635->[2606::9bd1]:443 (ESTABLISHED)\n";
+        assert_eq!(established_in(lsof, &[8787]), 1);
+        let proc = "  sl  local_address rem_address   st tx_queue\n\
+                    0: 0100007F:2253 00000000:0000 0A 00000000\n\
+                    1: 0100007F:2253 0100007F:D431 01 00000000\n\
+                    2: 0200000A:D431 04030201:01BB 01 00000000\n";
+        assert_eq!(established_in(proc, &[0x2253]), 1);
+        assert_eq!(established_in(mac, &[9999]), 0);
+        assert_eq!(open_connections(&[]), Ok(0));
+        // this host's own list: a live loopback connection counts
+        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let p = l.local_addr().unwrap().port();
+        let _c = TcpStream::connect((Ipv4Addr::LOCALHOST, p)).unwrap();
+        let _s = l.accept().unwrap();
+        assert!(open_connections(&[p]).unwrap() >= 1);
     }
 
     /// #76 A1: status.json routing follows config.toml and whether the loopback port answers.
