@@ -19,6 +19,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
+const DRAIN: u64 = 900;
 const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
@@ -300,19 +301,41 @@ fn serve(t: &Tool) -> ! {
     let mut checked = 0;
     let mut error = None;
     let mut workers = vec![];
+    let launched = std::env::current_exe().ok() == Some(t.release_exe(VERSION));
+    let mut seen: Option<(u64, String)> = None;
     loop {
         routing::supervise(&t.install, &mut workers);
         if now() >= checked + UPDATE_EVERY {
             checked = now();
             error = match update::update(t, false) {
                 Ok(Some(v)) => {
-                    eprintln!("agentq: updated to {v}; restarting");
-                    routing::stop(&mut workers);
-                    std::process::exit(75);
+                    eprintln!("agentq: updated to {v}");
+                    None
                 }
                 Ok(None) => None,
                 Err(e) => Some(format!("update: {e}")),
             };
+        }
+        // agentq.md § 5: the CLI `agentq update` moves `current` too; restart into it once the proxy drains
+        match t.current().filter(|c| launched && c != VERSION) {
+            None => seen = None,
+            Some(c) => {
+                let since = seen.as_ref().map_or(now(), |s| s.0);
+                let ports: Vec<u16> = workers.iter().map(|w| w.0).collect();
+                match drain(routing::open_connections(&ports), now().saturating_sub(since)) {
+                    Ok(why) => {
+                        eprintln!("agentq: restarting into {c} ({why})");
+                        routing::stop(&mut workers);
+                        std::process::exit(75);
+                    }
+                    Err(why) => {
+                        if seen.as_ref().is_none_or(|s| s.1 != why) {
+                            eprintln!("agentq: restart into {c} deferred: {why}");
+                        }
+                        seen = Some((since, why));
+                    }
+                }
+            }
         }
         let mut s = status::common(t, &host(), PROJECT, now(), error.clone(), None);
         s["queue"] = telemetry::status(&t.install.join("data"), now());
@@ -328,6 +351,16 @@ fn serve(t: &Tool) -> ! {
             Err(e) => eprintln!("agentq: status: {e}"),
         }
         std::thread::sleep(Duration::from_secs(PASS));
+    }
+}
+
+/// Restart into a new `current` (agentq.md § 5): Ok once no proxied connection is open or 15 min passed, else the deferral.
+fn drain(open: Result<usize, String>, waited: u64) -> Result<String, String> {
+    match open {
+        Ok(0) => Ok("no open proxied connection".into()),
+        _ if waited >= DRAIN => Ok(format!("drain ended after {} min", DRAIN / 60)),
+        Ok(n) => Err(format!("{n} open proxied connections")),
+        Err(e) => Err(format!("proxied connections unknown: {e}")),
     }
 }
 
@@ -517,6 +550,15 @@ mod tests {
         assert_eq!(copy_unless_same(&me, &dst), Ok(true));
         assert_eq!(std::fs::read_to_string(&dst).unwrap(), "v2");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #111 A2/A3: a new `current` restarts at once when idle, defers on open or unknown connections, at most 15 min.
+    #[test]
+    fn restart_waits_for_drain() {
+        assert!(drain(Ok(0), 0).is_ok());
+        assert_eq!(drain(Ok(2), DRAIN - 1), Err("2 open proxied connections".into()));
+        assert!(drain(Err("netstat: not found".into()), 0).unwrap_err().contains("unknown"));
+        assert!(drain(Ok(2), DRAIN).is_ok());
     }
 
     /// #74 A2/A3: two release service runs are counted, the Windows launcher is not.
