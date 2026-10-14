@@ -18,7 +18,7 @@
   },
   "producer": {
     "journal": "data/stats/coverage.json {schema: 1, since, resets: [unix], gaps: [[from, to]..], counts: {\"YYYY-MM-DD\": records}}, written by the § 3 core with each record; a failed write leaves data/stats/coverage.failed until the next written journal resets coverage",
-    "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it and appends a reset",
+    "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it at the next second (the reset second stays unproven) and appends a reset",
     "gaps": "a record append that failed: [time, time + 1)",
     "counts": "records each held day file data/stats/YYYY-MM-DD.jsonl must contain: +1 per appended record, less the lines retention trims from the oldest file (an earlier loss stays visible), rebuilt from the lines held when the journal restarts",
     "local source": "observed = [max(since, now - 7 days), now + 1) less gaps; no stats folder, no journal, an unreadable journal or stats file, a coverage.failed marker (\"coverage journal write failed\") or a day file with fewer lines than its count (\"stats records lost\"): observed [] and unknown with that reason",

@@ -442,16 +442,17 @@ pub const COVERAGE: &str = "coverage.json";
 pub const FAILED: &str = "coverage.failed";
 
 /// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
-/// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` here and adds a reset: the
+/// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` at the next second and adds a reset: the
 /// older records stay countable but unproven, and `counts` restarts from the records held now.
 fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64) -> Value {
-    let fresh = |resets: Vec<u64>| json!({"schema":1,"since":at,"resets":resets,"gaps":[],"counts":lines});
+    let fresh = |since: u64, resets: Vec<u64>| json!({"schema":1,"since":since,"resets":resets,"gaps":[],"counts":lines});
+    // A reset proves only the next second on: an earlier call in its own second may already be lost.
     match journal {
-        None if !held => fresh(vec![]),
-        None => fresh(vec![at]),
+        None if !held => fresh(at, vec![]),
+        None => fresh(at + 1, vec![at]),
         Some(b) => match serde_json::from_slice::<Value>(b) {
             Ok(v) if journal_valid(&v) => v,
-            _ => fresh(vec![at]),
+            _ => fresh(at + 1, vec![at]),
         },
     }
 }
@@ -915,6 +916,31 @@ mod tests {
         let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
         assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
         assert!(crate::accounting::local(&d, crate::now())["unknown"].is_null());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: a reset leaves its own second unproven, so a call lost earlier in that second is never complete.
+    #[test]
+    fn same_second_reset_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-same-second-{}", crate::mcp::new_id()));
+        let stats_dir = d.join("stats");
+        std::fs::create_dir_all(&stats_dir).unwrap();
+        let c = json!({"stats":"off"});
+        let t = crate::now();
+        let save_at = || save(&d, &c, &record("hermes", "hook", "terminal", &Value::Null, 10, t)).unwrap();
+        save_at();
+        let block = stats_dir.join("coverage.tmp");
+        std::fs::create_dir(&block).unwrap();
+        save_at();
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(t)));
+        let s = std::fs::read_to_string(&day).unwrap();
+        std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
+        std::fs::remove_dir(&block).unwrap();
+        save_at();
+        let mut input = json!({"window": {"start": t, "end": t + 1}, "now": t});
+        input["sources"] = json!([crate::accounting::local(&d, t)]);
+        let a = crate::accounting::aggregate(&input).unwrap();
+        assert_ne!(a["state"], "complete", "{a}");
         std::fs::remove_dir_all(d).unwrap();
     }
 }

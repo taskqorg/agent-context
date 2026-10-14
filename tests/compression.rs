@@ -261,7 +261,7 @@ fn execution_recovery_stats_chain() {
     assert_eq!(lost["coverage"]["sources"][0]["reasons"][0]["detail"], "no coverage journal");
     cli(&root, &["run", "--", "cargo", "test"], None, &[]);
     let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
-    assert_eq!(j["resets"], json!([j["since"]]));
+    assert_eq!(j["resets"], json!([j["since"].as_u64().unwrap() - 1]), "the reset second stays unproven");
     let reset = accounting(&["--from", &from]);
     assert_eq!((&reset["state"], &reset["calls"]), (&json!("partial"), &json!(10)));
     assert_eq!(reset["coverage"]["sources"][0]["resets"], 1);
@@ -287,7 +287,7 @@ fn execution_recovery_stats_chain() {
     // The producer replaces a corrupt journal with a fresh one and a reset.
     cli(&root, &["run", "--", "cargo", "test"], None, &[]);
     let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
-    assert_eq!((j["gaps"].clone(), j["resets"].clone()), (json!([]), json!([j["since"]])));
+    assert_eq!((j["gaps"].clone(), j["resets"].clone()), (json!([]), json!([j["since"].as_u64().unwrap() - 1])));
     // A deleted day file under an intact journal is lost records: unknown with a reason, never complete or zero.
     let held = accounting(&["--from", &from]);
     assert_eq!((&held["state"], &held["calls"]), (&json!("partial"), &json!(11)));
