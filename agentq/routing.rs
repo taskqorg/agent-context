@@ -1,17 +1,18 @@
 //! Loopback routing (agentq.md § 4, § 5): fixed ports in `data/config.json`, headroom workers owned by the service,
 //! per-agent routing state and drift.
 //!
-//! ponytail: Codex only. Claude Code and Hermes stay direct until their routing and the OTLP intake land.
+//! ponytail: Codex and Claude Code. Hermes stays direct until its routing and the OTLP intake land.
 //! ponytail: one worker per port, respawned each pass; the § 5 engine-pin worker swap joins with the next pin change.
 
 use coreq::write_atomic;
 use serde_json::{Value, json};
+use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-pub const ROUTED: [&str; 1] = ["codex"];
+pub const ROUTED: [&str; 2] = ["codex", "claude"];
 
 fn config(data: &Path) -> Value {
     std::fs::read_to_string(data.join("config.json")).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(json!({}))
@@ -39,8 +40,37 @@ pub fn base_url(port: u16) -> String {
     format!("http://127.0.0.1:{port}/v1")
 }
 
+/// Claude Code's `ANTHROPIC_BASE_URL`: the client appends `/v1/messages` itself.
+pub fn anthropic_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
+
+/// headroom's liveness route answers locally (`/` would be forwarded upstream); a listener that accepts and stays
+/// silent, or another server on the port, is not routed.
 fn answers(port: u16) -> bool {
-    TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(1)).is_ok()
+    let probe = || -> std::io::Result<bool> {
+        let mut s = TcpStream::connect_timeout(&SocketAddr::from((Ipv4Addr::LOCALHOST, port)), Duration::from_secs(1))?;
+        s.set_write_timeout(Some(Duration::from_secs(1)))?;
+        s.set_read_timeout(Some(Duration::from_secs(2)))?;
+        s.write_all(b"GET /livez HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")?;
+        let mut head = [0u8; 12];
+        s.read_exact(&mut head)?;
+        Ok(head.starts_with(b"HTTP/1.") && head.ends_with(b" 200"))
+    };
+    probe().unwrap_or(false)
+}
+
+/// Test proxy on `l` that answers every request with an empty 200; the thread lives as long as the test process.
+#[cfg(test)]
+pub(crate) fn test_proxy(l: TcpListener) -> u16 {
+    let p = l.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for mut c in l.incoming().flatten() {
+            let _ = c.read(&mut [0u8; 1024]);
+            let _ = c.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    p
 }
 
 /// Whether `port` answers within `limit`, polled twice a second.
@@ -155,10 +185,15 @@ pub fn state(agent: &str, root: &Path, port: Option<u16>) -> (&'static str, Stri
                 _ => ("bypassed", "agent_context provider is not the fixed loopback port".into()),
             }
         }
-        "claude" => match std::fs::read_to_string(root.join("settings.json")).ok().and_then(|s| serde_json::from_str::<Value>(s.trim_start_matches('\u{feff}')).ok()) {
-            Some(s) if s["env"]["ANTHROPIC_BASE_URL"].is_string() => ("bypassed", "settings.json env.ANTHROPIC_BASE_URL is foreign".into()),
-            _ => ("direct", "not routed yet".into()),
-        },
+        "claude" => {
+            let s = std::fs::read_to_string(root.join("settings.json")).ok().and_then(|s| serde_json::from_str::<Value>(s.trim_start_matches('\u{feff}')).ok());
+            match (s.as_ref().map(|s| &s["env"]["ANTHROPIC_BASE_URL"]), port) {
+                (Some(Value::String(u)), Some(p)) if *u == anthropic_url(p) && answers(p) => ("routed", format!("127.0.0.1:{p}")),
+                (Some(Value::String(u)), Some(p)) if *u == anthropic_url(p) => ("unknown", format!("proxy on 127.0.0.1:{p} not answering")),
+                (Some(Value::String(_)), _) => ("bypassed", "settings.json env.ANTHROPIC_BASE_URL is foreign".into()),
+                _ => ("direct", "settings.json sets no ANTHROPIC_BASE_URL".into()),
+            }
+        }
         _ => ("direct", "not routed yet".into()),
     }
 }
@@ -199,7 +234,7 @@ fn journal_shape(j: &Value) -> bool {
 }
 
 /// Whether the agent should be routed (#132): an onboarded agent with shipped routing and no `agentq direct`.
-/// ponytail: Claude Code and Hermes are intended direct until their routing ships (owner decision on #132).
+/// ponytail: Hermes is intended direct until its routing ships (owner decision on #132).
 pub fn intended(data: &Path, agent: &str, root: &Path) -> (&'static str, &'static str) {
     if !ROUTED.contains(&agent) {
         return ("direct", "routing not shipped");
@@ -303,24 +338,21 @@ mod tests {
     #[test]
     fn onboard_awaits_proxy() {
         let free = || TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let l = free();
-        let p = l.local_addr().unwrap().port();
+        let p = test_proxy(free());
         let mut restarts = 0;
         assert!(await_proxies(&[p], Duration::from_secs(5), &mut || restarts += 1).is_empty());
         assert_eq!(restarts, 0, "an answering proxy needs no restart");
-        drop(l);
+        let p = free().local_addr().unwrap().port();
         let late = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(700));
-            let l = TcpListener::bind((Ipv4Addr::LOCALHOST, p)).unwrap();
-            std::thread::sleep(Duration::from_secs(3));
-            drop(l);
+            test_proxy(TcpListener::bind((Ipv4Addr::LOCALHOST, p)).unwrap());
         });
         assert!(await_proxies(&[p], Duration::from_secs(2), &mut || restarts += 1).is_empty());
         assert_eq!(restarts, 0, "the wait covers a slow start");
         late.join().unwrap();
         let q = free().local_addr().unwrap().port();
         let mut up = None;
-        assert!(await_proxies(&[q], Duration::from_millis(600), &mut || up = TcpListener::bind((Ipv4Addr::LOCALHOST, q)).ok()).is_empty());
+        assert!(await_proxies(&[q], Duration::from_millis(600), &mut || up = TcpListener::bind((Ipv4Addr::LOCALHOST, q)).ok().map(test_proxy)).is_empty());
         assert!(up.is_some(), "the restart starts the silent proxy");
         // port 1 refuses
         assert_eq!(await_proxies(&[1], Duration::from_millis(600), &mut || restarts += 1), [1]);
@@ -334,14 +366,17 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         assert_eq!(state("codex", &d, None).0, "direct");
-        let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let p = l.local_addr().unwrap().port();
+        let p = test_proxy(TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap());
         let cfg = format!("model_provider = \"agent_context\"\n\n[model_providers.agent_context]\nbase_url = \"{}\"\n", base_url(p));
         std::fs::write(d.join("config.toml"), &cfg).unwrap();
         assert_eq!(state("codex", &d, Some(p)).0, "routed");
         assert_eq!(state("codex", &d, Some(p.wrapping_add(1))).0, "bypassed");
-        drop(l);
-        // a freed ephemeral port may serve a parallel test: port 1 refuses
+        // #136 A3: a listener that accepts and never answers is not routed
+        let silent = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let q = silent.local_addr().unwrap().port();
+        std::fs::write(d.join("config.toml"), cfg.replace(&base_url(p), &base_url(q))).unwrap();
+        assert_eq!(state("codex", &d, Some(q)), ("unknown", format!("proxy on 127.0.0.1:{q} not answering")));
+        // port 1 refuses
         std::fs::write(d.join("config.toml"), cfg.replace(&base_url(p), &base_url(1))).unwrap();
         assert_eq!(state("codex", &d, Some(1)).0, "unknown");
         std::fs::write(d.join("config.toml"), format!("[profiles.x]\n{cfg}")).unwrap();
@@ -350,7 +385,8 @@ mod tests {
     }
 
     /// #132 A1/A2: an onboarded Codex without routing is a problem; `agentq direct`, no onboarding and unshipped
-    /// routing are intended direct; `onboard --yes` clears the `direct` record.
+    /// routing are intended direct; `onboard --yes` clears the `direct` record. #136 A1/A3: an onboarded Claude Code is
+    /// intended routed, and a dead proxy is a heartbeat problem.
     #[test]
     fn intended_routing() {
         let d = std::env::temp_dir().join(format!("agentq-intended-{}", std::process::id()));
@@ -360,9 +396,15 @@ mod tests {
         assert_eq!(intended(&data, "codex", &root), ("direct", "not onboarded"));
         std::fs::write(data.join("owned.json"), json!([{"file": root.join("config.toml"), "key": ["mcp_servers", "agent_context"]}]).to_string()).unwrap();
         assert_eq!(intended(&data, "codex", &root), ("routed", "onboarded"));
-        assert_eq!(intended(&data, "claude", &d.join(".claude")).0, "direct");
+        assert_eq!(intended(&data, "claude", &d.join(".claude")), ("direct", "not onboarded"));
+        assert_eq!(intended(&data, "hermes", &d.join(".hermes")), ("direct", "routing not shipped"));
         let row = |i: &str| json!({"codex": {"routing": "direct", "reason": "config.toml selects no agent_context provider", "intended": i}, "claude": {"routing": "direct", "intended": "direct"}});
         assert_eq!(problems(&row("routed")), ["codex direct (config.toml selects no agent_context provider)"]);
+        let claude = d.join(".claude");
+        std::fs::write(data.join("owned.json"), json!([{"file": root.join("config.toml")}, {"file": claude.join("settings.json")}]).to_string()).unwrap();
+        assert_eq!(intended(&data, "claude", &claude), ("routed", "onboarded"));
+        let down = json!({"claude": {"routing": "unknown", "reason": "proxy on 127.0.0.1:1 not answering", "intended": "routed"}});
+        assert_eq!(problems(&down), ["claude unknown (proxy on 127.0.0.1:1 not answering)"]);
         set_direct(&data, &["codex"], true).unwrap();
         assert_eq!(intended(&data, "codex", &root), ("direct", "`agentq direct`"));
         assert!(problems(&row("direct")).is_empty());

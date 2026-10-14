@@ -1,6 +1,6 @@
 //! Owned config edits for Codex, Claude Code and Hermes with the ownership journal (agentq.md § 4, § 8, § 9).
 //!
-//! ponytail: MCP registration, hooks and Codex routing. Claude Code routing, telemetry env, the Hermes plugin and the
+//! ponytail: MCP registration, hooks and Codex and Claude Code routing. Telemetry env, the Hermes plugin and the
 //! instruction block join with their own tasks.
 
 use coreq::write_atomic;
@@ -71,14 +71,16 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
     }
 }
 
-/// Codex routing edits to the agent's loopback port (§ 4); `agentq direct` removes only these.
+/// Codex and Claude Code routing edits to the agent's loopback port (§ 4); `agentq direct` removes only these.
 pub fn routing_wants(agent: &str, root: &Path, port: u16) -> Vec<Want> {
-    let w = |key: &[&str], value: Value| Want { file: root.join("config.toml"), key: key.iter().map(|k| k.to_string()).collect(), value, append: false, routing: Some(agent.into()) };
+    let w = |file: &str, key: &[&str], value: Value| Want { file: root.join(file), key: key.iter().map(|k| k.to_string()).collect(), value, append: false, routing: Some(agent.into()) };
     match agent {
         "codex" => vec![
-            w(&["model_provider"], "agent_context".into()),
-            w(&["model_providers", "agent_context"], json!({"name": "Agent Context", "base_url": crate::routing::base_url(port), "wire_api": "responses", "requires_openai_auth": true, "supports_websockets": true})),
+            w("config.toml", &["model_provider"], "agent_context".into()),
+            w("config.toml", &["model_providers", "agent_context"], json!({"name": "Agent Context", "base_url": crate::routing::base_url(port), "wire_api": "responses", "requires_openai_auth": true, "supports_websockets": true})),
         ],
+        // login, model and approvals stay the client's: only the base URL changes
+        "claude" => vec![w("settings.json", &["env", "ANTHROPIC_BASE_URL"], crate::routing::anthropic_url(port).into())],
         _ => vec![],
     }
 }
@@ -462,6 +464,54 @@ mod tests {
         let out = restore(&journal, false, None).unwrap();
         assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("hooks.PreToolUse")), "{out:?}");
         assert!(std::fs::read_to_string(&s).unwrap().contains("my-hook"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #136 A2/A3: Claude Code routes through `env.ANTHROPIC_BASE_URL` only, other settings keep; a dead proxy is
+    /// unknown, `direct` removes only the routing edit, uninstall leaves no diff; a foreign base URL stops the file.
+    #[test]
+    fn claude_routing_then_direct() {
+        let d = std::env::temp_dir().join(format!("agentq-claude-routing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let s = d.join("settings.json");
+        let orig = "{\n  \"model\": \"opus\",\n  \"permissions\": {\n    \"defaultMode\": \"plan\"\n  },\n  \"env\": {\n    \"MINE\": \"1\"\n  }\n}\n";
+        std::fs::write(&s, orig).unwrap();
+        let journal = d.join("owned.json");
+        let p = crate::routing::test_proxy(std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap());
+        let all = || -> Vec<Want> {
+            let mut w = wants("claude", &d, &d.join(".claude.json"), Path::new("/x/agentq"));
+            w.extend(routing_wants("claude", &d, p));
+            w
+        };
+        assert_eq!(crate::routing::state("claude", &d, Some(p)).0, "direct");
+        apply(&all(), &journal).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&s).unwrap()).unwrap();
+        assert_eq!(v["env"], json!({"MINE": "1", "ANTHROPIC_BASE_URL": format!("http://127.0.0.1:{p}")}));
+        assert_eq!((&v["model"], &v["permissions"]), (&json!("opus"), &json!({"defaultMode": "plan"})), "model and approvals unchanged");
+        assert_eq!(crate::routing::state("claude", &d, Some(p)).0, "routed");
+        assert_eq!(crate::routing::state("claude", &d, Some(p.wrapping_add(1))).0, "bypassed");
+        // port 1 refuses and a silent listener never answers: proxy down or hung reads unknown, not routed
+        let routed = std::fs::read_to_string(&s).unwrap();
+        let silent = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        for q in [1, silent.local_addr().unwrap().port()] {
+            std::fs::write(&s, routed.replace(&format!(":{p}\""), &format!(":{q}\""))).unwrap();
+            assert_eq!(crate::routing::state("claude", &d, Some(q)), ("unknown", format!("proxy on 127.0.0.1:{q} not answering")));
+        }
+        std::fs::write(&s, &routed).unwrap();
+
+        assert_eq!(restore(&journal, false, Some(&["claude"])).unwrap().len(), 1);
+        let direct: Value = serde_json::from_str(&std::fs::read_to_string(&s).unwrap()).unwrap();
+        assert!(direct["env"]["ANTHROPIC_BASE_URL"].is_null() && direct["hooks"]["PreToolUse"].is_array(), "{direct}");
+        assert_eq!(crate::routing::state("claude", &d, Some(p)).0, "direct");
+        apply(&all(), &journal).unwrap();
+        restore(&journal, false, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&s).unwrap(), orig, "uninstall leaves no diff");
+
+        std::fs::write(&s, "{\"env\": {\"ANTHROPIC_BASE_URL\": \"https://gateway.example\"}}").unwrap();
+        let out = apply(&all(), &d.join("owned2.json")).unwrap();
+        assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("env.ANTHROPIC_BASE_URL has a foreign value")), "{out:?}");
+        assert_eq!(crate::routing::state("claude", &d, Some(p)).0, "bypassed");
         let _ = std::fs::remove_dir_all(&d);
     }
 

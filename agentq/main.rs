@@ -200,7 +200,11 @@ fn doctor(t: &Tool) -> i32 {
     let agents = routing::agents(&t.install.join("data"));
     for (a, r) in agents.as_object().into_iter().flatten() {
         let want = r["intended"].as_str().unwrap_or("unknown");
-        let fix = if want == "routed" && r["routing"] != "routed" { "; run `agentq onboard --yes`" } else { "" };
+        let fix = match (want, r["routing"].as_str()) {
+            ("routed", Some("unknown")) if r["reason"].as_str().is_some_and(|x| x.ends_with("not answering")) => "; run `agentq service restart`",
+            ("routed", r) if r != Some("routed") => "; run `agentq onboard --yes`",
+            _ => "",
+        };
         line(r["routing"] != "unknown" && want != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
     }
     for f in executor::hook_failures(&t.install.join("data")) {
@@ -758,7 +762,7 @@ mod tests {
         // the service's first pass: one proxy per fixed port, as `routing::supervise` does
         let mut start = || {
             let p = routing::port(&data, "codex").ok_or("service started before the port was fixed")?;
-            proxy = Some(std::net::TcpListener::bind(("127.0.0.1", p)).map_err(|e| e.to_string())?);
+            proxy = Some(routing::test_proxy(std::net::TcpListener::bind(("127.0.0.1", p)).map_err(|e| e.to_string())?));
             Ok(())
         };
         let mut restarts = 0;
@@ -767,7 +771,7 @@ mod tests {
         assert_eq!(routed, [("codex", p, true)]);
         assert_eq!(restarts, 0);
         assert_eq!(routing::state("codex", &codex, Some(p)).0, "routed", "doctor right after onboard");
-        drop(proxy);
+        assert_eq!(proxy, Some(p));
         let _ = std::fs::remove_dir_all(&d);
     }
 
