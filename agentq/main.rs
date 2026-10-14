@@ -1,5 +1,6 @@
 //! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
+mod configure;
 mod engines;
 mod legacy;
 mod mcp;
@@ -351,6 +352,7 @@ fn selftest(t: &Tool) -> i32 {
         ("self copy skip", std::env::current_exe().is_ok_and(|me| copy_unless_same(&me, &me) == Ok(false))),
         ("json bom", onboard::selftest()),
         ("single service run", single_instance_selftest()),
+        ("configuration fixtures", configure::selftest()),
         ("snapshot", snapshot::project("i", "linux", None, None, 0)["resource"]["unknown"] == "no sample yet"),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];

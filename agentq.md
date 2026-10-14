@@ -74,7 +74,7 @@ One core in the binary decides, compresses, retains and counts; adapters only tr
 
 ## 4. Hooks and config edits per runtime
 
-Accepted configuration target: [CONFIGURATION A1–A5](docs/spec/CONFIGURATION.md) owns extended profile projection and separately authorized typed management with revision checks, journaled apply, host readback and real-client verification. Observation enrollment grants no configuration authority; existing client/model/login/approval and ownership rules remain binding. Not yet released.
+Accepted configuration target: [CONFIGURATION A1–A5](docs/spec/CONFIGURATION.md) owns extended profile projection and separately authorized typed management with revision checks, journaled apply, host readback and real-client verification. Observation enrollment grants no configuration authority; existing client/model/login/approval and ownership rules remain binding. Not yet released. Typed request/plan/result envelopes and host acceptance: `agentq/configure.rs` with shared fixtures `docs/spec/configuration-fixtures.json`; no write path yet.
 
 Each edit is recorded in the ownership journal (§ 9) before it is written. Existing foreign optimizers or custom providers stop the edit for that file with a named conflict; nothing is replaced by guess. Loopback port per agent and runtime is fixed at install and kept across updates.
 
