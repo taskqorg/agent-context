@@ -330,7 +330,7 @@ pub fn hook_failures(data: &Path) -> Vec<String> {
 }
 
 /// Heartbeat `agentq.hooks` (#134): per agent and event with any record, the state of its latest run (`ok`, `failed`,
-/// or `unknown` when its failure record or retained last failure is unreadable), its newest successful run and its last failure `{at, error}`, which
+/// or `unknown` when its success stamp, failure record or retained last failure is unreadable), its newest successful run and its last failure `{at, error}`, which
 /// stays after a later success; null when it never failed.
 pub fn hooks(data: &Path) -> Value {
     let unreadable = || json!({"at": null, "error": "unreadable failure record"});
@@ -342,18 +342,25 @@ pub fn hooks(data: &Path) -> Value {
     let mut out = vec![];
     for a in onboard::AGENTS {
         for e in EVENTS {
-            let (ok, failed) = (stamped(data, a, e), read(format!("{a}.{e}.failed")));
+            // a missing success stamp means no success; a present but unreadable one is Some(None)
+            let ok = match std::fs::read_to_string(data.join("evidence").join(format!("{a}.{e}"))) {
+                Ok(s) => Some(s.trim().parse::<u64>().ok()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+                Err(_) => Some(None),
+            };
+            let failed = read(format!("{a}.{e}.failed"));
             let last = failed.clone().or_else(|| read(format!("{a}.{e}.last_failure")));
             if ok.is_none() && last.is_none() {
                 continue;
             }
-            // an unreadable retained failure leaves the latest run unproved, never `ok` (R12)
+            // an unreadable success stamp or retained failure leaves the latest run unproved, never `ok` (R12)
             let state = match (&failed, &last) {
+                _ if ok == Some(None) => "unknown",
                 (_, Some(f)) if f["at"].is_null() => "unknown",
                 (Some(_), _) => "failed",
                 _ => "ok",
             };
-            out.push(json!({"agent": a, "event": e, "state": state, "last_ok_at": ok, "last_failure": last}));
+            out.push(json!({"agent": a, "event": e, "state": state, "last_ok_at": ok.flatten(), "last_failure": last}));
         }
     }
     out.into()
