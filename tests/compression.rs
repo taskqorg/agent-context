@@ -1,4 +1,5 @@
 //! §3 / VERIFICATION A2,A4: native execution once -> bounded RTK -> original recovery -> one stats record.
+//! ACCOUNTING O4: the same records read locally and from their exported spans give one accounting.
 use serde_json::{Value, json};
 use std::{
     io::Write,
@@ -102,7 +103,7 @@ fn execution_recovery_stats_chain() {
     std::fs::create_dir_all(&data).unwrap();
     std::fs::write(
         data.join("config.json"),
-        r#"{"compression":{"stats":"off"}}"#,
+        r#"{"compression":{"stats":"queue"}}"#,
     )
     .unwrap();
     for (mode, why) in [
@@ -158,13 +159,13 @@ fn execution_recovery_stats_chain() {
     ] {
         std::fs::write(
             data.join("config.json"),
-            r#"{"compression":{"stats":"off","min_bytes":0}}"#,
+            r#"{"compression":{"stats":"queue","min_bytes":0}}"#,
         )
         .unwrap();
         if why == "short" {
             std::fs::write(
                 data.join("config.json"),
-                r#"{"compression":{"stats":"off"}}"#,
+                r#"{"compression":{"stats":"queue"}}"#,
             )
             .unwrap();
         }
@@ -179,7 +180,7 @@ fn execution_recovery_stats_chain() {
     }
     std::fs::write(
         data.join("config.json"),
-        r#"{"compression":{"stats":"off","enabled":false}}"#,
+        r#"{"compression":{"stats":"queue","enabled":false}}"#,
     )
     .unwrap();
     assert_eq!(
@@ -203,6 +204,24 @@ fn execution_recovery_stats_chain() {
             .sum::<u64>(),
         9
     );
+    let accounting = |extra: &[&str]| -> Value {
+        let mut args = vec!["stats", "--accounting"];
+        args.extend(extra);
+        let o = cli(&root, &args, None, &[]);
+        assert!(o.status.success(), "{o:?}");
+        serde_json::from_slice(&o.stdout).unwrap()
+    };
+    let local = accounting(&[]);
+    let queue = data.join("queue");
+    let exported = accounting(&["--events", queue.to_str().unwrap()]);
+    assert_eq!((&local["state"], &local["calls"]), (&json!("complete"), &json!(9)));
+    assert_eq!(exported["state"], "partial", "export carries no coverage: lower bounds");
+    for k in ["calls", "outcomes", "reasons", "volume", "cohorts"] {
+        assert_eq!(local[k], exported[k], "{k}");
+    }
+    assert_eq!(local["volume"][0]["paired"], 1);
+    assert_eq!(local["volume"][0]["bytes_in"], raw.len());
+    assert!(!local.to_string().contains("agentq-cli-") && !exported.to_string().contains("agentq-cli-"), "no host paths");
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {

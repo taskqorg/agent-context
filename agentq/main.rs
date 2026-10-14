@@ -1,5 +1,6 @@
 //! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
+mod accounting;
 mod configure;
 mod compression;
 mod connect;
@@ -26,7 +27,7 @@ const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
-const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -63,7 +64,8 @@ fn main() {
             Ok(v)=>println_code(&v.to_string()),
             Err(e)=>fail(&e,"send one JSON object with adapter, tool and text; preserve the native result on failure"),
         },
-        ["stats"] | ["stats","--json"] => match compression::stats(&t.install.join("data")) {
+        ["stats", "--accounting", rest @ ..] => accounting_cmd(&t, rest),
+        ["stats"] | ["stats","--json"] =>match compression::stats(&t.install.join("data")) {
             Ok(v) if a.len()==2=>println_code(&v.to_string()),
             Ok(v)=>{
                 for g in v["groups"].as_array().unwrap() {
@@ -520,6 +522,33 @@ fn direct(t: &Tool, args: &[&str]) -> i32 {
             println_code("direct: done; `agentq onboard --yes` routes again")
         }
         Err(e) => fail(&format!("direct: {e}"), "fix the file, then run `agentq direct` again"),
+    }
+}
+
+/// ACCOUNTING O1-O3 over local stats or exported events; default window the last 7 days through this second. Unknown
+/// exits 1.
+fn accounting_cmd(t: &Tool, args: &[&str]) -> i32 {
+    let at = now();
+    let data = t.install.join("data");
+    let mut input = serde_json::json!({"window": {"start": at.saturating_sub(7 * 86400), "end": at + 1}, "now": at});
+    let mut source = None;
+    for pair in args.chunks(2) {
+        let n = || pair.get(1).and_then(|v| v.parse::<u64>().ok()).unwrap_or_else(|| fail(&format!("stats: {} requires unix seconds", pair[0]), "pass a whole number"));
+        match pair {
+            ["--from", _] => input["window"]["start"] = n().into(),
+            ["--to", _] => input["window"]["end"] = n().into(),
+            ["--bucket", _] => input["bucket"] = n().into(),
+            ["--events", p] => source = Some(accounting::exported(Path::new(p)).unwrap_or_else(|e| fail(&format!("stats: {e}"), "pass a queue folder or an exported events file"))),
+            _ => fail(&format!("stats: unknown option {}", pair.join(" ")), "agentq stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>]"),
+        }
+    }
+    input["sources"] = serde_json::json!([source.unwrap_or_else(|| accounting::local(&data, at))]);
+    match accounting::aggregate(&input) {
+        Ok(v) => {
+            println!("{v}");
+            i32::from(v["state"] == "unknown")
+        }
+        Err(e) => fail(&format!("stats: {e}"), "pass --from before --to"),
     }
 }
 

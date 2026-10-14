@@ -270,11 +270,9 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
         "not_qualified"
     });
     if reason == "no_engine" && qualified {
-        r["engine"] = json!(if crate::engines::rtk_path(install).is_file() {
-            "rtk"
-        } else {
-            "none"
-        });
+        let rtk = crate::engines::rtk_path(install).is_file();
+        r["engine"] = json!(if rtk { "rtk" } else { "none" });
+        r["engine_version"] = json!(rtk.then_some(crate::engines::RTK));
         match filter(install, cmd, &native.stdout, &native.stderr, code, &id) {
             Ok(mut candidate) => {
                 let reference = format!("rtk:{id}");
@@ -404,7 +402,8 @@ fn record(agent: &str, adapter: &str, tool: &str, input: &Value, bytes: usize, a
         "agent":agent,"adapter":adapter,"tool":tool,"runner":null,"engine":"none",
         "outcome":"passed","reason":"not_qualified","bytes_in":bytes,"bytes_out":bytes,
         "est_tokens_in":bytes.div_ceil(4),"est_tokens_out":bytes.div_ceil(4),"duration_ms":0,"ref":null,
-        "session":input["session"],"turn":input["turn"],"tool_call":input["tool_call"]})
+        "session":input["session"],"turn":input["turn"],"tool_call":input["tool_call"],
+        "version":env!("CARGO_PKG_VERSION"),"engine_version":null})
 }
 
 fn stats_date(name: &str) -> Option<&str> {
@@ -608,21 +607,10 @@ pub fn stats(data: &Path) -> Result<Value, String> {
                     .as_str()
                     .is_some_and(|s| ["run", "hook", "provider"].contains(&s))
                 || v["tool"].as_str().is_none()
-                || !v["reason"].as_str().is_some_and(|s| {
-                    [
-                        "compressed",
-                        "disabled",
-                        "short",
-                        "code",
-                        "json",
-                        "not_qualified",
-                        "not_smaller",
-                        "no_engine",
-                        "timeout",
-                        "error",
-                    ]
-                    .contains(&s)
-                })
+                || !v["reason"]
+                    .as_str()
+                    .and_then(crate::accounting::outcome_of)
+                    .is_some_and(|o| v["outcome"] == o)
                 || ["runner", "ref", "session", "turn", "tool_call"]
                     .iter()
                     .any(|k| v.get(k).is_none() || (!v[k].is_null() && !v[k].is_string()))
@@ -697,7 +685,7 @@ mod tests {
             .unwrap();
             let r: Value = serde_json::from_str(s.lines().last().unwrap()).unwrap();
             assert_eq!(r["reason"], why);
-            assert_eq!(r.as_object().unwrap().len(), 19);
+            assert_eq!(r.as_object().unwrap().len(), 21);
             assert!(!s.contains("secret") && !s.contains(text));
         }
         assert_eq!(stats(&d).unwrap()["groups"][0]["calls"], 3);
