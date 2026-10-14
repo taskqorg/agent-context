@@ -1,6 +1,7 @@
 //! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
 mod configure;
+mod connect;
 mod engines;
 mod legacy;
 mod mcp;
@@ -22,7 +23,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
-const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -75,6 +76,16 @@ fn main() {
                 Err(e) => fail(&format!("telemetry verify: {e}"), "no observation: Langfuse has not ingested it yet, retry later; 401: run `agentq langfuse`"),
             },
         },
+        ["enroll", url] | ["enroll", url, "--headless"] | ["enroll", "--headless", url] => match connect::enroll(&t.install.join("data"), url, !a.contains(&"--headless")) {
+            Ok(id) => println_code(&format!("enroll: Connected to {url}; snapshot {id} projected")),
+            Err(e) => fail(&format!("enroll: {e}"), "run `agentq connection status`, then `agentq enroll <https-url>` again"),
+        },
+        ["connection", "status"] => println_code(&connection_line(&connect::status(&t.install.join("data")))),
+        ["connection", "status", "--json"] => println_code(&connect::status(&t.install.join("data")).to_string()),
+        ["disconnect"] => match connect::disconnect(&t.install.join("data")) {
+            Ok(m) => println_code(&format!("disconnect: {m}")),
+            Err(e) => fail(&format!("disconnect: {e}"), "run `agentq disconnect` again"),
+        },
         ["doctor"] => doctor(&t),
         ["uninstall"] => uninstall(&t, false),
         ["uninstall", "--dry-run"] => uninstall(&t, true),
@@ -91,6 +102,25 @@ fn telemetry_line(t: &Tool) -> String {
     let oldest = q["oldest_age"].as_u64().map_or("none".into(), |s| format!("{s} s"));
     let last = q["last_delivery"].as_u64().map_or("never".into(), |t| format!("{} s ago", now().saturating_sub(t)));
     format!("telemetry: pending {}, oldest {oldest}, last delivery {last}, dropped {}, keys {keys}, error: {}", q["pending"], q["dropped"], q["error"].as_str().unwrap_or("none"))
+}
+
+fn connection_line(s: &Value) -> String {
+    let e = &s["export"];
+    let last = e["last_delivery"].as_u64().map_or("never".into(), |t| format!("{} s ago", now().saturating_sub(t)));
+    let mut l = format!("connection: {}", s["state"].as_str().unwrap_or("unknown"));
+    if let Some(d) = s["destination"].as_str() {
+        l += &format!(" {d}");
+    }
+    if !e.is_null() {
+        l += &format!(", export pending {}, last delivery {last}, error: {}", e["pending"], e["error"].as_str().unwrap_or("none"));
+    }
+    if s["revocation_pending"].as_u64().unwrap_or(0) > 0 {
+        l += &format!(", revocation pending {}", s["revocation_pending"]);
+    }
+    match s["next"].as_str() {
+        Some(n) => format!("{l}\nNext: {n}"),
+        None => l,
+    }
 }
 
 /// agentq.md § 1: read-only install, service, engines, owned edits, telemetry and legacy state; exit 1 on a problem.
