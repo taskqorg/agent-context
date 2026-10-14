@@ -202,7 +202,11 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
                 None => {
                     events.insert(id, r);
                 }
-                Some(p) if FINGERPRINT.iter().all(|k| p[k] == r[k]) => {
+                // Known provenance must agree too; a copy may only fill what another left unknown.
+                Some(p)
+                    if FINGERPRINT.iter().all(|k| p[k] == r[k])
+                        && COHORT.iter().all(|k| p[k].is_null() || r[k].is_null() || p[k] == r[k]) =>
+                {
                     duplicates += 1;
                     for k in COHORT {
                         if p[k].is_null() {
@@ -230,12 +234,27 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
     let mut out_sources = vec![];
     for (i, s) in sources.iter().enumerate() {
         let (covered, gaps) = coverage(&s["observed"], start, end)?;
-        let dropped = s["dropped"].as_u64().unwrap_or(0);
-        let source_capped = s["capped"].as_bool().unwrap_or(false);
+        // Corrupt coverage metadata proves nothing; never read it as zero or false.
+        let dropped = match &s["dropped"] {
+            Value::Null => 0,
+            d => d.as_u64().ok_or("dropped requires a count")?,
+        };
+        let source_capped = match &s["capped"] {
+            Value::Null => false,
+            c => c.as_bool().ok_or("capped requires a boolean")?,
+        };
         // A count, or the producer's reset times of which those in the window count.
-        let resets = s["resets"].as_u64().unwrap_or_else(|| {
-            s["resets"].as_array().into_iter().flatten().filter_map(Value::as_u64).filter(|t| (start..end).contains(t)).count() as u64
-        });
+        let resets = match &s["resets"] {
+            Value::Null => 0,
+            Value::Array(a) => {
+                let t: Option<Vec<u64>> = a.iter().map(Value::as_u64).collect();
+                t.ok_or("resets requires unix times")?.into_iter().filter(|t| (start..end).contains(t)).count() as u64
+            }
+            n => n.as_u64().ok_or("resets requires a count or unix times")?,
+        };
+        if !s["unknown"].is_null() && !s["unknown"].is_string() {
+            return Err("unknown requires a reason string".into());
+        }
         let mut why = vec![];
         if let Some(u) = s["unknown"].as_str() {
             why.push(json!({"reason": "no_observation", "detail": u}));
@@ -249,7 +268,7 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
         }
         let state = if covered.is_empty() && found[i] == 0 {
             "unknown"
-        } else if gaps.is_empty() && dropped == 0 && !source_capped {
+        } else if gaps.is_empty() && dropped == 0 && !source_capped && s["unknown"].is_null() {
             "complete"
         } else {
             "partial"
@@ -370,10 +389,10 @@ pub fn local(data: &Path, now: u64) -> Value {
     let journal = std::fs::read(dir.join(crate::compression::COVERAGE)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
     let mut observed = vec![];
     let mut resets = vec![];
-    match journal.filter(|j| j["schema"] == 1).and_then(|j| j["since"].as_u64().map(|s| (s, j))) {
+    match journal.filter(crate::compression::journal_valid) {
         _ if unknown.is_some() => {}
-        Some((since, j)) => {
-            let mut at = since.max(now.saturating_sub(RETENTION));
+        Some(j) => {
+            let mut at = j["since"].as_u64().unwrap_or(u64::MAX).max(now.saturating_sub(RETENTION));
             let mut gaps: Vec<(u64, u64)> = j["gaps"].as_array().into_iter().flatten().filter_map(|g| g[0].as_u64().zip(g[1].as_u64())).collect();
             gaps.sort();
             for (a, b) in gaps.into_iter().chain([(now + 1, now + 1)]) {
@@ -465,6 +484,11 @@ mod tests {
                         *r = Value::Object(m.into_iter().filter(|(_, v)| *v != json!("$absent")).collect());
                     }
                 }
+            }
+            if let Some(field) = c["error"].as_str() {
+                let e = aggregate(&input).expect_err(name);
+                assert!(e.contains(field), "{name}: {e}");
+                continue;
             }
             let got = aggregate(&input).unwrap_or_else(|e| panic!("{name}: {e}"));
             subset(&c["expect"], &got, name);

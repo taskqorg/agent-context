@@ -431,18 +431,25 @@ fn coverage(journal: Option<&[u8]>, held: bool, at: u64) -> Value {
         None if !held => fresh(vec![]),
         None => fresh(vec![at]),
         Some(b) => match serde_json::from_slice::<Value>(b) {
-            Ok(v) if v["schema"] == 1
-                && v["since"].is_u64()
-                && v["resets"].as_array().is_some_and(|a| a.iter().all(Value::is_u64))
-                && v["gaps"].as_array().is_some_and(|a| {
-                    a.iter().all(|g| g[0].as_u64().zip(g[1].as_u64()).is_some_and(|(x, y)| x < y))
-                }) =>
-            {
-                v
-            }
+            Ok(v) if journal_valid(&v) => v,
             _ => fresh(vec![at]),
         },
     }
+}
+
+/// The whole journal shape, as the producer writes it; anything else proves no coverage.
+pub fn journal_valid(v: &Value) -> bool {
+    v["schema"] == 1
+        && v["since"].is_u64()
+        && v["resets"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(Value::is_u64))
+        && v["gaps"].as_array().is_some_and(|a| {
+            a.iter().all(|g| {
+                g.as_array().is_some_and(|p| p.len() == 2)
+                    && g[0].as_u64().zip(g[1].as_u64()).is_some_and(|(x, y)| x < y)
+            })
+        })
 }
 
 /// Local writes serialize with the existing lifecycle lock; sink errors never change returned tool bytes.

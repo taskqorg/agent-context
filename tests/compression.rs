@@ -269,6 +269,24 @@ fn execution_recovery_stats_chain() {
     std::fs::write(&journal, "{").unwrap();
     let corrupt: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
     assert_eq!(corrupt["coverage"]["sources"][0]["reasons"][0]["detail"], "coverage journal unreadable");
+    // Parseable but corrupt gaps or resets prove no coverage either: never complete, never zero.
+    for bad in [
+        json!({"schema": 1, "since": since, "resets": [], "gaps": [[since, "x"]]}),
+        json!({"schema": 1, "since": since, "resets": [], "gaps": [[since + 5, since]]}),
+        json!({"schema": 1, "since": since, "resets": [], "gaps": "none"}),
+        json!({"schema": 1, "since": since, "resets": ["x"], "gaps": []}),
+        json!({"schema": 1, "since": since, "resets": 0, "gaps": []}),
+        json!({"schema": 1, "since": since, "gaps": []}),
+    ] {
+        std::fs::write(&journal, bad.to_string()).unwrap();
+        let got = accounting(&["--from", &from]);
+        assert_eq!((&got["state"], &got["calls"]), (&json!("partial"), &json!(10)), "{bad}");
+        assert_eq!(got["coverage"]["sources"][0]["reasons"][0]["detail"], "coverage journal unreadable", "{bad}");
+    }
+    // The producer replaces a corrupt journal with a fresh one and a reset.
+    cli(&root, &["run", "--", "cargo", "test"], None, &[]);
+    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    assert_eq!((j["gaps"].clone(), j["resets"].clone()), (json!([]), json!([j["since"]])));
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {
