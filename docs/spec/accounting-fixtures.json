@@ -21,7 +21,7 @@
     "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it at the next second (the reset second stays unproven) and appends a reset",
     "gaps": "a record append that failed: [time, time + 1)",
     "counts": "records each held day file data/stats/YYYY-MM-DD.jsonl must contain: +1 per appended record, less the lines retention trims from the oldest file (an earlier loss stays visible), rebuilt from the lines held when the journal restarts",
-    "local source": "observed = [max(since, now - 7 days), now + 1) less gaps; no stats folder, no journal, an unreadable journal or stats file, a coverage.failed.* marker (\"stats write failed\") or a day file with fewer lines than its count (\"stats records lost\"): observed [] and unknown with that reason",
+    "local source": "observed = [max(since, now - 7 days), now + 1) less gaps, always with unknown \"calls that wrote no evidence are undetectable\" (a call whose record and marker writes both fail leaves nothing), so local totals are lower bounds; no stats folder, no journal, an unreadable journal or stats file, a coverage.failed.* marker (\"stats write failed\") or a day file with fewer lines than its count (\"stats records lost\"): observed [] and unknown with that reason",
     "exported source": "observed [] and unknown \"exported events carry no coverage\"; a queue folder adds its dropped count"
   },
   "output": {
@@ -30,7 +30,7 @@
     "calls, outcomes, reasons": "distinct event IDs in the window; null when unknown",
     "volume": "per adapter and engine, compressed calls only: compressed, paired, bytes_in, bytes_out (unit byte; MiB = 2^20 bytes), reduction = 1 - sum(out)/sum(in), excluded {unmeasured, invalid}, estimated_tokens {kind: estimate}",
     "cohorts": "per installation, runtime, version, profile, agent, adapter, tool, runner, engine, engine_version (null = unknown, never inferred): calls, outcomes, reasons, evidence (at most 3 event IDs)",
-    "coverage": "sources[{state, observed, gaps, dropped, resets, records, reasons: [{reason: no_observation (with detail) | gap | reset | dropped | capped}]}], read, counted, duplicates, out_of_window, excluded {malformed, unsupported_schema, future_time, conflicting_duplicate}, legacy_run, capped, profile_unknown",
+    "coverage": "sources[{state, observed, gaps, dropped, resets, records, reasons: [{reason: no_observation (with detail; no observed interval) | unproven (with detail; observed intervals under an unknown reason) | gap | reset | dropped | capped}]}], read, counted, duplicates, out_of_window, excluded {malformed, unsupported_schema, future_time, conflicting_duplicate}, legacy_run, capped, profile_unknown",
     "observed_tokens, task_effect": "unknown with a reason: core records carry no observed usage, and whole-task effect needs a separate paired experiment cohort"
   },
   "base_record": {
@@ -270,6 +270,13 @@
         {"event_id": "000000000000000000000000000000a1", "time": 1500}
       ]}]},
       "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "observed": [[1500, 1801]], "gaps": [[1000, 1500], [1801, 2000]], "reasons": [{"reason": "gap"}]}]}}
+    },
+    {
+      "name": "producer_journal_is_unproven",
+      "input": {"window": {"start": 1000, "end": 2000}, "now": 2500, "sources": [{"installation": "i1", "runtime": "windows", "observed": [[900, 2501]], "resets": [], "unknown": "calls that wrote no evidence are undetectable", "records": [
+        {"event_id": "000000000000000000000000000000a2", "time": 1500}
+      ]}]},
+      "expect": {"state": "partial", "lower_bound": true, "calls": 1, "coverage": {"sources": [{"state": "partial", "observed": [[1000, 2000]], "gaps": [], "reasons": [{"reason": "unproven", "detail": "calls that wrote no evidence are undetectable"}]}]}}
     },
     {
       "name": "producer_failed_append_gap",

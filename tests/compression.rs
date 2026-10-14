@@ -225,11 +225,13 @@ fn execution_recovery_stats_chain() {
     let from = since.to_string();
     let week = accounting(&[]);
     assert_eq!((&week["state"], &week["calls"]), (&json!("partial"), &json!(9)), "a new store never covers the week before it");
-    assert_eq!(week["coverage"]["sources"][0]["reasons"], json!([{"reason": "gap"}]));
+    assert_eq!(week["coverage"]["sources"][0]["reasons"][1], json!({"reason": "gap"}));
     let local = accounting(&["--from", &from]);
     let queue = data.join("queue");
     let exported = accounting(&["--events", queue.to_str().unwrap(), "--from", &from]);
-    assert_eq!((&local["state"], &local["calls"]), (&json!("complete"), &json!(9)));
+    // A call that wrote no evidence is undetectable: local totals are lower bounds, never complete.
+    assert_eq!((&local["state"], &local["calls"]), (&json!("partial"), &json!(9)));
+    assert_eq!(local["coverage"]["sources"][0]["reasons"][0]["reason"], "unproven");
     assert_eq!(exported["state"], "partial", "export carries no coverage: lower bounds");
     assert_eq!(exported["coverage"]["sources"][0]["reasons"][0]["detail"], "exported events carry no coverage");
     for k in ["calls", "outcomes", "reasons", "volume", "cohorts"] {

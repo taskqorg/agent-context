@@ -942,7 +942,7 @@ mod tests {
         assert!(failed(&d).is_empty());
         let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
         assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
-        assert!(crate::accounting::local(&d, crate::now())["unknown"].is_null());
+        assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], crate::accounting::UNPROVEN);
         std::fs::remove_dir_all(d).unwrap();
     }
 
@@ -988,7 +988,7 @@ mod tests {
         // A marker written by a call this save never saw survives its reset.
         let late = d.join(format!("{FAILED}.late"));
         compress(&d, "hermes", &input).unwrap();
-        assert!(crate::accounting::local(&d, crate::now() + 1)["unknown"].is_null());
+        assert_eq!(crate::accounting::local(&d, crate::now() + 1)["unknown"], crate::accounting::UNPROVEN);
         std::fs::write(&late, "0").unwrap();
         assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], "stats write failed");
         std::fs::remove_dir_all(d).unwrap();
@@ -1014,6 +1014,37 @@ mod tests {
         flags("nouchg");
         let a = crate::accounting::local(&d, crate::now());
         assert_eq!(a["unknown"], "stats write failed", "{a}");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    /// ACCOUNTING O3 / A4: with data, stats and the day file immutable a call leaves no evidence; a later call must
+    /// not read the period as complete.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn no_evidence_chain() {
+        let d = std::env::temp_dir().join(format!("agentq-no-evidence-{}", crate::mcp::new_id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
+        let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
+        let start = crate::now();
+        compress(&d, "hermes", &input).unwrap();
+        let stats_dir = d.join("stats");
+        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let flags = |f: &str| {
+            let ok = Command::new("chflags").arg(f).args([&day, &stats_dir, &d]).status().unwrap().success();
+            assert!(ok);
+        };
+        flags("uchg");
+        compress(&d, "hermes", &input).unwrap();
+        flags("nouchg");
+        assert!(failed(&d).is_empty(), "the lost call left no marker");
+        compress(&d, "hermes", &input).unwrap();
+        let now = crate::now();
+        let mut q = json!({"window": {"start": start, "end": now + 1}, "now": now});
+        q["sources"] = json!([crate::accounting::local(&d, now)]);
+        let a = crate::accounting::aggregate(&q).unwrap();
+        assert_eq!((&a["state"], &a["lower_bound"], &a["calls"]), (&json!("partial"), &json!(true), &json!(2)), "{a}");
+        assert_eq!(a["coverage"]["sources"][0]["reasons"][0]["reason"], "unproven", "{a}");
         std::fs::remove_dir_all(d).unwrap();
     }
 }

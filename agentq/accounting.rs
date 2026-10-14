@@ -257,7 +257,8 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
         }
         let mut why = vec![];
         if let Some(u) = s["unknown"].as_str() {
-            why.push(json!({"reason": "no_observation", "detail": u}));
+            // Observed intervals under an unknown reason are what was seen, not proof of absence.
+            why.push(json!({"reason": if covered.is_empty() { "no_observation" } else { "unproven" }, "detail": u}));
         } else if covered.is_empty() {
             why.push(json!({"reason": "no_observation", "detail": "source states no observed interval"}));
         }
@@ -365,8 +366,13 @@ pub fn aggregate(input: &Value) -> Result<Value, String> {
     Ok(out)
 }
 
-/// This installation's stats files as one source. Coverage is only what the producer's journal proves: from its
-/// `since` (within retention) through the second `now`, less its gaps; without a readable journal it is unknown.
+/// Why a readable local journal still proves no completeness.
+pub const UNPROVEN: &str = "calls that wrote no evidence are undetectable";
+
+/// This installation's stats files as one source. Observed is what the producer's journal shows: from its `since`
+/// (within retention) through the second `now`, less its gaps, always with reason `UNPROVEN`, so totals are lower
+/// bounds; without a readable journal it is unknown.
+
 pub fn local(data: &Path, now: u64) -> Value {
     let dir = data.join("stats");
     let mut records = vec![];
@@ -414,6 +420,9 @@ pub fn local(data: &Path, now: u64) -> Value {
                 at = at.max(b);
             }
             resets = j["resets"].as_array().cloned().unwrap_or_default();
+            // A call that can write neither its record nor a failure marker leaves no evidence at all, so the journal
+            // shows only what was written: lower bounds, never complete or zero.
+            unknown = Some(UNPROVEN);
         }
         None => unknown = Some(if dir.join(crate::compression::COVERAGE).exists() { "coverage journal unreadable" } else { "no coverage journal" }),
     }
