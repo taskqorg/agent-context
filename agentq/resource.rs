@@ -613,16 +613,10 @@ pub(crate) mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn live_probe_overhead() {
-        // fastest of three: parallel tests on a shared CI runner preempt a single sample (239 ms seen on ubuntu)
-        let mut took = Duration::MAX;
-        let mut sample = || {
-            let start = Instant::now();
-            let r = read();
-            took = took.min(start.elapsed());
-            r
-        };
-        let (_, _, r) = (sample(), sample(), sample());
-        assert!(took < Duration::from_millis(50), "fastest of three samples took {took:?}");
+        let start = Instant::now();
+        let r = read();
+        let took = start.elapsed();
+        assert!(took < Duration::from_millis(50), "one sample took {took:?}");
         if std::fs::read_to_string("/proc/sys/kernel/osrelease").is_ok_and(|s| wsl1(&s)) {
             return assert_eq!(r.cpu, Err("wsl1 mirrors the Windows host".into()));
         }
