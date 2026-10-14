@@ -1,5 +1,6 @@
 //! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
+mod compression;
 mod engines;
 mod legacy;
 mod mcp;
@@ -20,7 +21,7 @@ const PROJECT: &str = "host";
 const PASS: u64 = 30;
 const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
-const USAGE: &str = "agentq run -- <cmd> [args..] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -32,6 +33,7 @@ fn fail(problem: &str, next: &str) -> ! {
 }
 
 fn main() {
+    if let Some(code) = compression::replay() { std::process::exit(code); }
     let t = tool();
     let args: Vec<String> = std::env::args().skip(1).collect();
     // the launcher copy only picks a release (coreq.md § Launcher)
@@ -52,6 +54,25 @@ fn main() {
         },
         ["selftest"] => selftest(&t),
         ["run", "--", cmd @ ..] if !cmd.is_empty() => engines::run(&t.install, &args[2..]),
+        ["compress", agent] => match std::io::read_to_string(std::io::stdin()).map_err(|e|e.to_string()).and_then(|s|compression::compress(&t.install.join("data"),agent,&s)) {
+            Ok(v)=>println_code(&v.to_string()),
+            Err(e)=>fail(&e,"send one JSON object with adapter, tool and text; preserve the native result on failure"),
+        },
+        ["stats"] | ["stats","--json"] => match compression::stats(&t.install.join("data")) {
+            Ok(v) if a.len()==2=>println_code(&v.to_string()),
+            Ok(v)=>{
+                for g in v["groups"].as_array().unwrap() {
+                    let bytes=match (g["bytes_in"].as_u64(),g["bytes_out"].as_u64()) {
+                        (Some(a),Some(b))=>format!("{a} bytes in, {b} bytes out"),
+                        _=>format!("bytes unknown: {}",g["bytes_unknown"].as_str().unwrap()),
+                    };
+                    println!("{} · {}: {} calls, {} compressed, {} passed, {} failed, {bytes}",g["agent"].as_str().unwrap(),g["engine"].as_str().unwrap(),g["calls"],g["compressed"],g["passed"],g["failed"]);
+                }
+                0
+            },
+            Err(e) if a.len()==2=>{println!("{}",serde_json::json!({"schema":1,"state":"unknown","reason":e,"groups":null}));1},
+            Err(e)=>fail(&e,"run a tool through agentq; inspect data/stats if records are unreadable"),
+        },
         ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
         ["service", cmd] => service_cmd(&t, cmd),
         ["onboard", rest @ ..] => onboard(&t, rest),
