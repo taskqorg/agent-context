@@ -169,76 +169,17 @@ pub fn qualified(cmd: &[String]) -> bool {
     matches!(c.as_slice(), ["pytest", ..] | ["cargo", "test" | "build" | "check"] | ["go", "test"])
 }
 
-/// `agentq run -- <cmd>`: qualified commands through RTK with retained output, others native; exit code kept. A
-/// qualified command queues one `agentq.run` event naming only its runner (agentq.md § 6).
-pub fn run(install: &Path, cmd: &[String]) -> i32 {
-    let t0 = std::time::Instant::now();
-    let (code, engine) = exec(install, cmd);
-    if qualified(cmd) {
-        let runner = if cmd[0] == "pytest" { "pytest".into() } else { cmd[..2].join(" ") };
-        let ms = t0.elapsed().as_millis() as u64;
-        crate::telemetry::emit(&install.join("data"), "agentq.run", "end", serde_json::json!({"agentq.command": runner, "agentq.engine": engine, "agentq.rtk_version": RTK, "agentq.exit_code": code, "agentq.duration_ms": ms, "agentq.ids_unknown": "the hook passes no native IDs yet"}));
-    }
-    code
-}
-
-/// Exit code and the engine that ran the command, or why it ran natively.
-fn exec(install: &Path, cmd: &[String]) -> (i32, &'static str) {
-    let rtk = rtk_path(install);
-    let mut why = if rtk.exists() { "native" } else { "native: no checked rtk" };
-    if qualified(cmd) && rtk.exists() {
-        let runs = install.join("data").join("runs");
-        let id = crate::mcp::new_id();
-        let dir = runs.join(&id);
-        match std::fs::create_dir_all(&dir) {
-            Ok(()) => {
-                #[cfg(unix)]
-                let _ = std::fs::set_permissions(&runs, std::os::unix::fs::PermissionsExt::from_mode(0o700));
-                let s = Command::new(&rtk)
-                    .args(cmd)
-                    .env("RTK_DB_PATH", dir.join("gain.db"))
-                    .env("RTK_RECALL_DB", dir.join("recall.db"))
-                    .env("RTK_TELEMETRY_DISABLED", "1")
-                    .env("RTK_SUPPRESS_HOOK_WARNING", "1")
-                    .status();
-                if let Ok(s) = s {
-                    if dir.join("recall.db").exists() {
-                        println!("\n[Agent Context original ref: rtk:{id}; use get_original with the hash from RTK's recovery hint. Retention: latest {KEEP} runs, 7 days, 512 MiB.]");
-                    }
-                    prune(&runs);
-                    return (code(s), "rtk");
-                }
-                eprintln!("agentq: rtk did not start; native command preserved");
-                let _ = std::fs::remove_dir_all(&dir);
-                why = "native: rtk did not start";
-            }
-            Err(_) => {
-                eprintln!("agentq: sandbox cannot store recovery; native command preserved");
-                why = "native: no writable storage";
-            }
-        }
-    }
-    let c = match Command::new(&cmd[0]).args(&cmd[1..]).status() {
-        Ok(s) => code(s),
-        Err(e) => {
-            eprintln!("agentq: {}: {e}", cmd[0]);
-            127
-        }
-    };
-    (c, why)
-}
-
-fn code(s: std::process::ExitStatus) -> i32 {
-    #[cfg(unix)]
-    if let Some(sig) = std::os::unix::process::ExitStatusExt::signal(&s) {
-        return 128 + sig;
-    }
-    s.code().unwrap_or(1)
-}
+/// Qualified runner adapter; all decisions and records belong to the shared core.
+pub fn run(install: &Path, cmd: &[String]) -> i32 { crate::compression::run(install, cmd) }
 
 /// `get_original` for `rtk:<id>`: RTK's own recall from that run's database.
 pub fn recall(install: &Path, r: &str, hash: &str) -> Result<String, String> {
     let id = r.strip_prefix("rtk:").filter(|id| id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')).ok_or(format!("Invalid reference {r}"))?;
+    let dir = install.join("data/runs").join(id);
+    if dir.join("stdout").is_file() {
+        if age(&dir) > KEEP_AGE { return Err(format!("expired: {r} is not retained; rerun the command")); }
+        return std::fs::read_to_string(dir.join("stdout")).map_err(|e| e.to_string());
+    }
     if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_alphanumeric()) {
         return Err("RTK refs require the hash shown in its recovery hint".into());
     }
@@ -258,7 +199,7 @@ fn size(p: &Path) -> u64 {
 }
 
 /// Keep at most 500 runs, 7 days and 512 MiB; oldest go first.
-fn prune(runs: &Path) {
+pub(crate) fn prune(runs: &Path) {
     let mut dirs: Vec<(Duration, PathBuf)> = std::fs::read_dir(runs).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).map(|p| (age(&p), p)).collect();
     dirs.sort();
     let mut bytes = 0;
@@ -301,7 +242,8 @@ mod tests {
         let sh = if cfg!(windows) { s(&["cmd", "/c", "exit 3"]) } else { s(&["sh", "-c", "exit 3"]) };
         assert_eq!(run(&d, &sh), 3);
         assert_eq!(run(&d, &s(&["agentq-no-such-command"])), 127);
-        assert!(!d.exists(), "native runs write nothing");
+        assert_eq!(crate::compression::stats(&d.join("data")).unwrap()["groups"][0]["calls"], 2);
+        let _ = std::fs::remove_dir_all(d);
     }
 
     /// agentq.md § 6: a qualified command without RTK still runs and queues one event without its arguments.
@@ -315,7 +257,7 @@ mod tests {
         let q: Vec<_> = std::fs::read_dir(d.join("data").join("queue")).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).collect();
         assert_eq!(q.len(), 1);
         let ev = std::fs::read_to_string(q[0].path()).unwrap();
-        assert!(ev.contains("\"agentq.run\"") && ev.contains("native: no checked rtk") && ev.contains("\"pytest\""));
+        assert!(ev.contains("\"agentq.compress\"") && ev.contains("\"pytest\""));
         assert!(ev.contains(&format!("{{\"intValue\":{c}}}")), "exit code recorded");
         assert!(!ev.contains("secret-arg"), "no arguments");
         let _ = std::fs::remove_dir_all(d);
@@ -340,7 +282,7 @@ mod tests {
         install_rtk(&d).unwrap();
         assert_eq!(install_rtk(&d).unwrap(), rtk_path(&d), "second install reuses the checked engine");
         assert_eq!(run(&d, &s(&["cargo", "build", "--help"])), 0);
-        assert_eq!(std::fs::read_dir(d.join("data").join("runs")).unwrap().count(), 1, "the run is retained");
+        assert_eq!(crate::compression::stats(&d.join("data")).unwrap()["groups"][0]["calls"], 1, "the call is recorded, even when help passes through");
         if target() != "macos-x86_64" {
             install_headroom(&d).unwrap();
             assert!(d.join("engines").join(format!("headroom-{HEADROOM}")).join("ready").exists());
