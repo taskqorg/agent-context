@@ -200,7 +200,11 @@ fn doctor(t: &Tool) -> i32 {
     let agents = routing::agents(&t.install.join("data"));
     for (a, r) in agents.as_object().into_iter().flatten() {
         let want = r["intended"].as_str().unwrap_or("unknown");
-        let fix = if want == "routed" && r["routing"] != "routed" { "; run `agentq onboard --yes`" } else { "" };
+        let fix = match (want, r["routing"].as_str()) {
+            ("routed", Some("unknown")) if r["reason"].as_str().is_some_and(|x| x.ends_with("not answering")) => "; run `agentq service restart`",
+            ("routed", r) if r != Some("routed") => "; run `agentq onboard --yes`",
+            _ => "",
+        };
         line(r["routing"] != "unknown" && want != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
     }
     for f in executor::hook_failures(&t.install.join("data")) {
