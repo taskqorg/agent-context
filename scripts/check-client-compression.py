@@ -194,7 +194,9 @@ def main():
                        '--skip-git-repo-check', '--color', 'never', '-C', str(fixture), '-']
         else:
             command = [client, '-p', prompt, '--output-format', 'stream-json', '--verbose',
-                       '--tools', 'Bash', '--allowedTools', 'Bash(cargo test *)', '--permission-mode', 'dontAsk',
+                       '--tools', 'Bash', '--allowedTools', 'Bash(cargo test *)',
+                       f"Bash(AGENTQ_AGENT=claude AGENTQ_SESSION=* AGENTQ_TOOL_CALL=* '{agentq}' run -- cargo test *)",
+                       '--permission-mode', 'dontAsk',
                        '--max-budget-usd', '2', '--session-id', str(uuid.uuid4())]
         started = time.monotonic()
         code = run(command, fixture, stem, timeout=args.timeout, stdin=prompt if client == 'codex' else None)

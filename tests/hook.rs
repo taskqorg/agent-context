@@ -1,4 +1,4 @@
-//! #132 A2 / agentq.md § 1 `hook`: a client's hook run always answers `{}` and exits 0; a run that failed is recorded
+//! #132 A2 / agentq.md § 1 `hook`: a failed client's hook run answers `{}` and exits 0; a run that failed is recorded
 //! with its error, doctor fails on it, and the next successful run clears it.
 use std::{
     io::Write,

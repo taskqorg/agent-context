@@ -16,5 +16,6 @@ jobs:
       - uses: actions/checkout@v6
       - run: rustup default stable
       - run: python tests/client_compression_check.py
+      - run: python tests/provider_adapter.py
       - run: cargo test --locked
       - run: cargo run --locked -- selftest
