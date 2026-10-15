@@ -24,7 +24,7 @@ class VerdictChain(unittest.TestCase):
         self.record = dict(event_id='event', agent='codex', session='session', adapter='provider',
                            outcome='compressed', ref=self.ref, bytes_in=len(self.original.encode()), bytes_out=200)
         self.rows = [dict(type='thread.started', thread_id='session'),
-                     dict(type='item.completed', item=dict(type='command_execution', id='call', command=check.COMMAND, exit_code=101)),
+                     dict(type='item.completed', item=dict(type='command_execution', id='call', command=check.COMMAND, exit_code=101, aggregated_output=self.marker)),
                      dict(type='item.completed', item=dict(type='agent_message', text=self.marker+' '+self.ref))]
 
     def judge(self, records, rows=None):
