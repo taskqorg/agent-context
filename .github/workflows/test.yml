@@ -15,5 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: rustup default stable
+      - run: python tests/client_compression_check.py
       - run: cargo test --locked
       - run: cargo run --locked -- selftest
