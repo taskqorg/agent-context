@@ -21,7 +21,7 @@ const FIELDS: [(&str, &[&str], bool); 5] = [
     ("plugin", &["enabled"], true),
 ];
 /// Kind, field and value the client supports but the host cannot write yet (CONFIGURATION "Host executor").
-const NO_WRITER: [(&str, &str, &str); 2] = [("claude-code", "routing", "routed"), ("hermes", "plugin", "enabled")];
+const NO_WRITER: [(&str, &str, &str); 1] = [("claude-code", "routing", "routed")];
 const REQUEST: [&str; 10] = ["schema", "operation", "kind", "actor", "workspace", "installation", "generation", "issued_at", "expires_at", "changes"];
 pub const OUTCOMES: [&str; 5] = ["rejected", "accepted", "applied", "partial", "unknown"];
 const PROFILE_STATES: [&str; 4] = ["applied", "unchanged", "restored", "unknown"];
