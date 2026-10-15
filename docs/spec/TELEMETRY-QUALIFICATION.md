@@ -1,6 +1,6 @@
 # Telemetry-led compression qualification
 
-Acceptance procedure for existing PRODUCT R1-R5/R9-R12, VERIFICATION A2/A4/A6 and ACCOUNTING O1-O4. No new collector, service, database, optimizer, telemetry sink or experiment runner. Reuse `check-client-compression.py`, native exporters, `agentq.compress`, the service queue, Langfuse `Agents`, and `taskq profile export` for TaskQ-owned attempts. A procedure is not proof all platforms passed.
+Acceptance procedure for existing PRODUCT R1-R5/R9-R12, VERIFICATION A2/A4/A6 and ACCOUNTING O1-O4. Reuse installation-local SQLite and existing instrumentation; no second collector, service, telemetry store, optimizer, remote sink or experiment runner. Reuse `check-client-compression.py`, native exporters, `agentq.compress`, the service queue, Langfuse `Agents`, and `taskq profile export` for TaskQ-owned attempts. A procedure is not proof all platforms passed.
 
 ## Contract sources loaded
 
@@ -26,7 +26,7 @@ Collection is always on and independent of enrollment, Langfuse keys or a server
 
 TaskQ's common `profile::measure` wrapper records a named operation on scope exit with duration/outcome and optional trace identity; service/CLI initialization does not depend on a connection. Existing instrumentation covers the six product operation names, board kinds, queue transitions and attempt stages. This does not prove every Rust helper is automatically instrumented. Verify each required operation boundary against the product's named operations, rather than adding per-function tests or a second profiler.
 
-Local retention currently differs from the newer target: TaskQ's running implementation retains a bounded 4 MiB `taskq.log`, pruning to its newest half. #1185 is a closed DESIGN task; daily 30-day/64-MiB storage and `taskq profile guide` remain targets. The installed binary rejects `profile guide`; use `profile`, `profile export`, `profile tasks` and `profile board`. Do not treat those unfinished conveniences as absence of local telemetry.
+TaskQ v4.5.0 now retains local SQLite/WAL telemetry under a 30-day/64-MiB bound and embeds `profile guide` (PR #1264). The earlier v4.4.4 log readbacks below are historical evidence, not the current storage behavior.
 
 ## One native scenario, existing telemetry
 
@@ -95,3 +95,20 @@ Reuse existing paired experiment evidence under ACCOUNTING O3. Same task/model/c
 - Claude usage: https://code.claude.com/docs/en/monitoring-usage . Input excludes cache reads/writes; preserve those categories when normalizing. Do not add parent totals and their subcategories.
 
 Native Codex qualification inherits the installed permission and approval settings. The checker must not force `--sandbox`, `--full-auto`, approval flags, model or profile overrides: forcing workspace-write created a sandbox runner failure on a Windows profile already configured for full access. A native launch failure stays unknown and never becomes a compression failure or PASS.
+## Accepted SQLite migration
+
+Owner selected SQLite/WAL for local telemetry in AgentQ and TaskQ. Each product owns its installation-local store; no shared mutable cross-product database, database server, second collector or parallel analytics source. Preserve the existing event IDs, schemas, coverage accounting and local-only `stats=off` semantics. Replace the existing telemetry history rather than dual-writing a new history indefinitely. Legacy readers/writers and rollback need an explicit migration transition; preserve retained data and test idempotent retry, crash/restart, corruption, locking and bounds before deployment. JSONL remains export. AgentQ retains its named per-kind windows until a separately accepted change; TaskQ uses 30 days / 64 MiB. TaskQ SQLite is released in v4.5.0 (PR #1264); AgentQ SQLite remains a candidate until its release and native deployment checks pass.
+
+### AgentQ SQLite transition
+
+`data/telemetry.sqlite3` belongs to the existing data directory, preserved by update and rollback. Bundled SQLite uses application ID `0x4151544d`, schema 1, FULL durability, the lifecycle writer lock and a two-second busy timeout. The database has 28 MiB of pages. Cache spilling is off; a TRUNCATE checkpoint must succeed before a transaction starts, bounding one WAL transaction below 29 MiB and SHM below 1 MiB. Temporary storage is memory-only; no VACUUM copy. The 64 MiB database/sidecar budget excludes preserved legacy JSONL files during transition; legacy history is never implicitly deleted by migration. New records are at most 64 KiB. Pressure pruning marks the removed coverage interval unknown; age retention keeps the existing seven-day event window.
+
+Compression event IDs are migration keys: identical retries are idempotent and conflicting same-ID payloads fail as unknown. Stats and their coverage journal commit together; every local consumer reads the same snapshot. Existing failure markers remain outside the database so an unwritable database can still leave evidence. A marker reset starts after its own second, never proving an earlier lost call in that second. Source corruption, missing coverage and truncated history remain unknown, never empty healthy statistics. Old writers may keep appending JSONL; import on change and preserve old files. Old readers do not see SQLite events: keep this reader or export before downgrading. Local qualification consumes `stats --records`, not private database/filesystem layouts. Optional remote delivery remains a separate check.
+
+### Installed checks and local analysis
+
+`agentq check compression [codex|claude|both]` embeds the existing checker; Python 3.9+, cargo, the selected client and its native login are prerequisites. It uses the checked Headroom Python when available, otherwise an installed interpreter. `--codex PATH`/`--claude PATH` select exact client versions. Windows can locate the installed Codex embedded CLI without PATH edits; that remains a CLI cohort. Codex inherits native permissions/model. Claude uses an explicit command-only fixture allowlist with other tools disabled and `dontAsk`; the report records this scope. Neither test rewrites persistent client settings. Client denial remains unknown.
+
+All existing producer events are retained locally independently of remote delivery; compression keeps its single canonical stats record. Before deleting a sent queue event the sender ensures its local history is durable. A malformed queue event is kept and reported. Resource events preserve their existing same-bucket replacement identity. `agentq telemetry export` prints `agentq.telemetry/1` JSONL: coverage/errors header and typed stats, trace, export-sample, existing-event or legacy-export rows. It contains metadata only and never claims complete collection. `doctor` checks SQLite read-only; missing optional remote keys is normal standalone operation.
+
+Legacy imports use bounded transactions and stable compression IDs; pressure removes oldest event-time rows and advances coverage. Import cannot evict newer observations to replay an older file; old source files stay available. Fixed-position trace IDs keep identical legacy trace observations separate. Export samples preserve the legacy bounded snapshot and new SQLite samples, keeping the latest 256 per operation. The existing service's local event writes run retention; no second process or database. The binary's offline selftest exercises the bundled SQLite store, while paid native checks remain explicit.

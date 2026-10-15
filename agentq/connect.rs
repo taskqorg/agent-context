@@ -265,8 +265,8 @@ fn deliver(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
     };
     let took = start.elapsed();
     crate::profile::trace(data, "export.dashq", "batch", took, class);
+    crate::profile::sample(data, "export.dashq", now, took, class);
     update_state(&q, |st| {
-        crate::profile::sample(st, "export.dashq", now, took, class);
         st["dropped"] = json!(st["dropped"].as_u64().unwrap_or(0) + rejected);
         if accepted > 0 {
             st["connection"]["last_delivery"] = json!(now);

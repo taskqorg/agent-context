@@ -42,17 +42,26 @@ def run(command, cwd, stem, timeout=120, stdin=None):
 
 
 def stats(install):
-    records = {}
-    errors = []
-    folder = install / 'data/stats'
-    for file in sorted(folder.glob('*.jsonl')):
-        try:
-            for line in file.read_text().splitlines():
-                item = json.loads(line)
-                records[item['event_id']] = item
-        except (OSError, ValueError, KeyError) as exc:
-            errors.append(f'{file.name}: {type(exc).__name__}')
-    return records, errors
+    executable = install / ('agentq.exe' if os.name == 'nt' else 'agentq')
+    try:
+        result = subprocess.run([str(executable), 'stats', '--records'], capture_output=True,
+                                text=True, encoding='utf-8', errors='replace', timeout=10,
+                                env=dict(os.environ, AGENTQ_INSTALL=str(install)))
+        if result.returncode:
+            return {}, [f'local stats export failed (exit {result.returncode})']
+        payload = json.loads(result.stdout)
+        if payload.get('schema') != 1 or not isinstance(payload.get('records'), list) or not isinstance(payload.get('errors'), list):
+            return {}, ['unsupported local stats export']
+        records = {}
+        errors = list(payload['errors'])
+        for item in payload['records']:
+            event_id = item['event_id']
+            if event_id in records and records[event_id] != item:
+                errors.append('conflicting local event ID')
+            records[event_id] = item
+        return records, errors
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired) as exc:
+        return {}, [f'local stats export: {type(exc).__name__}']
 
 
 def events(path):
@@ -134,7 +143,7 @@ def judge(client, rows, new, marker, agentq, fixture, output):
             original_ok = False
         # Require model acknowledgement too: local pre-transform tool events alone do not prove model input.
         model_saw_reference = reference in reply and marker in reply
-        report.update(event_id=record['event_id'], bytes_in=record['bytes_in'], bytes_out=record['bytes_out'], ref=reference,
+        report.update(event_id=record['event_id'], core_version=record.get('version'), core_engine_version=record.get('engine_version'), bytes_in=record['bytes_in'], bytes_out=record['bytes_out'], ref=reference,
                       original_recovered=code == 0 and original_ok, model_saw_reference=model_saw_reference)
         if original_ok and model_saw_reference and code == 0:
             report.update(result='pass', reason='native client, smaller model-visible output, correlated stats and complete recovery')
@@ -154,10 +163,25 @@ def codex_command(executable, fixture):
     return [executable, 'exec', '--json', '--skip-git-repo-check', '--color', 'never', '-C', str(fixture), '-']
 
 
+def client_binary(client, explicit=None):
+    if explicit:
+        path = Path(explicit).expanduser()
+        return str(path.resolve()) if path.is_file() else shutil.which(explicit)
+    found = shutil.which(client)
+    if found:
+        return found
+    if client == 'codex' and os.name == 'nt' and os.environ.get('LOCALAPPDATA'):
+        paths = list((Path(os.environ['LOCALAPPDATA']) / 'OpenAI/Codex/bin').glob('*/codex.exe'))
+        return str(max(paths, key=lambda p: p.stat().st_mtime_ns)) if paths else None
+    return None
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog='agentq check compression', description=__doc__)
     parser.add_argument('client', choices=['codex', 'claude', 'both'])
     default = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.local/share'))) / 'agentq'
+    parser.add_argument('--codex', help='Codex CLI executable for a specific version')
+    parser.add_argument('--claude', help='Claude CLI executable for a specific version')
     parser.add_argument('--install', type=Path, default=default)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--timeout', type=int, default=120, choices=range(30, 301), metavar='30..300')
@@ -175,7 +199,8 @@ def main():
                   install=str(install), settings_changed=False, results=[])
     for client in clients:
         print(f'{client}: checking installed integration; logs {output}', flush=True)
-        missing = [c for c in [client, 'cargo'] if not shutil.which(c)]
+        executable = client_binary(client, getattr(args, client))
+        missing = ([client] if not executable else []) + ([] if shutil.which('cargo') else ['cargo'])
         if missing or not agentq.is_file():
             report['results'].append(dict(client=client, result='unknown', reason='missing prerequisite: '+', '.join(missing or ['agentq'])))
             continue
@@ -201,9 +226,9 @@ def main():
                   '(write null if no reference exists). Do not infer or invent a reference.')
         stem = output / client
         if client == 'codex':
-            command = codex_command(client, fixture)
+            command = codex_command(executable, fixture)
         else:
-            command = [client, '-p', prompt, '--output-format', 'stream-json', '--verbose',
+            command = [executable, '-p', prompt, '--output-format', 'stream-json', '--verbose',
                        '--tools', 'Bash', '--allowedTools', 'Bash(cargo test *)',
                        f"Bash(AGENTQ_AGENT=claude AGENTQ_SESSION=* AGENTQ_TOOL_CALL=* '{agentq}' run -- cargo test *)",
                        '--permission-mode', 'dontAsk',
@@ -215,11 +240,13 @@ def main():
         (output / f'{client}-new-records.json').write_text(json.dumps(new, indent=2)+'\n')
         result = judge(client, events(stem.with_suffix('.stdout.jsonl')), new, marker,
                        agentq, fixture, output)
+        result['native_surface'] = 'cli'
+        result['fixture_permission_scope'] = 'inherited native policy' if client == 'codex' else 'command-only fixture allowlist; other tools disabled; dontAsk'
         result['installation'] = (install / 'data/installation').read_text().strip() if (install / 'data/installation').is_file() else None
         result['runtime'] = 'windows' if os.name == 'nt' else 'macos' if sys.platform == 'darwin' else 'wsl' if os.environ.get('WSL_DISTRO_NAME') or Path('/proc/sys/fs/binfmt_misc/WSLInterop').exists() else 'linux'
         result['native_telemetry_delivery'] = telemetry_diagnostic(stem.with_suffix('.stderr.log').read_text(encoding='utf-8', errors='replace'))
         result['observed_usage'] = next((r.get('usage') for r in reversed(events(stem.with_suffix('.stdout.jsonl'))) if r.get('type') == ('turn.completed' if client == 'codex' else 'result')), None)
-        result.update(client_version=subprocess.run([client, '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),
+        result.update(client_version=subprocess.run([executable, '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),
                       agentq_version=subprocess.run([str(agentq), '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),
                       client_exit=code, duration_s=round(time.monotonic()-started, 1),
                       baseline_bytes=raw_bytes, stats_errors=before_errors+after_errors)

@@ -17,11 +17,11 @@
     "sources": "[{installation, runtime, observed: [[from, to]..], dropped, resets: count | [reset unix times], capped, unknown: why the source has no coverage, records: [§3 record | agentq.compress span | agentq.run span | other]}]"
   },
   "producer": {
-    "journal": "data/stats/coverage.json {schema: 1, since, resets: [unix], gaps: [[from, to]..], counts: {\"YYYY-MM-DD\": records}}, written by the § 3 core with each record; a save failing before or at its journal write (lock timeout, unreadable store, failed write) leaves its own data/coverage.failed.* marker (outside data/stats, so an unwritable stats folder still leaves it) until a later written journal resets coverage and removes the markers it saw",
+    "journal": "data/telemetry.sqlite3 meta.journal {schema:1,since,resets,gaps,counts}; event and coverage commit atomically. A failed write leaves data/coverage.failed.* outside SQLite until a later committed reset clears only markers it saw. Legacy coverage.json is imported and preserved.",
     "since": "time of the first record the store holds without loss; a missing journal over held records or an unreadable journal restarts it at the next second (the reset second stays unproven) and appends a reset",
-    "gaps": "a record append that failed: [time, time + 1)",
-    "counts": "records each held day file data/stats/YYYY-MM-DD.jsonl must contain: +1 per appended record, less the lines retention trims from the oldest file (an earlier loss stays visible), rebuilt from the lines held when the journal restarts",
-    "local source": "observed = [max(since, now - 7 days), now + 1) less gaps, always with unknown \"calls that wrote no evidence are undetectable\" (a call whose record and marker writes both fail leaves nothing), so local totals are lower bounds; no stats folder, no journal, an unreadable journal or stats file, a coverage.failed.* marker (\"stats write failed\") or a day file with fewer lines than its count (\"stats records lost\"): observed [] and unknown with that reason",
+    "gaps": "Imported legacy failed-append intervals [time,time+1). SQLite failures roll back both event and journal and use external failure markers.",
+    "counts": "Per-day canonical SQLite stats rows: +1 per new unique event ID, less intentional retention/pressure removals. Identical retries add nothing; conflicting IDs stay unknown. Counts rebuild from retained rows on reset. Unexpected row loss remains unknown.",
+    "local source": "observed = [max(since, now - 7 days), now + 1) less gaps, always with unknown \"calls that wrote no evidence are undetectable\" (a call whose record and marker writes both fail leaves nothing), so local totals are lower bounds; no stats store, no journal, an unreadable journal or store, a coverage.failed.* marker (\"stats write failed\") or a retained rows fewer than their count (\"stats records lost\"): observed [] and unknown with that reason",
     "exported source": "observed [] and unknown \"exported events carry no coverage\"; a queue folder adds its dropped count"
   },
   "output": {

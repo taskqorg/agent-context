@@ -102,8 +102,17 @@ def main():
             if smaller:
                 correct &= ('180 passed' in transformed and 'FAIL' not in transformed and '1 failed' not in transformed) if exit_code == 0 else ('AGENTQ_BENCH_ERROR' in transformed and ('1 FAIL' in transformed or '1 failed' in transformed))
             report['results'].append(dict(scenario=name, result='pass' if returncode == 0 and correct and envelope_ok else 'fail', bytes_in=len(text.encode()), bytes_out=len(transformed.encode()), original_recovered=recovery, fixture_sha256=hashlib.sha256(text.encode()).hexdigest(), duration_ms=round(1000*(time.monotonic()-started))))
+        exported = subprocess.run([str(binary), 'telemetry', 'export'], env=env, capture_output=True, text=True, timeout=10)
+        rows = [json.loads(line) for line in exported.stdout.splitlines()] if exported.returncode == 0 else []
+        records = [row['record'] for row in rows[1:] if row.get('kind') == 'stats']
+        expected = {case[0] for case in cases}
+        observed = {record.get('tool_call') for record in records if record.get('session') == 'benchmark'}
+        report['local_telemetry'] = dict(result='pass' if rows and rows[0].get('schema') == 'agentq.telemetry/1'
+                                       and rows[0].get('errors') == {} and len(records) == len(cases) and observed == expected else 'fail',
+                                       records=len(records), missing_calls=sorted(expected-observed),
+                                       retrieval_events=sum(row.get('kind') == 'event' and row.get('record', {}).get('name') == 'agentq.retrieval' for row in rows[1:]))
         report['binary_version'] = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=10).stdout.strip()
-    report['result'] = 'pass' if all(r['result']=='pass' for r in report['results']) else 'fail'
+    report['result'] = 'pass' if all(r['result']=='pass' for r in report['results']) and report['local_telemetry']['result'] == 'pass' else 'fail'
     (output / 'report.json').write_text(json.dumps(report, indent=2)+'\n')
     for row in report['results']:
         print(f"{row['scenario']}: {row['result'].upper()} {row['bytes_in']} -> {row['bytes_out']} bytes")

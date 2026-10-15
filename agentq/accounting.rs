@@ -373,7 +373,7 @@ pub const UNPROVEN: &str = "calls that wrote no evidence are undetectable";
 /// (within retention) through the second `now`, less its gaps, always with reason `UNPROVEN`, so totals are lower
 /// bounds; without a readable journal it is unknown.
 
-pub fn local(data: &Path, now: u64) -> Value {
+pub(crate) fn legacy(data: &Path, now: u64) -> Value {
     let dir = data.join("stats");
     let mut records = vec![];
     let mut unknown = None;
@@ -381,7 +381,7 @@ pub fn local(data: &Path, now: u64) -> Value {
     match std::fs::read_dir(&dir) {
         Ok(es) => {
             for e in es.flatten() {
-                if !e.file_name().to_string_lossy().ends_with(".jsonl") {
+                if !crate::compression::stats_date(&e.file_name().to_string_lossy()).is_some_and(|day|day>=crate::date(now.saturating_sub(RETENTION)).as_str()) {
                     continue;
                 }
                 match std::fs::read_to_string(e.path()) {
@@ -397,6 +397,51 @@ pub fn local(data: &Path, now: u64) -> Value {
         Err(_) => unknown = Some("stats unreadable"),
     }
     let journal = std::fs::read(dir.join(crate::compression::COVERAGE)).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    let mut observed = vec![];
+    let mut resets = vec![];
+    if unknown.is_none() && !crate::compression::failed(data).is_empty() {
+        unknown = Some("stats write failed");
+    }
+    match journal.filter(crate::compression::journal_valid) {
+        _ if unknown.is_some() => {}
+        // Fewer lines than the producer wrote: a deleted or truncated day file. Its calls are unprovable, never zero.
+        Some(j) if j["counts"].as_object().into_iter().flatten().any(|(d, n)| d.as_str()>=crate::date(now.saturating_sub(RETENTION)).as_str() && held.get(d).copied().unwrap_or(0) < n.as_u64().unwrap_or(0)) => {
+            unknown = Some("stats records lost")
+        }
+        Some(j) => {
+            let mut at = j["since"].as_u64().unwrap_or(u64::MAX).max(now.saturating_sub(RETENTION));
+            let mut gaps: Vec<(u64, u64)> = j["gaps"].as_array().into_iter().flatten().filter_map(|g| g[0].as_u64().zip(g[1].as_u64())).collect();
+            gaps.sort();
+            for (a, b) in gaps.into_iter().chain([(now + 1, now + 1)]) {
+                let a = a.min(now + 1);
+                if a > at {
+                    observed.push(json!([at, a]));
+                }
+                at = at.max(b);
+            }
+            resets = j["resets"].as_array().cloned().unwrap_or_default();
+            // A call that can write neither its record nor a failure marker leaves no evidence at all, so the journal
+            // shows only what was written: lower bounds, never complete or zero.
+            unknown = Some(UNPROVEN);
+        }
+        None => unknown = Some(if dir.join(crate::compression::COVERAGE).exists() { "coverage journal unreadable" } else { "no coverage journal" }),
+    }
+    let installation = std::fs::read_to_string(data.join("installation")).ok().map(|s| s.trim().to_string());
+    json!({"installation": installation, "runtime": crate::telemetry::runtime(), "observed": observed, "resets": resets,
+        "unknown": unknown, "records": records})
+}
+
+/// Local records and coverage from one SQLite snapshot, with the existing failure-marker semantics.
+pub fn local(data: &Path, now: u64) -> Value {
+    let snapshot = match crate::local::snapshot(data) {
+        Ok(v) => v,
+        Err(e) => return json!({"installation":null,"runtime":crate::telemetry::runtime(),"observed":[],"resets":[],"unknown":if e=="stats unknown: no stats file" { "no stats recorded".to_string() } else { e },"records":[]}),
+    };
+    let records = snapshot["records"].clone();
+    let mut unknown = snapshot["error"].as_str().or(snapshot["unknown"].as_str());
+    let held: std::collections::HashMap<String,u64> = snapshot["held"].as_object().into_iter().flatten()
+        .filter_map(|(k,v)| v.as_u64().map(|n|(k.clone(),n))).collect();
+    let journal = (!snapshot["journal"].is_null()).then(||snapshot["journal"].clone());
     let mut observed = vec![];
     let mut resets = vec![];
     if unknown.is_none() && !crate::compression::failed(data).is_empty() {
@@ -424,7 +469,7 @@ pub fn local(data: &Path, now: u64) -> Value {
             // shows only what was written: lower bounds, never complete or zero.
             unknown = Some(UNPROVEN);
         }
-        None => unknown = Some(if dir.join(crate::compression::COVERAGE).exists() { "coverage journal unreadable" } else { "no coverage journal" }),
+        None => unknown = Some(if snapshot["journal"].is_null() { "no coverage journal" } else { "coverage journal unreadable" }),
     }
     let installation = std::fs::read_to_string(data.join("installation")).ok().map(|s| s.trim().to_string());
     json!({"installation": installation, "runtime": crate::telemetry::runtime(), "observed": observed, "resets": resets,
