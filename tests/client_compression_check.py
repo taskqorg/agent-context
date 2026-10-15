@@ -50,6 +50,8 @@ class VerdictChain(unittest.TestCase):
             return 0
         with patch.object(check, 'run', side_effect=recover):
             self.assertEqual(self.judge([self.record])['result'], 'pass')
+            powershell = [self.rows[0], dict(type='item.completed', item=dict(self.rows[1]['item'], exit_code=1)), self.rows[-1]]
+            self.assertEqual(self.judge([self.record], powershell)['result'], 'pass', 'PowerShell normalizes the failed Cargo exit to 1')
             self.assertEqual(self.judge([self.record], self.rows[:-1])['result'], 'fail')
             self.assertEqual(self.judge([dict(self.record, bytes_in=99)])['result'], 'fail')
 

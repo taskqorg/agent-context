@@ -38,6 +38,8 @@ Status: decisions for implementation. The legacy Node package `@alexkirs/agent-c
 | `agentq uninstall [--dry-run]` | § 9. |
 | `agentq uninstall --legacy [--dry-run]` | § 10: removes the legacy install; none left: `already removed`. |
 
+The intentional Cargo fixture failure may surface as 101 or shell-normalized 1 (PowerShell); retain the observed shell exit. Both need the unique fixture marker and complete original output. An exit code alone never proves fixture execution.
+
 - Output: one line per outcome; errors `Error: <problem>` then `Next: <action>`, at most 2 lines. `--json` prints the same data as JSON.
 - Dropped from the Node CLI: `install`, `rollback`, `set-key`, `provider`, `headroom`, `gateway`, `monitor`, `proxy`, `retrieval`, `probe`, `plugin-path`, `verify`, `connect`, `set-langfuse`, `lifecycle`, `native-hook`, `tools`, `incidents report|enable|disable`. Their duties live in the commands above or are dropped in § 11.
 
