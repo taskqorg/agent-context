@@ -5,6 +5,7 @@ mod configure;
 mod compression;
 mod connect;
 mod engines;
+mod hooks;
 mod executor;
 mod legacy;
 mod mcp;
@@ -110,9 +111,11 @@ fn main() {
             let data = t.install.join("data");
             // println! panics on a closed stdout (exit 101); a hook always answers `{}` and exits 0, even after a
             // stdin failure, and records every failure of the run
-            let read = std::io::read_to_string(std::io::stdin()).err().map(|e| format!("stdin: {e}"));
-            let wrote = writeln!(std::io::stdout(), "{{}}").err().map(|e| format!("stdout: {e}"));
-            let errors: Vec<String> = read.into_iter().chain(wrote).collect();
+            let input = std::io::read_to_string(std::io::stdin());
+            let response = input.as_ref().map_err(|e| format!("stdin: {e}")).and_then(|s| hooks::response(agent,event,s,&t.install.join(t.exe_name())));
+            let payload = response.as_ref().cloned().unwrap_or_else(|_| serde_json::json!({}));
+            let wrote = writeln!(std::io::stdout(), "{payload}").err().map(|e| format!("stdout: {e}"));
+            let errors: Vec<String> = response.err().into_iter().chain(wrote).collect();
             if errors.is_empty() {
                 executor::stamp(&data, agent, event, now());
             } else {

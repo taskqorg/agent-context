@@ -621,7 +621,7 @@ fn save_locked(data: &Path, c: &Value, r: &Value, journaled: &mut bool) -> Resul
     Ok(())
 }
 
-/// Hook/provider recipes have no paired qualification yet. No command in JSON is ever executed.
+/// Reuse the qualified RTK capture replay; no command in JSON is ever executed.
 pub fn compress(data: &Path, agent: &str, input: &str) -> Result<Value, String> {
     let start = Instant::now();
     if agent.is_empty() {
@@ -650,35 +650,57 @@ pub fn compress(data: &Path, agent: &str, input: &str) -> Result<Value, String> 
             return Err(format!("{key} requires string or null"));
         }
     }
+    if !v["exit_code"].is_null() && v["exit_code"].as_i64().and_then(|n| i32::try_from(n).ok()).is_none() {
+        return Err("exit_code requires a 32-bit integer or null".into());
+    }
     let mut r = record(agent, adapter, tool, &v, text.len(), crate::now());
-    if ["terminal", "shell", "exec_command"].contains(&tool) {
-        let words: Vec<String> = v["command"]
-            .as_str()
-            .unwrap_or("")
-            .split_ascii_whitespace()
-            .map(String::from)
-            .collect();
-        if crate::engines::qualified(&words) {
-            r["runner"] = json!(if words[0] == "pytest" {
-                "pytest".into()
-            } else {
-                words[..2].join(" ")
-            });
-        }
+    let words: Vec<String> = v["command"].as_str().unwrap_or("").split_ascii_whitespace().map(String::from).collect();
+    let qualified = ["terminal", "shell", "exec_command"].contains(&tool) && crate::engines::qualified(&words);
+    if qualified {
+        r["runner"] = json!(if words[0] == "pytest" { "pytest".into() } else { words[..2].join(" ") });
     }
     let c = config(data);
-    match &c {
-        Ok(c) => r["reason"] = json!(guard(c, agent, text.as_bytes()).unwrap_or("not_qualified")),
-        Err(_) => {
-            r["outcome"] = json!("failed");
-            r["reason"] = json!("error");
+    let mut output = text.to_owned();
+    let mut reference = Value::Null;
+    let mut reason = match &c {
+        Ok(c) => guard(c, agent, text.as_bytes()).unwrap_or("not_qualified"),
+        Err(_) => "error",
+    };
+    if reason == "not_qualified" && qualified {
+        if let (Some(install), Some(code)) = (data.parent(), v["exit_code"].as_i64()) {
+            let id = crate::mcp::new_id();
+            r["engine"] = json!("rtk");
+            r["engine_version"] = json!(crate::engines::RTK);
+            match filter(install, &words, text.as_bytes(), b"", code as i32, &id) {
+                Ok(bytes) => {
+                    let original = format!("rtk:{id}");
+                    match String::from_utf8(bytes) {
+                        Ok(candidate) => {
+                            let candidate = format!("{candidate}\n[Agent Context original ref: {original}; use get_original.]\n");
+                            if candidate.len() < text.len() {
+                                output = candidate; reference = json!(original); reason = "compressed";
+                            } else { reason = "not_smaller"; }
+                        }
+                        Err(_) => reason = "error",
+                    }
+                }
+                Err(why) => reason = why,
+            }
+            let _ = std::fs::remove_dir_all(data.join("runs").join(&id).join("bin"));
+            crate::engines::prune(&data.join("runs"));
         }
     }
+    r["ref"] = reference.clone();
+    r["reason"] = json!(reason);
+    r["outcome"] = json!(if reason == "compressed" { "compressed" } else if ["error", "timeout", "no_engine"].contains(&reason) { "failed" } else { "passed" });
+    r["bytes_out"] = json!(output.len());
+    r["est_tokens_out"] = json!(output.len().div_ceil(4));
     r["duration_ms"] = json!(start.elapsed().as_millis() as u64);
     if let Err(e) = save(data, &c.unwrap_or(Value::Null), &r) {
-        eprintln!("agentq: stats unknown: {e}");
+        eprintln!("agentq: stats unknown: {e}; original preserved");
+        return Ok(json!({"text":text,"ref":null}));
     }
-    Ok(json!({"text":text,"ref":null}))
+    Ok(json!({"text":output,"ref":reference}))
 }
 
 /// Valid stats records with `time >= cutoff`; one unreadable record makes the whole set unknown.

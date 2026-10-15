@@ -23,6 +23,10 @@ The profiling chain (`agentq/profile.rs` tests, task [#122](https://github.com/t
 
 Include actual Claude success/failure hook formats and Codex string/typed/nested Responses output; validate protected fields, HTTP/SSE/WebSocket where claimed and cancellation. Vendor tests alone do not qualify our adapter. Shared evidence rules: [specq verification](https://github.com/taskqorg/specq/blob/main/engineering/verification.md).
 
+## Automatic compression matrix
+
+R3/R4: [compression qualification](COMPRESSION-BENCHMARK.md) records the reused research, offline real-engine benchmark, native carrier chain and opt-in installed-client check. `python tests/provider_adapter.py` runs in CI without paid clients.
+
 ## Installed CLI compression check
 
 A2: `python3 scripts/check-client-compression.py both` tests the installed Codex CLI and Claude Code CLI with their existing configuration and authentication. Native `cargo test` must run through the automatic adapter; explicit `agentq run` in the prompt cannot qualify it. PASS requires a new successful compression record matching the native client session, smaller bytes, the model quoting its recovery reference and unique failure marker, and `get_original` returning all fixture cases and the measured original byte length. Missing prerequisites or incomplete execution read unknown, never pass. The optional check uses paid model access; CI runs `python tests/client_compression_check.py` to check false-positive prevention without a model.

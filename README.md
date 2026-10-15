@@ -40,3 +40,5 @@ Exit 0: both integrations proved compression. Exit 1: failed or unproved; `repor
 The Node package `@alexkirs/agent-context` (`agent-context` CLI, gateway) is retired under [agentq.md § 10](agentq.md#10-legacy-node-install); its code is gone from this repository. `agentq onboard --yes` removes an installed copy through its own uninstall; `agentq uninstall --legacy` does the same alone.
 
 Shared rules: [specq](https://github.com/taskqorg/specq).
+
+Compression qualification: [benchmark and native-client checks](docs/spec/COMPRESSION-BENCHMARK.md).

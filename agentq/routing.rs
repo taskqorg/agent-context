@@ -66,6 +66,27 @@ pub fn await_proxies(ports: &[u16], limit: Duration, restart: &mut dyn FnMut()) 
     silent.into_iter().filter(|p| !answers_within(*p, limit)).collect()
 }
 
+/// Package-owned extension assets; the pinned Headroom installation stays immutable.
+fn provider_adapter(install: &Path) -> Result<std::path::PathBuf, String> {
+    let dir = install.join("releases").join(crate::VERSION).join("provider");
+    let meta = dir.join(format!("agentq_provider-{}.dist-info", crate::VERSION));
+    std::fs::create_dir_all(&meta).map_err(|e| e.to_string())?;
+    let files = [
+        (dir.join("agentq_provider.py"), include_str!("../integrations/provider/agentq_provider.py").to_string()),
+        (meta.join("METADATA"), format!("Metadata-Version: 2.1\nName: agentq-provider\nVersion: {}\n", crate::VERSION)),
+        (meta.join("entry_points.txt"), "[headroom.proxy_extension]\nagentq = agentq_provider:install\n".into()),
+    ];
+    for (path, text) in files {
+        match std::fs::read_to_string(&path) {
+            Ok(old) if old == text => {},
+            Ok(_) => return Err("immutable provider assets differ".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => write_atomic(&path, &text)?,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(dir)
+}
+
 /// Service side: keep one passthrough headroom worker per fixed port; a dead or missing one is started again.
 pub fn supervise(install: &Path, workers: &mut Vec<(u16, Child)>) {
     workers.retain_mut(|(_, c)| matches!(c.try_wait(), Ok(None)));
@@ -75,9 +96,14 @@ pub fn supervise(install: &Path, workers: &mut Vec<(u16, Child)>) {
         if workers.iter().any(|w| w.0 == p) {
             continue;
         }
-        // compression stays off (§ 3): routing and usage observation only; no beacon upload or quota polling
-        let args = ["proxy", "--host", "127.0.0.1", "--port", &p.to_string(), "--no-optimize", "--no-cache", "--no-rate-limit", "--no-ccr", "--no-subscription-tracking"];
-        let started = coreq::quiet(Command::new(&exe).args(args))
+        // Headroom keeps history passthrough; our supported extension adapts new tool results only.
+        let adapter = match provider_adapter(install) { Ok(p) => p, Err(e) => { eprintln!("agentq: provider adapter: {e}"); continue; } };
+        let python = exe.parent().unwrap().join(format!("python{}", std::env::consts::EXE_SUFFIX));
+        let bootstrap = "import sys; sys.path.insert(0,sys.argv.pop(1)); from headroom.cli import main; main()";
+        let args = ["proxy", "--host", "127.0.0.1", "--port", &p.to_string(), "--no-optimize", "--no-cache", "--no-rate-limit", "--no-ccr", "--no-subscription-tracking", "--proxy-extension", "agentq"];
+        let started = coreq::quiet(Command::new(&python).args(["-I", "-c", bootstrap]).arg(&adapter).args(args))
+            .env("AGENTQ_INSTALL", install)
+            .env("AGENTQ_BINARY", install.join(format!("agentq{}", std::env::consts::EXE_SUFFIX)))
             .env("HEADROOM_BEACON", "off")
             .env("DO_NOT_TRACK", "1")
             .env("HEADROOM_TELEMETRY", "off")
