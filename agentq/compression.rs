@@ -436,7 +436,7 @@ fn record(agent: &str, adapter: &str, tool: &str, input: &Value, bytes: usize, a
         "version":env!("CARGO_PKG_VERSION"),"engine_version":null})
 }
 
-fn stats_date(name: &str) -> Option<&str> {
+pub(crate) fn stats_date(name: &str) -> Option<&str> {
     let d = name.strip_suffix(".jsonl")?;
     (d.len() == 10
         && d.bytes().enumerate().all(|(i, b)| {
@@ -473,7 +473,7 @@ fn mark_failed(data: &Path, at: u64) {
 /// Coverage proven by this store: `since` is its first record; every later call wrote a record unless `gaps` holds its
 /// second; `counts` holds the records each day file must still contain, so a lost or truncated file is detectable. A missing journal over held records, or an unreadable one, restarts `since` at the next second and adds a reset: the
 /// older records stay countable but unproven, and `counts` restarts from the records held now.
-fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64, reset: u64) -> Value {
+pub(crate) fn coverage(journal: Option<&[u8]>, held: bool, lines: &serde_json::Map<String, Value>, at: u64, reset: u64) -> Value {
     let fresh = |since: u64, resets: Vec<u64>| json!({"schema":1,"since":since,"resets":resets,"gaps":[],"counts":lines});
     // A reset proves only the next second on: an earlier call in its own second may already be lost.
     match journal {
@@ -517,93 +517,12 @@ fn save(data: &Path, c: &Value, r: &Value) -> Result<(), String> {
 
 fn save_locked(data: &Path, c: &Value, r: &Value, journaled: &mut bool) -> Result<(), String> {
     let _lock = crate::executor::lock(data)?;
-    let dir = data.join("stats");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| e.to_string())?;
-    }
     let at = r["time"].as_u64().ok_or("missing time")?;
-    let cutoff = at.saturating_sub(7 * 86400);
-    let oldest = crate::date(cutoff);
-    let mut held = false;
-    let mut trimmed = None;
-    // ponytail: reads every held day file (at most 8) on each record; count only on a reset if this gets slow.
-    let mut lines = serde_json::Map::new();
-    for e in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-        let e = e.map_err(|e| e.to_string())?;
-        let name = e.file_name().to_string_lossy().into_owned();
-        held |= stats_date(&name).is_some_and(|d| d >= oldest.as_str());
-        if stats_date(&name).is_some_and(|d| d < oldest.as_str()) {
-            std::fs::remove_file(e.path()).map_err(|e| e.to_string())?;
-        } else if stats_date(&name) == Some(oldest.as_str()) {
-            let s = std::fs::read_to_string(e.path()).map_err(|e| e.to_string())?;
-            let mut kept = String::new();
-            for line in s.lines() {
-                let v: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-                if v["time"].as_u64().ok_or("stats unknown: missing time")? >= cutoff {
-                    kept.push_str(line);
-                    kept.push('\n');
-                }
-            }
-            if kept.len() != s.len() {
-                coreq::write_atomic(&e.path(), &kept)?;
-                trimmed = Some(s.lines().count() - kept.lines().count());
-            }
-            // Pre-trim count: the trim below subtracts only removed lines, so an earlier loss survives retention.
-            lines.insert(oldest.clone(), json!(s.lines().count()));
-        } else if let Some(d) = stats_date(&name) {
-            if let Ok(s) = std::fs::read_to_string(e.path()) {
-                lines.insert(d.to_string(), json!(s.lines().count()));
-            }
-        }
-    }
-    let journal = dir.join(COVERAGE);
-    let before = std::fs::read(&journal).ok();
-    // Markers written after this read belong to calls not yet covered by this reset and stay.
     let failed = failed(data);
-    // A stale journal after a failed save proves nothing; an empty one parses as unreadable and resets.
-    let proven = if failed.is_empty() { before.as_deref() } else { Some(&b""[..]) };
-    // A reset starts after now, not after this record's time: a locked-out call may be newer than this one.
-    let mut cov = coverage(proven, held, &lines, at, crate::now().max(at));
-    let appended = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(format!("{}.jsonl", crate::date(at))))
-        .and_then(|mut f| writeln!(f, "{r}"))
-        .map_err(|e| e.to_string());
-    let counts = cov["counts"].as_object_mut().unwrap();
-    counts.retain(|d, _| d.as_str() >= oldest.as_str());
-    if let Some(n) = trimmed {
-        let held = counts.get(&oldest).and_then(Value::as_u64).unwrap_or(0);
-        counts.insert(oldest.clone(), json!(held.saturating_sub(n as u64)));
-    }
-    if appended.is_ok() {
-        let day = crate::date(at);
-        let n = counts.get(&day).and_then(Value::as_u64).unwrap_or(0);
-        counts.insert(day, json!(n + 1));
-    } else {
-        cov["gaps"].as_array_mut().unwrap().push(json!([at, at + 1]));
-    }
-    for k in ["resets", "gaps"] {
-        cov[k].as_array_mut().unwrap().retain(|v| {
-            v.as_u64().or_else(|| v[1].as_u64()).is_some_and(|t| t > cutoff)
-        });
-    }
-    let after = cov.to_string();
-    if before.as_deref() != Some(after.as_bytes()) {
-        match coreq::write_atomic(&journal, &after) {
-            Ok(()) => failed.iter().for_each(|f| _ = std::fs::remove_file(f)),
-            Err(e) => {
-                eprintln!("agentq: stats coverage unknown: {e}");
-                mark_failed(data, at);
-            }
-        }
-    }
+    crate::local::save_locked(data, r, !failed.is_empty())?;
     *journaled = true;
-    appended?;
+    for marker in failed { let _ = std::fs::remove_file(marker); }
+    drop(_lock);
     if c["stats"] != "off" {
         let mut a = serde_json::Map::new();
         for (k, v) in r.as_object().ok_or("invalid record")? {
@@ -716,81 +635,61 @@ pub fn compress(data: &Path, agent: &str, input: &str) -> Result<Value, String> 
     Ok(json!({"text":output,"ref":reference}))
 }
 
-/// Valid stats records with `time >= cutoff`; one unreadable record makes the whole set unknown.
+pub(crate) fn validate_record(v: &Value) -> Result<(), String> {
+    v["agent"].as_str().ok_or("stats unknown: missing agent")?;
+    v["engine"]
+        .as_str()
+        .filter(|e| ["none", "rtk", "headroom"].contains(e))
+        .ok_or("stats unknown: invalid engine")?;
+    v["outcome"]
+        .as_str()
+        .filter(|o| ["compressed", "passed", "failed"].contains(o))
+        .ok_or("stats unknown: invalid outcome")?;
+    if v["schema"] != 1 {
+        return Err("stats unknown: unsupported schema".into());
+    }
+    if !v["event_id"]
+        .as_str()
+        .is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        || ["time", "duration_ms"]
+            .iter()
+            .any(|k| v[k].as_u64().is_none())
+        || ["bytes_in", "bytes_out", "est_tokens_in", "est_tokens_out"]
+            .iter()
+            .any(|k| {
+                v.get(k).is_none()
+                    || (v[k].as_u64().is_none()
+                        && !(v["adapter"] == "run"
+                            && v[k].is_null()
+                            && v["outcome"] != "compressed"))
+            })
+        || !v["adapter"]
+            .as_str()
+            .is_some_and(|s| ["run", "hook", "provider"].contains(&s))
+        || v["tool"].as_str().is_none()
+        || !v["reason"]
+            .as_str()
+            .and_then(crate::accounting::outcome_of)
+            .is_some_and(|o| v["outcome"] == o)
+        || ["runner", "ref", "session", "turn", "tool_call"]
+            .iter()
+            .any(|k| v.get(k).is_none() || (!v[k].is_null() && !v[k].is_string()))
+        || (v["adapter"] == "run" && v["exit_code"].as_i64().is_none())
+    {
+        return Err("stats unknown: malformed record shape".into());
+    }
+    Ok(())
+}
+
 pub fn records(data: &Path, cutoff: u64) -> Result<Vec<Value>, String> {
-    let dir = data.join("stats");
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err("stats unknown: no stats file".into());
-        }
-        Err(e) => return Err(format!("stats unknown: {e}")),
-    };
+    let snapshot = crate::local::snapshot(data)?;
+    if let Some(reason) = snapshot["error"].as_str() { return Err(format!("stats unknown: {reason}")); }
     let mut out = vec![];
-    let oldest = crate::date(cutoff);
-    let mut files = 0;
-    for e in entries {
-        let e = e.map_err(|e| format!("stats unknown: {e}"))?;
-        let n = e.file_name().to_string_lossy().into_owned();
-        if !stats_date(&n).is_some_and(|d| d >= oldest.as_str()) {
-            continue;
-        }
-        files += 1;
-        let s = std::fs::read_to_string(e.path()).map_err(|e| format!("stats unknown: {e}"))?;
-        for line in s.lines() {
-            let v: Value = serde_json::from_str(line)
-                .map_err(|e| format!("stats unknown: malformed record: {e}"))?;
-            if v["time"].as_u64().ok_or("stats unknown: missing time")? < cutoff {
-                continue;
-            }
-            v["agent"].as_str().ok_or("stats unknown: missing agent")?;
-            v["engine"]
-                .as_str()
-                .filter(|e| ["none", "rtk", "headroom"].contains(e))
-                .ok_or("stats unknown: invalid engine")?;
-            v["outcome"]
-                .as_str()
-                .filter(|o| ["compressed", "passed", "failed"].contains(o))
-                .ok_or("stats unknown: invalid outcome")?;
-            if v["schema"] != 1 {
-                return Err("stats unknown: unsupported schema".into());
-            }
-            if !v["event_id"]
-                .as_str()
-                .is_some_and(|s| s.len() == 32 && s.bytes().all(|b| b.is_ascii_hexdigit()))
-                || ["time", "duration_ms"]
-                    .iter()
-                    .any(|k| v[k].as_u64().is_none())
-                || ["bytes_in", "bytes_out", "est_tokens_in", "est_tokens_out"]
-                    .iter()
-                    .any(|k| {
-                        v.get(k).is_none()
-                            || (v[k].as_u64().is_none()
-                                && !(v["adapter"] == "run"
-                                    && v[k].is_null()
-                                    && v["outcome"] != "compressed"))
-                    })
-                || !v["adapter"]
-                    .as_str()
-                    .is_some_and(|s| ["run", "hook", "provider"].contains(&s))
-                || v["tool"].as_str().is_none()
-                || !v["reason"]
-                    .as_str()
-                    .and_then(crate::accounting::outcome_of)
-                    .is_some_and(|o| v["outcome"] == o)
-                || ["runner", "ref", "session", "turn", "tool_call"]
-                    .iter()
-                    .any(|k| v.get(k).is_none() || (!v[k].is_null() && !v[k].is_string()))
-                || (v["adapter"] == "run" && v["exit_code"].as_i64().is_none())
-            {
-                return Err("stats unknown: malformed record shape".into());
-            }
-            out.push(v);
-        }
+    for v in snapshot["records"].as_array().ok_or("stats unknown: invalid snapshot")? {
+        validate_record(v)?;
+        if v["time"].as_u64().is_some_and(|at| at >= cutoff) { out.push(v.clone()); }
     }
-    if files == 0 {
-        return Err("stats unknown: no current stats file".into());
-    }
+    if out.is_empty() { return Err("stats unknown: no current stats file".into()); }
     Ok(out)
 }
 
@@ -868,14 +767,13 @@ mod tests {
                 compress(&d, "hermes", &input.to_string()).unwrap(),
                 json!({"text":text,"ref":null})
             );
-            let s = std::fs::read_to_string(
-                d.join("stats")
-                    .join(format!("{}.jsonl", crate::date(crate::now()))),
-            )
-            .unwrap();
-            let r: Value = serde_json::from_str(s.lines().last().unwrap()).unwrap();
+            let snapshot = crate::local::snapshot(&d).unwrap();
+            let r = snapshot["records"].as_array().unwrap().last().unwrap();
+            let s = r.to_string();
             assert_eq!(r["reason"], why);
             assert_eq!(r.as_object().unwrap().len(), 21);
+            assert_eq!(r["version"],crate::VERSION);
+            assert!(r["engine_version"].is_null());
             assert!(!s.contains("secret") && !s.contains(text));
         }
         assert_eq!(stats(&d).unwrap()["groups"][0]["calls"], 3);
@@ -896,6 +794,7 @@ mod tests {
             .join(format!("{}.jsonl", crate::date(at - 8 * 86400)));
         // Align expired data to the boundary partition even when UTC is within two minutes of midnight.
         expired["time"] = json!(at - 7 * 86400 - 120);
+        std::fs::create_dir_all(d.join("stats")).unwrap();
         std::fs::write(&boundary, format!("{expired}\n")).unwrap();
         std::fs::write(&ancient, "expired data\n").unwrap();
         assert_eq!(stats(&d).unwrap()["groups"][0]["calls"], 3);
@@ -909,8 +808,9 @@ mod tests {
             compress(&d, "codex", &input.to_string()).unwrap()["text"],
             "result"
         );
-        assert!(!ancient.exists());
-        assert!(std::fs::read_to_string(&boundary).unwrap().is_empty());
+        assert!(ancient.exists(), "migration preserves legacy files");
+        assert_eq!(std::fs::read_to_string(&boundary).unwrap(),format!("{expired}\n"));
+        assert!(crate::local::snapshot(&d).unwrap()["records"].as_array().unwrap().iter().all(|r|r["time"].as_u64().unwrap()>=at-7*86400));
         let q: Vec<_> = std::fs::read_dir(d.join("queue"))
             .unwrap()
             .flatten()
@@ -955,7 +855,7 @@ mod tests {
         .unwrap();
         let input = json!({"text":"result","adapter":"hook","tool":"terminal"});
         compress(&d, "hermes", &input.to_string()).unwrap();
-        let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
+        let j = crate::local::snapshot(&d).unwrap()["journal"].clone();
         assert_eq!(j["counts"][&day], 2, "{j}");
         let a = crate::accounting::local(&d, crate::now());
         assert!(a.to_string().contains("stats records lost"), "{a}");
@@ -971,20 +871,19 @@ mod tests {
         std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
         let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
         compress(&d, "hermes", &input).unwrap();
-        // write_atomic stages coverage.tmp; a directory there fails every journal write on every platform.
-        let block = stats_dir.join("coverage.tmp");
-        std::fs::create_dir(&block).unwrap();
+        let db = rusqlite::Connection::open(d.join("telemetry.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_journal BEFORE UPDATE ON meta WHEN new.key='journal' BEGIN SELECT RAISE(ABORT,'invented journal failure'); END;").unwrap();
         compress(&d, "hermes", &input).unwrap();
-        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
-        let s = std::fs::read_to_string(&day).unwrap();
-        std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
+        assert_eq!(crate::local::snapshot(&d).unwrap()["records"].as_array().unwrap().len(),1,"failed coverage update rolls back the event");
+        db.execute("DELETE FROM events WHERE kind='stats'",[]).unwrap();
         let a = crate::accounting::local(&d, crate::now());
         assert_eq!(a["unknown"], "stats write failed", "{a}");
         // The next written journal resets coverage and clears the marker.
-        std::fs::remove_dir(&block).unwrap();
+        db.execute_batch("DROP TRIGGER fail_journal").unwrap();
+        drop(db);
         compress(&d, "hermes", &input).unwrap();
         assert!(failed(&d).is_empty());
-        let j: Value = serde_json::from_slice(&std::fs::read(stats_dir.join(COVERAGE)).unwrap()).unwrap();
+        let j = crate::local::snapshot(&d).unwrap()["journal"].clone();
         assert_eq!(j["resets"].as_array().unwrap().len(), 1, "{j}");
         assert_eq!(crate::accounting::local(&d, crate::now())["unknown"], crate::accounting::UNPROVEN);
         std::fs::remove_dir_all(d).unwrap();
@@ -998,16 +897,14 @@ mod tests {
         std::fs::create_dir_all(&stats_dir).unwrap();
         let c = json!({"stats":"off"});
         let t = crate::now();
-        let save_at = || save(&d, &c, &record("hermes", "hook", "terminal", &Value::Null, 10, t)).unwrap();
-        save_at();
-        let block = stats_dir.join("coverage.tmp");
-        std::fs::create_dir(&block).unwrap();
-        save_at();
-        let day = stats_dir.join(format!("{}.jsonl", crate::date(t)));
-        let s = std::fs::read_to_string(&day).unwrap();
-        std::fs::write(&day, format!("{}\n", s.lines().next().unwrap())).unwrap();
-        std::fs::remove_dir(&block).unwrap();
-        save_at();
+        let save_at = || save(&d, &c, &record("hermes", "hook", "terminal", &Value::Null, 10, t));
+        save_at().unwrap();
+        let db = rusqlite::Connection::open(d.join("telemetry.sqlite3")).unwrap();
+        db.execute_batch("CREATE TRIGGER fail_journal BEFORE UPDATE ON meta WHEN new.key='journal' BEGIN SELECT RAISE(ABORT,'invented journal failure'); END;").unwrap();
+        assert!(save_at().is_err());
+        db.execute("DELETE FROM events WHERE kind='stats'",[]).unwrap();
+        db.execute_batch("DROP TRIGGER fail_journal").unwrap(); drop(db);
+        save_at().unwrap();
         let mut input = json!({"window": {"start": t, "end": t + 1}, "now": t});
         input["sources"] = json!([crate::accounting::local(&d, t)]);
         let a = crate::accounting::aggregate(&input).unwrap();
@@ -1047,10 +944,9 @@ mod tests {
         std::fs::write(d.join("config.json"), r#"{"compression":{"min_bytes":0,"stats":"off"}}"#).unwrap();
         let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
         compress(&d, "hermes", &input).unwrap();
-        let stats_dir = d.join("stats");
-        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let day = d.join("telemetry.sqlite3");
         let flags = |f: &str| {
-            let ok = Command::new("chflags").arg(f).args([&day, &stats_dir]).status().unwrap().success();
+            let ok = Command::new("chflags").arg(f).arg(&day).status().unwrap().success();
             assert!(ok);
         };
         flags("uchg");
@@ -1072,10 +968,9 @@ mod tests {
         let input = json!({"text":"result","adapter":"hook","tool":"terminal"}).to_string();
         let start = crate::now();
         compress(&d, "hermes", &input).unwrap();
-        let stats_dir = d.join("stats");
-        let day = stats_dir.join(format!("{}.jsonl", crate::date(crate::now())));
+        let day = d.join("telemetry.sqlite3");
         let flags = |f: &str| {
-            let ok = Command::new("chflags").arg(f).args([&day, &stats_dir, &d]).status().unwrap().success();
+            let ok = Command::new("chflags").arg(f).args([&day, &d]).status().unwrap().success();
             assert!(ok);
         };
         flags("uchg");

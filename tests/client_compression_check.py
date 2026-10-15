@@ -1,6 +1,7 @@
 """A2 live-check verdict: service traffic and unrelated stats must never produce PASS."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -62,6 +63,37 @@ class VerdictChain(unittest.TestCase):
         forbidden = {'--sandbox', '--full-auto', '--dangerously-bypass-approvals-and-sandbox',
                      '-a', '--ask-for-approval', '--model', '-m', '--config', '-c', '--profile', '-p'}
         self.assertFalse(forbidden.intersection(argv), 'qualification must inherit the installed policy/model/profile')
+
+    def test_stats_use_package_export_and_reject_missing_or_conflicting_evidence(self):
+        def response(records, errors=None):
+            return subprocess.CompletedProcess([], 0, json.dumps(dict(schema=1, records=records, errors=errors or [])), '')
+        with patch.object(check.subprocess, 'run', return_value=response([self.record])) as call:
+            records, errors = check.stats(self.root)
+            self.assertEqual(records, {'event': self.record})
+            self.assertEqual(errors, [])
+            self.assertEqual(call.call_args.args[0][1:], ['stats', '--records'])
+            self.assertEqual(call.call_args.kwargs['env']['AGENTQ_INSTALL'], str(self.root))
+        with patch.object(check.subprocess, 'run', return_value=response([self.record, dict(self.record, bytes_out=999)])):
+            self.assertIn('conflicting local event ID', check.stats(self.root)[1])
+        with patch.object(check.subprocess, 'run', return_value=subprocess.CompletedProcess([],1,'','unreadable')):
+            self.assertTrue(check.stats(self.root)[1])
+        with patch.object(check.subprocess, 'run', side_effect=subprocess.TimeoutExpired('export',10)):
+            self.assertTrue(check.stats(self.root)[1])
+
+    def test_explicit_binary_selects_version_without_changing_path(self):
+        binary = self.root / 'native client with spaces'
+        binary.write_text('invented executable fixture; not executed')
+        with patch.object(check.shutil, 'which', return_value=None):
+            self.assertEqual(check.client_binary('codex', str(binary)), str(binary.resolve()))
+            self.assertIsNone(check.client_binary('codex', str(self.root / 'missing')))
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows installed embedded CLI path')
+    def test_windows_embedded_cli_is_available_without_path_edits(self):
+        binary = self.root / 'OpenAI/Codex/bin/invented-build/codex.exe'
+        binary.parent.mkdir(parents=True)
+        binary.write_text('invented executable fixture; not executed')
+        with patch.dict(os.environ, LOCALAPPDATA=str(self.root)), patch.object(check.shutil, 'which', return_value=None):
+            self.assertEqual(check.client_binary('codex'), str(binary))
 
     def test_claude_native_tool_evidence(self):
         rows = [dict(type='assistant', session_id='claude-session', message=dict(content=[

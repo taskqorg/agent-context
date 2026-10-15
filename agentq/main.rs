@@ -1,6 +1,7 @@
 //! agentq: update, service, status, MCP, engines, onboarding, hooks, telemetry and uninstall on coreq (agentq.md § 1-§ 6, § 9, § 10).
 
 mod accounting;
+mod check;
 mod configure;
 mod compression;
 mod connect;
@@ -8,6 +9,7 @@ mod engines;
 mod hooks;
 mod executor;
 mod legacy;
+mod local;
 mod mcp;
 mod onboard;
 mod profile;
@@ -32,7 +34,7 @@ const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
 /// `onboard --yes` waits this long for a started proxy to answer, before and after one restart (#137).
 const PROXY_START: Duration = Duration::from_secs(60);
-const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json|--records] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | check compression [codex|claude|both] | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify|export | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -64,11 +66,25 @@ fn main() {
             Ok(None) => println_code(&format!("update: {} is the latest", t.current().unwrap_or(VERSION.into()))),
             Err(e) => fail(&format!("update: {e}"), "check the network and run `agentq update` again"),
         },
+        ["check", "compression", rest @ ..] => match check::run(&t.install,rest) {
+            Ok(code)=>code,
+            Err(e)=>fail(&e,"install Python or use the managed Headroom runtime; run agentq check compression --help"),
+        },
         ["selftest"] => selftest(&t),
         ["run", "--", cmd @ ..] if !cmd.is_empty() => engines::run(&t.install, &args[2..]),
         ["compress", agent] => match std::io::read_to_string(std::io::stdin()).map_err(|e|e.to_string()).and_then(|s|compression::compress(&t.install.join("data"),agent,&s)) {
             Ok(v)=>println_code(&v.to_string()),
             Err(e)=>fail(&e,"send one JSON object with adapter, tool and text; preserve the native result on failure"),
+        },
+        ["stats", "--records"] => match local::snapshot(&t.install.join("data")) {
+            Ok(v) => {
+                let mut errors = vec![];
+                if let Some(e) = v["error"].as_str() { errors.push(e.to_string()); }
+                if !compression::failed(&t.install.join("data")).is_empty() { errors.push("stats write failed".into()); }
+                println_code(&serde_json::json!({"schema":1,"records":v["records"],"errors":errors}).to_string())
+            }
+            Err(e) if e=="stats unknown: no stats file" => println_code(&serde_json::json!({"schema":1,"records":[],"errors":[],"state":"unknown","reason":"no retained observations"}).to_string()),
+            Err(e) => fail(&e, "inspect local telemetry storage"),
         },
         ["stats", "--accounting", rest @ ..] => accounting_cmd(&t, rest),
         ["stats"] | ["stats","--json"] =>match compression::stats(&t.install.join("data")) {
@@ -84,7 +100,7 @@ fn main() {
                 0
             },
             Err(e) if a.len()==2=>{println!("{}",serde_json::json!({"schema":1,"state":"unknown","reason":e,"groups":null}));1},
-            Err(e)=>fail(&e,"run a tool through agentq; inspect data/stats if records are unreadable"),
+            Err(e)=>fail(&e,"run a tool through agentq; inspect data/telemetry.sqlite3 and retained legacy files if records are unreadable"),
         },
         ["profile"] => {
             for l in profile::lines(&profile::report(&t.install.join("data"), now())) {
@@ -124,6 +140,10 @@ fn main() {
         ["langfuse"] => match telemetry::read_keys().and_then(|k| telemetry::save(&t.install.join("data"), &k)) {
             Ok(store) => println_code(&format!("langfuse: keys saved in {store}; the service sends on its next pass")),
             Err(e) => fail(&format!("langfuse: {e}"), "run `agentq langfuse` and enter the host, public key and secret key"),
+        },
+        ["telemetry", "export"] => match local::export_jsonl(&t.install.join("data")) {
+            Ok(v)=>println_code(&v),
+            Err(e)=>fail(&e,"inspect local telemetry storage; retained files are preserved"),
         },
         ["telemetry", "status", ..] => println_code(&telemetry_line(&t)),
         ["telemetry", "verify", ..] => match telemetry::load(&t.install.join("data")) {
@@ -213,7 +233,12 @@ fn doctor(t: &Tool) -> i32 {
     let owned = std::fs::read_to_string(journal(t)).ok().and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok()).map_or(0, |j| j.len());
     line(true, format!("owned edits: {owned}"));
     let tel = telemetry_line(t);
-    line(tel.contains("keys set"), tel);
+    // Remote keys are optional; local collection is qualified independently.
+    line(tel.contains("keys set") || !t.install.join("data/langfuse").exists(),format!("{tel} (optional remote export)"));
+    match local::check_store(&t.install.join("data")) {
+        Ok(n)=>line(true,format!("local telemetry: readable SQLite, {n} retained records; compression unqualified")),
+        Err(e)=>line(false,format!("local telemetry: unknown ({e})")),
+    }
     let old = legacy_dir();
     let pids = legacy_pids(&old);
     let installed = legacy::installed(&old);
@@ -526,6 +551,7 @@ fn selftest(t: &Tool) -> i32 {
         ("single service run", single_instance_selftest()),
         ("configuration fixtures", configure::selftest()),
         ("snapshot", snapshot::project("i", "linux", None, None, 0)["resource"]["unknown"] == "no sample yet"),
+        ("local telemetry", local::selftest()),
         ("engine pins", engines::rtk_asset().is_some() && engines::HEADROOM_LOCK.contains(&format!("headroom-ai=={}", engines::HEADROOM))),
     ];
     let bad: Vec<&str> = checks.iter().filter(|c| !c.1).map(|c| c.0).collect();

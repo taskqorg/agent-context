@@ -87,6 +87,11 @@ pub fn emit(data: &Path, name: &str, stage: &str, attrs: Value) -> Option<String
 pub fn emit_at(data: &Path, name: &str, stage: &str, attrs: Value, ns: u128) -> Option<String> {
     let s = span(name, stage, attrs, ns, &installation(data), &crate::host());
     let id = s["traceId"].as_str()?.to_string();
+    if name!="agentq.compress" {
+        if let Err(e)=crate::local::event(data,&s,(ns/1_000_000_000).min(u64::MAX as u128) as u64) {
+            eprintln!("agentq: local event unknown: {e}");
+        }
+    }
     let q = queue(data);
     std::fs::create_dir_all(&q).ok()?;
     let file = q.join(format!("{}-{id}.json", ns / 1_000_000_000));
@@ -290,7 +295,18 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
         if batch.is_empty() {
             break Ok(sent);
         }
-        let spans: Vec<Value> = batch.iter().filter_map(|e| serde_json::from_str(&std::fs::read_to_string(&e.1).ok()?).ok()).collect();
+        let spans=batch.iter().map(|e| {
+            let text=std::fs::read_to_string(&e.1).map_err(|_|"queue event unreadable; file kept".to_string())?;
+            serde_json::from_str::<Value>(&text).map_err(|_|"queue event malformed; file kept".to_string())
+        }).collect::<Result<Vec<_>,_>>();
+        let spans=match spans { Ok(v)=>v, Err(e)=>break Err(e) };
+        if let Some(e)=spans.iter().find_map(|s| {
+            let at=s["startTimeUnixNano"].as_str().and_then(|s|s.parse::<u128>().ok()).map(|n|(n/1_000_000_000).min(u64::MAX as u128) as u64);
+            match at {
+                Some(at)=>crate::local::event(data,s,at).err(),
+                None=>Some("queue event time unknown; file kept".into()),
+            }
+        }) { break Err(format!("local archive unavailable: {e}")); }
         let otlp = json!({"resourceSpans": [{"resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "agentq"}}]}, "scopeSpans": [{"scope": {"name": "agentq", "version": env!("CARGO_PKG_VERSION")}, "spans": spans}]}]});
         let step = std::time::Instant::now();
         let posted = std::fs::write(&body, otlp.to_string()).map_err(|e| e.to_string()).and_then(|_| {
@@ -317,11 +333,11 @@ pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
             }
             Err(e) => s["error"] = json!(e),
         }
-        // an empty pass posted nothing: no sample
-        if res != Ok(0) {
-            crate::profile::sample(s, "export.langfuse", now, took, res.as_ref().err().map(|e| crate::profile::class(e)));
-        }
     });
+    // An empty pass posted nothing: no sample.
+    if res != Ok(0) {
+        crate::profile::sample(data, "export.langfuse", now, took, res.as_ref().err().map(|e|crate::profile::class(e)));
+    }
     res
 }
 
@@ -551,6 +567,18 @@ mod tests {
         (url, got)
     }
 
+    #[test]
+    fn malformed_queue_event_is_not_silently_deleted() {
+        let d=dir("malformed-queue");std::fs::create_dir_all(queue(&d)).unwrap();
+        let p=queue(&d).join(format!("{}-{}.json",crate::now(),"1".repeat(32)));std::fs::write(&p,"{bad").unwrap();
+        let keys=Keys::parse("http://127.0.0.1:1 pk-lf-test sk-lf-test").unwrap();
+        assert!(send(&d,&keys,crate::now()).unwrap_err().contains("malformed; file kept"));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(),"{bad");
+        std::fs::write(&p,json!({"traceId":"1".repeat(32),"name":"agentq.verify","startTimeUnixNano":"unknown"}).to_string()).unwrap();
+        assert!(send(&d,&keys,crate::now()).unwrap_err().contains("time unknown; file kept"));
+        assert!(p.is_file());std::fs::remove_dir_all(d).unwrap();
+    }
+
     /// A2: an outage keeps the queue and records the error; the next pass drains it in batches with Basic auth.
     #[test]
     fn outage_then_drain() {
@@ -575,6 +603,8 @@ mod tests {
         assert_eq!(got.len(), 2, "batches of 100");
         assert!(got[0].0.starts_with("POST /api/public/otel/v1/traces "));
         assert!(got[0].0.contains("Basic cGstbGYtdGVzdDpzay1sZi10ZXN0"), "Basic pk-lf-test:sk-lf-test");
+        let archived=crate::local::export(&d).unwrap();
+        assert_eq!(archived["events"].as_array().unwrap().len(),150,"successful remote delivery must not delete local event history");
         let spans = |b: &str| serde_json::from_str::<Value>(b).unwrap()["resourceSpans"][0]["scopeSpans"][0]["spans"].as_array().unwrap().len();
         assert_eq!(spans(&got[0].1) + spans(&got[1].1), 150);
         assert!(!got[0].1.contains("sk-lf-test"), "no secret in the payload");

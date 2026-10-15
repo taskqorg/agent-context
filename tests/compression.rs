@@ -50,17 +50,22 @@ fn install(root: &Path) -> PathBuf {
     }
 }
 fn records(root: &Path) -> Vec<Value> {
-    let mut v = vec![];
-    for e in std::fs::read_dir(install(root).join("data/stats")).unwrap() {
-        let p = e.unwrap().path();
-        if p.extension().is_none_or(|x| x != "jsonl") {
-            continue;
-        }
-        for line in std::fs::read_to_string(p).unwrap().lines() {
-            v.push(serde_json::from_str(line).unwrap());
-        }
-    }
-    v
+    let o=cli(root,&["stats","--records"],None,&[]);
+    assert!(o.status.success(),"{o:?}");
+    let v:Value=serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["errors"],json!([]),"{v}");
+    v["records"].as_array().unwrap().clone()
+}
+fn journal(data:&Path)->Value {
+    let db=rusqlite::Connection::open(data.join("telemetry.sqlite3")).unwrap();
+    let s:String=db.query_row("SELECT value FROM meta WHERE key='journal'",[],|r|r.get(0)).unwrap();
+    serde_json::from_str(&s).unwrap()
+}
+fn sql(data:&Path,statement:&str) {
+    rusqlite::Connection::open(data.join("telemetry.sqlite3")).unwrap().execute_batch(statement).unwrap();
+}
+fn set_journal(data:&Path,text:&str) {
+    rusqlite::Connection::open(data.join("telemetry.sqlite3")).unwrap().execute("UPDATE meta SET value=?1 WHERE key='journal'",[text]).unwrap();
 }
 #[test]
 fn execution_recovery_stats_chain() {
@@ -220,8 +225,7 @@ fn execution_recovery_stats_chain() {
         serde_json::from_slice(&o.stdout).unwrap()
     };
     // Coverage is what the producer proved: from its first record, never the retention period it has not seen.
-    let journal = data.join("stats/coverage.json");
-    let since = serde_json::from_slice::<Value>(&std::fs::read(&journal).unwrap()).unwrap()["since"].as_u64().unwrap();
+    let since = journal(&data)["since"].as_u64().unwrap();
     let from = since.to_string();
     let week = accounting(&[]);
     assert_eq!((&week["state"], &week["calls"]), (&json!("partial"), &json!(9)), "a new store never covers the week before it");
@@ -241,34 +245,33 @@ fn execution_recovery_stats_chain() {
     assert_eq!(local["volume"][0]["bytes_in"], raw.len());
     assert!(!local.to_string().contains("agentq-cli-") && !exported.to_string().contains("agentq-cli-"), "no host paths");
 
-    // A failed append is a gap in the journal; the call keeps its native bytes.
-    let day = std::fs::read_dir(data.join("stats")).unwrap().flatten().map(|e| e.path()).find(|p| p.extension().is_some_and(|x| x == "jsonl")).unwrap();
-    let kept = day.with_extension("kept");
-    std::fs::rename(&day, &kept).unwrap();
-    std::fs::create_dir(&day).unwrap();
+    // Event and journal fail atomically; evidence outside SQLite keeps the loss unknown.
+    let day = journal(&data)["counts"].as_object().unwrap().keys().next().unwrap().clone();
+    sql(&data,"CREATE TRIGGER fail_journal BEFORE UPDATE ON meta WHEN new.key='journal' BEGIN SELECT RAISE(ABORT,'invented failure'); END;");
     assert_eq!(cli(&root, &["run", "--", "cargo", "test"], None, &[]).stdout, raw.as_bytes());
-    std::fs::remove_dir(&day).unwrap();
-    std::fs::rename(&kept, &day).unwrap();
-    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
-    assert_eq!((j["since"].as_u64(), j["gaps"].as_array().unwrap().len()), (Some(since), 1));
+    sql(&data,"DROP TRIGGER fail_journal;");
+    let j = journal(&data);
+    assert_eq!((j["since"].as_u64(), j["gaps"].as_array().unwrap().len()), (Some(since), 0));
     let gap = accounting(&["--from", &from]);
     assert_eq!((&gap["state"], &gap["calls"]), (&json!("partial"), &json!(9)));
-    assert_eq!(gap["coverage"]["sources"][0]["gaps"][0], j["gaps"][0]);
+    assert_eq!(gap["coverage"]["sources"][0]["reasons"][0]["detail"],"stats write failed");
+    cli(&root,&["run","--","cargo","test"],None,&[]);
+    assert_eq!(records(&root).len(),10,"successful recovery resets failed coverage and clears markers");
 
     // A lost journal over held records is a reset: older records count but are unproven.
-    std::fs::remove_file(&journal).unwrap();
+    sql(&data,"DELETE FROM meta WHERE key='journal'");
     let lost = cli(&root, &["stats", "--accounting"], None, &[]);
     let lost: Value = serde_json::from_slice(&lost.stdout).unwrap();
-    assert_eq!((&lost["state"], &lost["calls"]), (&json!("partial"), &json!(9)));
+    assert_eq!((&lost["state"], &lost["calls"]), (&json!("partial"), &json!(10)));
     assert_eq!(lost["coverage"]["sources"][0]["reasons"][0]["detail"], "no coverage journal");
     cli(&root, &["run", "--", "cargo", "test"], None, &[]);
-    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    let j = journal(&data);
     assert_eq!(j["resets"], json!([j["since"].as_u64().unwrap() - 1]), "the reset second stays unproven");
     let reset = accounting(&["--from", &from]);
-    assert_eq!((&reset["state"], &reset["calls"]), (&json!("partial"), &json!(10)));
+    assert_eq!((&reset["state"], &reset["calls"]), (&json!("partial"), &json!(11)));
     assert_eq!(reset["coverage"]["sources"][0]["resets"], 1);
     assert!(reset["coverage"]["sources"][0]["reasons"].as_array().unwrap().contains(&json!({"reason": "reset"})));
-    std::fs::write(&journal, "{").unwrap();
+    set_journal(&data,"{");
     let corrupt: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
     assert_eq!(corrupt["coverage"]["sources"][0]["reasons"][0]["detail"], "coverage journal unreadable");
     // Parseable but corrupt gaps or resets prove no coverage either: never complete, never zero.
@@ -281,19 +284,19 @@ fn execution_recovery_stats_chain() {
         json!({"schema": 1, "since": since, "gaps": []}),
         json!({"schema": 1, "since": since, "resets": [], "gaps": [], "counts": {"x": 1}}),
     ] {
-        std::fs::write(&journal, bad.to_string()).unwrap();
+        set_journal(&data,&bad.to_string());
         let got = accounting(&["--from", &from]);
-        assert_eq!((&got["state"], &got["calls"]), (&json!("partial"), &json!(10)), "{bad}");
+        assert_eq!((&got["state"], &got["calls"]), (&json!("partial"), &json!(11)), "{bad}");
         assert_eq!(got["coverage"]["sources"][0]["reasons"][0]["detail"], "coverage journal unreadable", "{bad}");
     }
     // The producer replaces a corrupt journal with a fresh one and a reset.
     cli(&root, &["run", "--", "cargo", "test"], None, &[]);
-    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
+    let j = journal(&data);
     assert_eq!((j["gaps"].clone(), j["resets"].clone()), (json!([]), json!([j["since"].as_u64().unwrap() - 1])));
     // A deleted day file under an intact journal is lost records: unknown with a reason, never complete or zero.
     let held = accounting(&["--from", &from]);
-    assert_eq!((&held["state"], &held["calls"]), (&json!("partial"), &json!(11)));
-    std::fs::remove_file(&day).unwrap();
+    assert_eq!((&held["state"], &held["calls"]), (&json!("partial"), &json!(12)));
+    sql(&data,"DELETE FROM events WHERE kind='stats'");
     let gone: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
     assert_eq!((&gone["state"], &gone["calls"]), (&json!("unknown"), &Value::Null), "{gone}");
     assert_eq!(gone["coverage"]["sources"][0]["reasons"][0]["detail"], "stats records lost", "{gone}");
@@ -301,21 +304,35 @@ fn execution_recovery_stats_chain() {
     for _ in 0..3 {
         cli(&root, &["run", "--", "cargo", "test"], None, &[]);
     }
-    std::fs::remove_file(&journal).unwrap();
+    sql(&data,"DELETE FROM meta WHERE key='journal'");
     cli(&root, &["run", "--", "cargo", "test"], None, &[]);
-    let j: Value = serde_json::from_slice(&std::fs::read(&journal).unwrap()).unwrap();
-    assert_eq!(j["counts"][day.file_stem().unwrap().to_str().unwrap()], 4, "{j}");
-    let first = std::fs::read_to_string(&day).unwrap().lines().next().unwrap().to_string();
-    std::fs::write(&day, first + "\n").unwrap();
+    let j = journal(&data);
+    assert_eq!(j["counts"][&day], 4, "{j}");
+    sql(&data,"DELETE FROM events WHERE kind='stats' AND seq != (SELECT min(seq) FROM events WHERE kind='stats')");
     let cut: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
     assert_eq!((&cut["state"], &cut["calls"], &cut["lower_bound"]), (&json!("partial"), &json!(1), &json!(true)), "{cut}");
     assert_eq!(cut["coverage"]["sources"][0]["reasons"][0]["detail"], "stats records lost", "{cut}");
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {
-    if install(root).join("data/stats").exists() {
+    if install(root).join("data/telemetry.sqlite3").exists() || install(root).join("data/stats").exists() {
         records(root)
     } else {
         vec![]
     }
+}
+
+#[test]
+fn installed_check_help_and_jsonl_export_need_no_source_checkout_or_model() {
+    let root=std::env::temp_dir().join(format!("agentq-packaged-check-{}",std::process::id()));
+    let _=std::fs::remove_dir_all(&root);std::fs::create_dir_all(&root).unwrap();
+    let bin=root.join(format!("agentq{}",std::env::consts::EXE_SUFFIX));std::fs::copy(env!("CARGO_BIN_EXE_agentq"),&bin).unwrap();
+    let output=Command::new(&bin).args(["check","compression","--help"]).env("AGENTQ_INSTALL",root.join("install")).current_dir(&root).output().unwrap();
+    assert!(output.status.success(),"{output:?}");let help=String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("agentq check compression")&&help.contains("--codex")&&help.contains("--claude"));
+    assert!(!root.join("install").exists(),"help must not start clients or create local state");
+    let data=root.join("install/data");let output=Command::new(&bin).args(["telemetry","export"]).env("AGENTQ_INSTALL",root.join("install")).current_dir(&root).output().unwrap();
+    assert!(output.status.success(),"{output:?}");let header:Value=serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(header["schema"],"agentq.telemetry/1");assert!(header["collection_completeness"].as_str().unwrap().starts_with("unknown"));
+    assert!(data.join("telemetry.sqlite3").is_file());std::fs::remove_dir_all(root).unwrap();
 }

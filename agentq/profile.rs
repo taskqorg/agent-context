@@ -1,9 +1,7 @@
-//! Profiling (agentq.md § 6 Profiling): always-on samples of named operations from the existing stats records and queue
-//! state, a bounded trace switch and one report ranked against the budgets. Names, numbers and class codes only.
+//! Profiling (agentq.md § 6 Profiling): always-on samples of named operations from installation-local SQLite, a bounded trace switch and one report ranked against the budgets. Names, numbers and class codes only.
 
 use coreq::write_atomic;
 use serde_json::{Map, Value, json};
-use std::io::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -17,12 +15,12 @@ const OPS: [(&str, Option<u64>, f64); 5] = [
 ];
 const PROXY: &str = "headroom proxy serves model requests; agentq records none";
 const WINDOW: u64 = 7 * 86400;
-/// Export samples kept per operation in `state.json`.
-const KEEP: usize = 256;
+/// Export samples retained per operation.
+pub(crate) const KEEP: usize = 256;
 const UNSTABLE_CV: f64 = 1.0;
 const TRACE_DEFAULT: u64 = 15;
 const TRACE_MAX: u64 = 60;
-const TRACE_DAY_BYTES: u64 = 1 << 20;
+pub(crate) const TRACE_DAY_BYTES: u64 = 1 << 20;
 
 fn ms(d: Duration) -> u64 {
     d.as_millis() as u64
@@ -43,8 +41,9 @@ pub fn class(e: &str) -> &'static str {
     }
 }
 
-/// One export sample into a `state.json` value: `[time, duration_ms, class]`, class null on success; oldest go first.
-pub fn sample(st: &mut Value, op: &str, at: u64, took: Duration, class: Option<&str>) {
+/// Legacy state fixture: identical observations remain separate samples.
+#[cfg(test)]
+fn legacy_sample(st: &mut Value, op: &str, at: u64, took: Duration, class: Option<&str>) {
     if !st["profile"].is_object() {
         st["profile"] = json!({});
     }
@@ -55,6 +54,11 @@ pub fn sample(st: &mut Value, op: &str, at: u64, took: Duration, class: Option<&
     v.push(json!([at, ms(took), class]));
     let over = v.len().saturating_sub(KEEP);
     v.drain(..over);
+}
+
+/// Always-local export sample; storage failures never change delivery behavior.
+pub fn sample(data:&Path,op:&str,at:u64,took:Duration,class:Option<&str>) {
+    if let Err(e)=crate::local::sample(data,op,at,ms(took),class) { eprintln!("agentq: export sample unknown: {e}"); }
 }
 
 /// `profile.trace_until` from `config.json`, None when absent; an unreadable config or invalid value is the reason
@@ -81,22 +85,8 @@ pub fn trace(data: &Path, op: &str, step: &str, took: Duration, class: Option<&s
     if !trace_until(data).is_ok_and(|t| t.is_some_and(|t| now < t)) {
         return;
     }
-    let dir = data.join("traces");
-    if std::fs::create_dir_all(&dir).is_err() {
-        return;
-    }
-    let oldest = crate::date(now.saturating_sub(WINDOW));
-    for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        if e.file_name().to_string_lossy().strip_suffix(".jsonl").is_some_and(|d| d < oldest.as_str()) {
-            let _ = std::fs::remove_file(e.path());
-        }
-    }
-    let file = dir.join(format!("{}.jsonl", crate::date(now)));
-    if std::fs::metadata(&file).is_ok_and(|m| m.len() >= TRACE_DAY_BYTES) {
-        return;
-    }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
-        let _ = writeln!(f, "{}", json!({"time": now, "op": op, "step": step, "duration_ms": ms(took), "class": class}));
+    if let Err(e)=crate::local::trace(data,json!({"time":now,"op":op,"step":step,"duration_ms":ms(took),"class":class})) {
+        eprintln!("agentq: trace unknown: {e}");
     }
 }
 
@@ -175,17 +165,7 @@ fn unknown(op: &str, reason: &str) -> Value {
 
 /// Export samples per operation from `queue/state.json`; an unreadable file or sample is the reason it is unknown.
 fn export_state(data: &Path) -> Result<Map<String, Value>, String> {
-    let s = match std::fs::read_to_string(data.join("queue/state.json")) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(e) => return Err(format!("export state unknown: {e}")),
-    };
-    let v: Value = serde_json::from_str(&s).map_err(|_| "export state unknown: unreadable state.json")?;
-    match v.as_object().ok_or("export state unknown: state.json is not a JSON object")?.get("profile") {
-        None => Ok(Map::new()),
-        Some(Value::Object(m)) => Ok(m.clone()),
-        Some(_) => Err("export state unknown: malformed profile".into()),
-    }
+    crate::local::samples(data)
 }
 
 fn export_samples(samples: &Value, cutoff: u64, now: u64) -> Result<Vec<(u64, Option<String>)>, String> {
@@ -207,30 +187,12 @@ fn export_samples(samples: &Value, cutoff: u64, now: u64) -> Result<Vec<(u64, Op
 /// Trace lines in the window grouped per operation and step; a malformed line makes the traces unknown.
 fn steps(data: &Path, cutoff: u64, now: u64) -> Result<Map<String, Value>, String> {
     let mut g = std::collections::BTreeMap::<(String, String), Vec<(u64, Option<String>)>>::new();
-    let oldest = crate::date(cutoff);
-    let entries = match std::fs::read_dir(data.join("traces")) {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Map::new()),
-        Err(e) => return Err(format!("traces unknown: {e}")),
-    };
-    for e in entries {
-        let e = e.map_err(|e| format!("traces unknown: {e}"))?;
-        if !e.file_name().to_string_lossy().strip_suffix(".jsonl").is_some_and(|d| d >= oldest.as_str()) {
-            continue;
-        }
-        let s = std::fs::read_to_string(e.path()).map_err(|e| format!("traces unknown: {e}"))?;
-        for line in s.lines() {
-            let v: Value = serde_json::from_str(line).map_err(|_| "traces unknown: malformed line")?;
-            let (Some(at), Some(op), Some(step), Some(d)) = (v["time"].as_u64(), v["op"].as_str(), v["step"].as_str(), v["duration_ms"].as_u64()) else {
-                return Err("traces unknown: malformed line".into());
-            };
-            if !v["class"].is_null() && !v["class"].is_string() {
-                return Err("traces unknown: malformed line".into());
-            }
-            if at >= cutoff && at <= now {
-                g.entry((op.into(), step.into())).or_default().push((d, v["class"].as_str().map(String::from)));
-            }
-        }
+    for v in crate::local::traces(data,now)? {
+        let (Some(at), Some(op), Some(step), Some(d)) = (v["time"].as_u64(), v["op"].as_str(), v["step"].as_str(), v["duration_ms"].as_u64()) else {
+            return Err("traces unknown: malformed line".into());
+        };
+        if !v["class"].is_null() && !v["class"].is_string() { return Err("traces unknown: malformed line".into()); }
+        if at>=cutoff && at<=now { g.entry((op.into(),step.into())).or_default().push((d,v["class"].as_str().map(String::from))); }
     }
     let mut out = Map::new();
     for ((op, step), mut s) in g {
@@ -360,17 +322,17 @@ mod tests {
         let now = crate::now();
         let mut st = json!({"last_delivery": 1});
         for (i, ms_) in [100u64, 120, 110, 90].iter().enumerate() {
-            sample(&mut st, "export.dashq", now - 10, Duration::from_millis(*ms_), (i == 0).then_some("no_reply"));
+            legacy_sample(&mut st, "export.dashq", now - 10, Duration::from_millis(*ms_), (i == 0).then_some("no_reply"));
         }
         for _ in 0..KEEP + 5 {
-            sample(&mut st, "export.langfuse", now - 5, Duration::from_millis(50), None);
+            legacy_sample(&mut st, "export.langfuse", now - 5, Duration::from_millis(50), None);
         }
-        sample(&mut st, "export.langfuse", now - WINDOW - 1, Duration::from_millis(1), Some("auth"));
+        legacy_sample(&mut st, "export.langfuse", now - WINDOW - 1, Duration::from_millis(1), Some("auth"));
         assert_eq!(st["profile"]["export.langfuse"].as_array().unwrap().len(), KEEP);
         std::fs::write(d.join("queue/state.json"), st.to_string()).unwrap();
         std::fs::create_dir_all(d.join("stats")).unwrap();
         let rec = |adapter: &str, ms_: u64, outcome: &str, reason: &str| {
-            let mut r = json!({"schema":1,"event_id":"0".repeat(32),"time":now - 1,"agent":"claude","adapter":adapter,"tool":"shell","runner":null,"engine":"none",
+            let mut r = json!({"schema":1,"event_id":crate::mcp::new_id().replace('-',""),"time":now - 1,"agent":"claude","adapter":adapter,"tool":"shell","runner":null,"engine":"none",
                 "outcome":outcome,"reason":reason,"bytes_in":10,"bytes_out":10,"est_tokens_in":3,"est_tokens_out":3,"duration_ms":ms_,"ref":null,"session":null,"turn":null,"tool_call":null});
             if adapter == "run" {
                 r["exit_code"] = json!(0);
@@ -436,6 +398,7 @@ mod tests {
         assert_eq!(set_trace(&d, None, now).unwrap()["state"], "off");
         let c: Value = serde_json::from_str(&std::fs::read_to_string(d.join("config.json")).unwrap()).unwrap();
         assert_eq!(c, json!({"ports": {"codex": 1}}));
+        std::fs::create_dir_all(d.join("traces")).unwrap();
         std::fs::write(d.join("traces").join(format!("{}.jsonl", crate::date(now))), "bad\n").unwrap();
         assert!(report(&d, now)["trace"]["unknown"].as_str().unwrap().contains("malformed"));
         std::fs::remove_dir_all(d).unwrap();
