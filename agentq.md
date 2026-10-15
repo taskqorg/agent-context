@@ -165,7 +165,7 @@ Follows [specq profiling](https://github.com/taskqorg/specq/blob/main/engineerin
 
 ## 8. State
 
-`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports, `direct`, `compression`, `profile`), `installation`, `resource-key` (§ 6), `langfuse` (fallback only, § 6), `originals/`, `runs/`, `provider/` (durable transmitted-result replay, § 3), `stats/` (§ 3), `traces/` (§ 6 Profiling), `queue/` (with `state.json`: last delivery, last error, dropped, export samples), `incidents/`. Plain files with atomic rename and one lifecycle lock; no database. Interrupted transactions resume or roll back from the journal on next start.
+`<install>/data/`: `owned.json` (ownership journal), `config.json` (incident opt-out, mode, ports, `direct`, `compression`, `profile`), `installation`, `resource-key` (§ 6), `langfuse` (fallback only, § 6), `originals/`, `runs/`, `provider/` (durable transmitted-result replay, § 3), `stats/` (§ 3), `traces/` (§ 6 Profiling), `queue/` (with `state.json`: last delivery, last error, dropped, export samples), `incidents/`. Telemetry target: local SQLite/WAL replaces stats/trace history, preserving existing schemas, commands, coverage and optional export. JSONL remains an export/legacy format. Other state stays plain files with atomic rename and one lifecycle lock. Interrupted transactions resume or roll back from the journal on next start.
 
 Dashboard duties (fleet view, versions, last seen, health, usage, incidents, access control) move to dashq, which reads optional Langfuse events and authenticated snapshots under the accepted connection contract. agentq ships no panel and no dashboard JSON.
 
@@ -198,7 +198,7 @@ Dashboard duties (fleet view, versions, last seen, health, usage, incidents, acc
 | R5 | § 1 `onboard`, `enroll`, § 4 | Kept; device enrollment served by dashq. |
 | R6 | § 5 | Changed: coreq release trust (HTTPS and tags) replaces signatures; staged rollout dropped. Worker swap kept for headroom. |
 | R7 | § 9, § 10 | Kept. |
-| R8 | § 8, § 6 | Plain files, no SQLite. |
+| R8 | § 8, § 6 | SQLite/WAL for local telemetry; other state stays files. |
 | R9 | § 6 | Kept. |
 | R10 | § 6, § 8 | Accounting kept; dashboard dropped from agentq, owned by dashq. |
 | R11 | Principles, § 5 | Kept. |
