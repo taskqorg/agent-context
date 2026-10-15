@@ -48,7 +48,7 @@ fn output(c: &mut Command) -> Result<String, String> {
 }
 
 fn check_version(exe: &Path, want: &str) -> Result<(), String> {
-    let got = output(Command::new(exe).arg("--version"))?.trim().to_string();
+    let got = output(Command::new(exe).env("OPENBLAS_NUM_THREADS", "1").env("OMP_NUM_THREADS", "1").arg("--version"))?.trim().to_string();
     if got == want { Ok(()) } else { Err(format!("{} --version: {got:?}, want {want:?}", exe.display())) }
 }
 
@@ -135,7 +135,7 @@ fn python() -> Result<Vec<String>, String> {
 /// Isolated mode (`-I`) from a fixed folder: no PYTHON* env, user site or planted module from the caller's folder.
 fn py<S: AsRef<std::ffi::OsStr>>(c: &[S]) -> Command {
     let mut cmd = Command::new(&c[0]);
-    cmd.args(&c[1..]).arg("-I").current_dir(std::env::temp_dir());
+    cmd.args(&c[1..]).arg("-I").env("OPENBLAS_NUM_THREADS", "1").env("OMP_NUM_THREADS", "1").current_dir(std::env::temp_dir());
     cmd
 }
 
@@ -144,7 +144,8 @@ pub fn install_headroom(install: &Path) -> Result<PathBuf, String> {
     let dir = engine_dir(install, "headroom", HEADROOM);
     let exe = venv_bin(&dir, "headroom");
     let want = format!("headroom, version {HEADROOM}");
-    if dir.join("ready").exists() && check_version(&exe, &want).is_ok() {
+    if dir.join("ready").exists() {
+        check_version(&exe, &want).map_err(|e| format!("checked headroom preserved after failed probe: {e}"))?;
         return Ok(exe);
     }
     if target() == "macos-x86_64" {
@@ -269,6 +270,23 @@ mod tests {
         assert!(recall(&d, "rtk:bad", "abc").unwrap_err().starts_with("Invalid"));
         assert!(recall(&d, "rtk:00000000-0000-0000-0000-000000000000", "").unwrap_err().contains("hash"));
         assert!(recall(&d, "rtk:00000000-0000-0000-0000-000000000000", "abc").unwrap_err().starts_with("expired"));
+    }
+
+    #[test]
+    fn failed_probe_preserves_checked_headroom() {
+        let root = std::env::temp_dir().join(format!("agentq-preserve-engine-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = engine_dir(&root, "headroom", HEADROOM);
+        let exe = venv_bin(&dir, "headroom");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(dir.join("ready"), HEADROOM).unwrap();
+        std::fs::write(&exe, "deliberately invalid executable").unwrap();
+        std::fs::write(dir.join("keep"), "existing engine bytes").unwrap();
+        assert!(install_headroom(&root).unwrap_err().contains("checked headroom preserved"));
+        assert_eq!(std::fs::read_to_string(dir.join("keep")).unwrap(), "existing engine bytes");
+        assert_eq!(std::fs::read_to_string(dir.join("ready")).unwrap(), HEADROOM);
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "deliberately invalid executable");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Network: AGENTQ_ENGINE_TEST=1 installs both engines into a temporary install and runs cargo through RTK.
