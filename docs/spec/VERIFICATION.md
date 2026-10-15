@@ -23,6 +23,12 @@ The profiling chain (`agentq/profile.rs` tests, task [#122](https://github.com/t
 
 Include actual Claude success/failure hook formats and Codex string/typed/nested Responses output; validate protected fields, HTTP/SSE/WebSocket where claimed and cancellation. Vendor tests alone do not qualify our adapter. Shared evidence rules: [specq verification](https://github.com/taskqorg/specq/blob/main/engineering/verification.md).
 
+## Installed CLI compression check
+
+A2: `python3 scripts/check-client-compression.py both` tests the installed Codex CLI and Claude Code CLI with their existing configuration and authentication. Native `cargo test` must run through the automatic adapter; explicit `agentq run` in the prompt cannot qualify it. PASS requires a new successful compression record matching the native client session, smaller bytes, the model quoting its recovery reference and unique failure marker, and `get_original` returning all fixture cases and the measured original byte length. Missing prerequisites or incomplete execution read unknown, never pass. The optional check uses paid model access; CI runs `python tests/client_compression_check.py` to check false-positive prevention without a model.
+
+Mac check, 2026-10-15 10:17–10:18 UTC, installed agentq 0.6.1, Codex CLI 0.159.3 and Claude Code 2.1.299: both native clients ran the fixture once, reported 180 passed / 1 intentional failure (native exit 101), and returned no original reference. Each client exited 0. Each produced zero new local compression records; both integration checks FAIL. Codex session `01a13f11-8ace-7242-9623-10e899330ecd`; Claude session `99ea34e3-b341-4466-96f0-643614935529`. No install, routing, hook or service changes. This proves a missing automatic compression path on this Mac, not a Windows or FRA result.
+
 ## Optimization experiment
 
 Paired baseline/candidate tasks use the same model/auth/client, frozen inputs and independently checked outcomes. Include all input/cache/output, tool/schema/instruction overhead, retries, retrieval/rework, latency and monetary source. Reverse run order and distinguish cold/warm cache and state. A smoke case is not statistical proof.
