@@ -115,9 +115,9 @@ def judge(client, rows, new, marker, agentq, fixture, output, command=COMMAND):
                   new_records=len(new), correlated_records=0)
     # Native command must be requested. A hook may rewrite it, but the prompt never invokes agentq manually.
     native = [c for c in commands if command in c['command']]
-    expected_exit = 1 if command == PYTEST else 101
-    if not native or not any(c.get('exit_code') == expected_exit and (marker in c.get('output', '') or marker in reply) for c in native):
-        report.update(result='unknown', reason='client did not execute the fixture command')
+    expected_exits = (1,) if command == PYTEST else (1, 101)
+    if not native or not any(c.get('exit_code') in expected_exits and (marker in c.get('output', '') or marker in reply) for c in native):
+        report.update(result='unknown', reason='native fixture execution not proved')
         return report
     adapter = 'provider' if client == 'codex' else 'run'
     matched = [r for r in new if r.get('agent') == client and r.get('adapter') == adapter
@@ -192,12 +192,23 @@ def codex_native_rows(rows, command):
         if p.get('type') in ['function_call_output', 'custom_tool_call_output'] and p.get('call_id') in pending:
             item = pending.pop(p['call_id'])
             raw = p.get('output', '')
-            try:
-                value = json.loads(raw)
-            except (ValueError, TypeError):
-                value = {}
-            value = value if isinstance(value, dict) else {}
-            item.update(exit_code=value.get('exit_code'), aggregated_output=value.get('output', raw))
+            if isinstance(raw, str):
+                texts = [raw]
+            elif isinstance(raw, list):
+                texts = [p.get('text') for p in raw if isinstance(p, dict) and p.get('type') == 'input_text']
+            else:
+                texts = []
+            results = []
+            for text in texts:
+                try:
+                    value = json.loads(text)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(value, dict) and type(value.get('exit_code')) is int and isinstance(value.get('output'), str):
+                    results.append(value)
+            if len(results) != 1:
+                continue
+            item.update(exit_code=results[0]['exit_code'], aggregated_output=results[0]['output'])
             extra.append(dict(type='item.completed', item=item))
     return rows + extra, 'native session transcript'
 
