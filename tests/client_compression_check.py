@@ -74,7 +74,7 @@ class VerdictChain(unittest.TestCase):
         native.parent.mkdir(parents=True)
         original = '\n'.join(f'test_native.py::test_pass_{i:03} PASSED' for i in range(180)) + '\n1 failed, 180 passed\n' + self.marker
         payloads = [dict(type='custom_tool_call', name='exec', call_id='actual-call', input='await tools.exec_command({cmd:"'+check.PYTEST+'"});'),
-                    dict(type='custom_tool_call_output', call_id='actual-call', output=json.dumps(dict(exit_code=1, output=self.marker+' '+self.ref)))]
+                    dict(type='custom_tool_call_output', call_id='actual-call', output=[dict(type='input_text', text='Script completed\nOutput:\n'), dict(type='input_text', text=json.dumps(dict(exit_code=1, output=self.marker+' '+self.ref)))])]
         native.write_text(''.join(json.dumps(dict(type='response_item', payload=p))+'\n' for p in payloads))
         rows = [dict(type='thread.started', thread_id=session), self.rows[-1]]
         with patch.dict(os.environ, CODEX_HOME=str(self.root)):
@@ -83,6 +83,10 @@ class VerdictChain(unittest.TestCase):
             self.assertEqual(check.observed('codex', rows)[1][0]['tool_call'], 'actual-call')
             other = [dict(type='thread.started', thread_id='ffffffff-ffff-ffff-ffff-ffffffffffff')]
             self.assertEqual(check.codex_native_rows(other, check.PYTEST)[0], other)
+            payloads[-1]['output'].append(payloads[-1]['output'][-1])
+            native.write_text(''.join(json.dumps(dict(type='response_item', payload=p))+'\n' for p in payloads))
+            ambiguous, _ = check.codex_native_rows([rows[0], self.rows[-1]], check.PYTEST)
+            self.assertEqual(check.observed('codex', ambiguous)[1], [], 'multiple command results cannot be attributed by guessing')
         def recover(*args, **kwargs):
             reply = dict(result=dict(content=[dict(type='text', text=json.dumps(dict(content=original)))]))
             (self.root / 'codex-recovery.stdout.jsonl').write_text(json.dumps(reply)+'\n')
