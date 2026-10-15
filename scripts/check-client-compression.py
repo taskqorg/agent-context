@@ -134,13 +134,20 @@ def judge(client, rows, new, marker, agentq, fixture, output):
             original_ok = False
         # Require model acknowledgement too: local pre-transform tool events alone do not prove model input.
         model_saw_reference = reference in reply and marker in reply
-        report.update(bytes_in=record['bytes_in'], bytes_out=record['bytes_out'], ref=reference,
+        report.update(event_id=record['event_id'], bytes_in=record['bytes_in'], bytes_out=record['bytes_out'], ref=reference,
                       original_recovered=code == 0 and original_ok, model_saw_reference=model_saw_reference)
         if original_ok and model_saw_reference and code == 0:
             report.update(result='pass', reason='native client, smaller model-visible output, correlated stats and complete recovery')
             return report
     report['reason'] = 'compression reported, but model visibility or original recovery was not proved'
     return report
+
+
+def telemetry_diagnostic(stderr):
+    # A successful compression run cannot certify the optional native exporter.
+    if 'SessionEnd hook' in stderr and 'Hook cancelled' in stderr:
+        return 'cancelled: SessionEnd hook; connected usage coverage unproved'
+    return 'unknown: verify delivered observations separately'
 
 
 def main():
@@ -205,6 +212,10 @@ def main():
         (output / f'{client}-new-records.json').write_text(json.dumps(new, indent=2)+'\n')
         result = judge(client, events(stem.with_suffix('.stdout.jsonl')), new, marker,
                        agentq, fixture, output)
+        result['installation'] = (install / 'data/installation').read_text().strip() if (install / 'data/installation').is_file() else None
+        result['runtime'] = 'windows' if os.name == 'nt' else 'macos' if sys.platform == 'darwin' else 'wsl' if os.environ.get('WSL_DISTRO_NAME') or Path('/proc/sys/fs/binfmt_misc/WSLInterop').exists() else 'linux'
+        result['native_telemetry_delivery'] = telemetry_diagnostic(stem.with_suffix('.stderr.log').read_text(errors='replace'))
+        result['observed_usage'] = next((r.get('usage') for r in reversed(events(stem.with_suffix('.stdout.jsonl'))) if r.get('type') == ('turn.completed' if client == 'codex' else 'result')), None)
         result.update(client_version=subprocess.run([client, '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),
                       agentq_version=subprocess.run([str(agentq), '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),
                       client_exit=code, duration_s=round(time.monotonic()-started, 1),

@@ -27,6 +27,8 @@ Include actual Claude success/failure hook formats and Codex string/typed/nested
 
 R3/R4: [compression qualification](COMPRESSION-BENCHMARK.md) records the reused research, offline real-engine benchmark, native carrier chain and opt-in installed-client check. `python tests/provider_adapter.py` runs in CI without paid clients.
 
+Mandatory local telemetry acceptance of the same native run, with optional connected-mode delivery verification: [telemetry qualification](TELEMETRY-QUALIFICATION.md), ACCOUNTING O4. Read back the actual compression event, not only `agentq.verify`; correlate native session/tool IDs and report usage coverage separately.
+
 ## Installed CLI compression check
 
 A2: `python3 scripts/check-client-compression.py both` tests the installed Codex CLI and Claude Code CLI with their existing configuration and authentication. Native `cargo test` must run through the automatic adapter; explicit `agentq run` in the prompt cannot qualify it. PASS requires a new successful compression record matching the native client session, smaller bytes, the model quoting its recovery reference and unique failure marker, and `get_original` returning all fixture cases and the measured original byte length. Missing prerequisites or incomplete execution read unknown, never pass. The optional check uses paid model access; CI runs `python tests/client_compression_check.py` to check false-positive prevention without a model.
