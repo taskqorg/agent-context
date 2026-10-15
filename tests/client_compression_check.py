@@ -39,6 +39,8 @@ class VerdictChain(unittest.TestCase):
         self.assertEqual(self.judge([], [])['result'], 'unknown')
         denied = [self.rows[0], dict(type='item.completed', item=dict(type='command_execution', command=check.COMMAND, exit_code=None))]
         self.assertEqual(self.judge([], denied)['result'], 'unknown')
+        denied[1]['item'].update(exit_code=101, aggregated_output='cargo lock: Operation not permitted')
+        self.assertEqual(self.judge([], denied)['result'], 'unknown', 'runner failure is not a compression failure')
 
     def test_record_original_and_model_visibility_are_all_required(self):
         def recover(*args, **kwargs):

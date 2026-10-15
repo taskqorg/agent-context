@@ -116,7 +116,7 @@ def judge(client, rows, new, marker, agentq, fixture, output, command=COMMAND):
     # Native command must be requested. A hook may rewrite it, but the prompt never invokes agentq manually.
     native = [c for c in commands if command in c['command']]
     expected_exit = 1 if command == PYTEST else 101
-    if not native or not any(c.get('exit_code') == expected_exit or marker in c.get('output', '') for c in native):
+    if not native or not any(c.get('exit_code') == expected_exit and (marker in c.get('output', '') or marker in reply) for c in native):
         report.update(result='unknown', reason='client did not execute the fixture command')
         return report
     adapter = 'provider' if client == 'codex' else 'run'
