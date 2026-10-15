@@ -108,7 +108,9 @@ def judge(client, rows, new, marker, agentq, fixture, output):
     if not native or not any(c.get('exit_code') is not None or c.get('completed') for c in native):
         report.update(result='unknown', reason='client did not execute the fixture command')
         return report
-    matched = [r for r in new if r.get('agent') == client and session and r.get('session') == session]
+    adapter = 'provider' if client == 'codex' else 'run'
+    matched = [r for r in new if r.get('agent') == client and r.get('adapter') == adapter
+               and session and r.get('session') == session]
     report['correlated_records'] = len(matched)
     compressed = [r for r in matched if r.get('outcome') == 'compressed' and r.get('ref')
                   and isinstance(r.get('bytes_in'), int) and isinstance(r.get('bytes_out'), int)

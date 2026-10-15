@@ -34,6 +34,7 @@ class VerdictChain(unittest.TestCase):
         self.assertEqual(self.judge([])['result'], 'fail')
         unrelated = dict(self.record, session='other-session')
         self.assertEqual(self.judge([unrelated])['result'], 'fail')
+        self.assertEqual(self.judge([dict(self.record, adapter='run')])['result'], 'fail')
         self.assertEqual(self.judge([], [])['result'], 'unknown')
 
     def test_record_original_and_model_visibility_are_all_required(self):
