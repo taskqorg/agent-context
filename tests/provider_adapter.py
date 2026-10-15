@@ -93,6 +93,19 @@ class ProviderChain(unittest.TestCase):
             self.assertEqual(self.state.transform('native-session', BODY), BODY)
             core.assert_not_called()
 
+    def test_malformed_core_reply_keeps_previously_transmitted_prefix(self):
+        with patch.object(p.subprocess, 'run', side_effect=self.compress):
+            sent = self.state.transform('native-session', BODY)
+        other = dict(CALL, call_id='second-call')
+        self.state.observe('native-session', other)
+        body = copy.deepcopy(BODY)
+        body['input'].append(dict(type='function_call_output', call_id='second-call', output=WRAPPED))
+        with patch.object(p.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '[]', '')):
+            result = self.state.transform('native-session', body)
+        self.assertEqual(result['input'][1], sent['input'][1])
+        self.assertEqual(result['input'][2], body['input'][2])
+        self.state.observe('native-session', dict(response=dict(output=None)))
+
     def test_capacity_and_invalid_replay_preserve_original(self):
         with patch.object(p, 'LIMIT', 1), patch.object(p.subprocess, 'run', side_effect=self.compress):
             self.assertEqual(self.state.transform('native-session', BODY), BODY)

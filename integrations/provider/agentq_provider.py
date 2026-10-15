@@ -115,8 +115,8 @@ class State:
             except (ValueError, TypeError, AttributeError):
                 return
         response = obj.get('response')
-        if isinstance(response, dict):
-            for item in response.get('output', []):
+        if isinstance(response, dict) and isinstance(response.get('output'), list):
+            for item in response['output']:
                 self.observe(session, item)
 
     def transform(self, session, body):
@@ -170,7 +170,7 @@ class State:
                                           text=True, capture_output=True, timeout=4, env=env)
                     if proc.returncode == 0:
                         compressed = json.loads(proc.stdout)
-                        if isinstance(compressed.get('text'), str):
+                        if isinstance(compressed, dict) and isinstance(compressed.get('text'), str):
                             candidate = replace(compressed['text']) if compressed['text'] != text else original
                 except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
                     LOG.warning('provider compressor unavailable; original preserved')
