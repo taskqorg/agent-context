@@ -104,6 +104,8 @@ pub fn supervise(install: &Path, workers: &mut Vec<(u16, Child)>) {
         let started = coreq::quiet(Command::new(&python).args(["-I", "-c", bootstrap]).arg(&adapter).args(args))
             .env("AGENTQ_INSTALL", install)
             .env("AGENTQ_BINARY", install.join(format!("agentq{}", std::env::consts::EXE_SUFFIX)))
+            .env("OPENBLAS_NUM_THREADS", "1")
+            .env("OMP_NUM_THREADS", "1")
             .env("HEADROOM_BEACON", "off")
             .env("DO_NOT_TRACK", "1")
             .env("HEADROOM_TELEMETRY", "off")
