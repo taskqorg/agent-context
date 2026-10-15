@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in installed-client check: native cargo output -> automatic AgentQ compression -> recovery."""
+"""Opt-in installed-client check: native test output -> automatic AgentQ compression -> recovery."""
 import argparse
 import datetime
 import json
@@ -15,6 +15,7 @@ import time
 import uuid
 
 COMMAND = 'cargo test --color never -- --test-threads=1'
+PYTEST = 'pytest -s -v -p no:cacheprovider --color=no test_native.py'
 
 
 def run(command, cwd, stem, timeout=120, stdin=None):
@@ -108,13 +109,14 @@ def observed(client, rows):
     return session, commands, '\n'.join(replies)
 
 
-def judge(client, rows, new, marker, agentq, fixture, output):
+def judge(client, rows, new, marker, agentq, fixture, output, command=COMMAND):
     session, commands, reply = observed(client, rows)
     report = dict(client=client, session=session, native_commands=commands, result='fail',
                   new_records=len(new), correlated_records=0)
     # Native command must be requested. A hook may rewrite it, but the prompt never invokes agentq manually.
-    native = [c for c in commands if COMMAND in c['command']]
-    if not native or not any(c.get('exit_code') == 101 or marker in c.get('output', '') for c in native):
+    native = [c for c in commands if command in c['command']]
+    expected_exit = 1 if command == PYTEST else 101
+    if not native or not any(c.get('exit_code') == expected_exit and (marker in c.get('output', '') or marker in reply) for c in native):
         report.update(result='unknown', reason='client did not execute the fixture command')
         return report
     adapter = 'provider' if client == 'codex' else 'run'
@@ -137,8 +139,8 @@ def judge(client, rows, new, marker, agentq, fixture, output):
         try:
             original = json.loads(recovered[0]['result']['content'][0]['text'])['content']
             original_ok = (len(original.encode()) == record['bytes_in'] and marker in original
-                           and all(f'test pass_{i:03}' in original for i in range(180))
-                           and '180 passed; 1 failed' in original)
+                           and all((f'test_pass_{i:03}' if command == PYTEST else f'test pass_{i:03}') in original for i in range(180))
+                           and ('1 failed, 180 passed' if command == PYTEST else '180 passed; 1 failed') in original)
         except (ValueError, KeyError, IndexError, TypeError):
             original_ok = False
         # Require model acknowledgement too: local pre-transform tool events alone do not prove model input.
@@ -163,6 +165,43 @@ def codex_command(executable, fixture):
     return [executable, 'exec', '--json', '--skip-git-repo-check', '--color', 'never', '-C', str(fixture), '-']
 
 
+def codex_native_rows(rows, command):
+    """Read only this native session; code-mode calls are absent from some CLI stdout schemas."""
+    session, commands, _ = observed('codex', rows)
+    if commands or not session or not re.fullmatch(r'[0-9a-f-]{36}', session):
+        return rows, 'stdout'
+    home = Path(os.environ.get('CODEX_HOME', str(Path.home() / '.codex')))
+    files = list((home / 'sessions').glob('*/*/*/*' + session + '.jsonl'))
+    if len(files) != 1:
+        return rows, 'native transcript unavailable'
+    try:
+        if files[0].stat().st_size > 16 << 20:
+            return rows, 'native transcript exceeds bound'
+        native = events(files[0])
+    except OSError:
+        return rows, 'native transcript unreadable'
+    pending, extra = {}, []
+    for row in native:
+        p = row.get('payload', {})
+        if row.get('type') != 'response_item':
+            continue
+        if p.get('type') in ['function_call', 'custom_tool_call']:
+            source = p.get('arguments', p.get('input', ''))
+            if p.get('call_id') and isinstance(source, str) and p.get('name') in ['exec', 'exec_command', 'shell_command', 'shell'] and command in source:
+                pending[p.get('call_id')] = dict(type='command_execution', id=p.get('call_id'), command=command)
+        if p.get('type') in ['function_call_output', 'custom_tool_call_output'] and p.get('call_id') in pending:
+            item = pending.pop(p['call_id'])
+            raw = p.get('output', '')
+            try:
+                value = json.loads(raw)
+            except (ValueError, TypeError):
+                value = {}
+            value = value if isinstance(value, dict) else {}
+            item.update(exit_code=value.get('exit_code'), aggregated_output=value.get('output', raw))
+            extra.append(dict(type='item.completed', item=item))
+    return rows + extra, 'native session transcript'
+
+
 def client_binary(client, explicit=None):
     if explicit:
         path = Path(explicit).expanduser()
@@ -182,6 +221,7 @@ def main():
     default = Path(os.environ.get('LOCALAPPDATA', str(Path.home() / '.local/share'))) / 'agentq'
     parser.add_argument('--codex', help='Codex CLI executable for a specific version')
     parser.add_argument('--claude', help='Claude CLI executable for a specific version')
+    parser.add_argument('--fixture', choices=['cargo', 'pytest'], default='cargo', help='pytest needs an installed pytest on PATH; no client permission changes')
     parser.add_argument('--install', type=Path, default=default)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--timeout', type=int, default=120, choices=range(30, 301), metavar='30..300')
@@ -195,31 +235,35 @@ def main():
     install = args.install.expanduser().resolve()
     agentq = install / ('agentq.exe' if os.name == 'nt' else 'agentq')
     clients = ['codex', 'claude'] if args.client == 'both' else [args.client]
+    fixture_command = PYTEST if args.fixture == 'pytest' else COMMAND
     report = dict(schema=1, started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   install=str(install), settings_changed=False, results=[])
     for client in clients:
         print(f'{client}: checking installed integration; logs {output}', flush=True)
         executable = client_binary(client, getattr(args, client))
-        missing = ([client] if not executable else []) + ([] if shutil.which('cargo') else ['cargo'])
+        missing = ([client] if not executable else []) + ([] if shutil.which(args.fixture) else [args.fixture])
         if missing or not agentq.is_file():
             report['results'].append(dict(client=client, result='unknown', reason='missing prerequisite: '+', '.join(missing or ['agentq'])))
             continue
         fixture = output / client
         (fixture / 'src').mkdir(parents=True, exist_ok=True)
         marker = 'AGENTQ_CHECK_' + uuid.uuid4().hex
-        (fixture / 'Cargo.toml').write_text('[package]\nname="agentq_client_fixture"\nversion="0.1.0"\nedition="2021"\n[workspace]\n')
-        source = '\n'.join(f'#[test]\nfn pass_{i:03}() {{ assert_eq!({i}, {i}); }}' for i in range(180))
-        source += f'\n#[test]\nfn expected_failure() {{ panic!("{marker}"); }}\n'
-        (fixture / 'src/lib.rs').write_text(source)
+        if args.fixture == 'cargo':
+            (fixture / 'Cargo.toml').write_text('[package]\nname="agentq_client_fixture"\nversion="0.1.0"\nedition="2021"\n[workspace]\n')
+            source = '\n'.join(f'#[test]\nfn pass_{i:03}() {{ assert_eq!({i}, {i}); }}' for i in range(180))
+            (fixture / 'src/lib.rs').write_text(source + f'\n#[test]\nfn expected_failure() {{ panic!("{marker}"); }}\n')
+        else:
+            source = '\n'.join(f'def test_pass_{i:03}(): assert {i} == {i}' for i in range(180))
+            (fixture / 'test_native.py').write_text(source + f'\ndef test_expected_failure(): assert False, "{marker}"\n')
         # Warm compilation and establish actual output length; no dependency download is needed.
         baseline = output / f'{client}-baseline'
-        baseline_code = run(['cargo', 'test', '--offline', '--color', 'never', '--', '--test-threads=1'], fixture, baseline)
+        baseline_code = run(fixture_command.split() if args.fixture == 'pytest' else ['cargo', 'test', '--offline', '--color', 'never', '--', '--test-threads=1'], fixture, baseline)
         raw_bytes = baseline.with_suffix('.stdout.jsonl').stat().st_size
-        if baseline_code != 101 or raw_bytes < 2048:
+        if baseline_code != (1 if args.fixture == 'pytest' else 101) or raw_bytes < 2048:
             report['results'].append(dict(client=client, result='unknown', reason='fixture baseline did not produce expected large failure output'))
             continue
         before, before_errors = stats(install)
-        prompt = (f'In this directory, execute exactly once this shell command: {COMMAND}\n'
+        prompt = (f'In this directory, execute exactly once this shell command: {fixture_command}\n'
                   'Use your ordinary shell tool. Do not edit files, run other commands, delegate, or manually use wrappers. '
                   'The fixture intentionally has one failing test. Report the passed/failed counts, exit code, '
                   'the AGENTQ_CHECK_ error marker, and any original-recovery reference present in the tool output '
@@ -229,8 +273,8 @@ def main():
             command = codex_command(executable, fixture)
         else:
             command = [executable, '-p', prompt, '--output-format', 'stream-json', '--verbose',
-                       '--tools', 'Bash', '--allowedTools', 'Bash(cargo test *)',
-                       f"Bash(AGENTQ_AGENT=claude AGENTQ_SESSION=* AGENTQ_TOOL_CALL=* '{agentq}' run -- cargo test *)",
+                       '--tools', 'Bash', '--allowedTools', f'Bash({args.fixture} *)',
+                       f"Bash(AGENTQ_AGENT=claude AGENTQ_SESSION=* AGENTQ_TOOL_CALL=* '{agentq}' run -- {args.fixture} *)",
                        '--permission-mode', 'dontAsk',
                        '--max-budget-usd', '2', '--session-id', str(uuid.uuid4())]
         started = time.monotonic()
@@ -238,8 +282,10 @@ def main():
         after, after_errors = stats(install)
         new = [v for k, v in after.items() if k not in before]
         (output / f'{client}-new-records.json').write_text(json.dumps(new, indent=2)+'\n')
-        result = judge(client, events(stem.with_suffix('.stdout.jsonl')), new, marker,
-                       agentq, fixture, output)
+        rows = events(stem.with_suffix('.stdout.jsonl'))
+        rows, evidence = codex_native_rows(rows, fixture_command) if client == 'codex' else (rows, 'stdout')
+        result = judge(client, rows, new, marker, agentq, fixture, output, fixture_command)
+        result.update(fixture=args.fixture, native_evidence=evidence)
         result['native_surface'] = 'cli'
         result['fixture_permission_scope'] = 'inherited native policy' if client == 'codex' else 'command-only fixture allowlist; other tools disabled; dontAsk'
         result['installation'] = (install / 'data/installation').read_text().strip() if (install / 'data/installation').is_file() else None
