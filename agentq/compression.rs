@@ -48,6 +48,19 @@ fn exit(s: std::process::ExitStatus) -> i32 {
     s.code().unwrap_or(1)
 }
 
+/// Pinned RTK 0.51.0 pytest prepends display flags; the replay still returns the original native capture.
+fn replay_args(cmd: &[String]) -> Vec<String> {
+    let mut args = vec![];
+    if cmd[0] == "pytest" {
+        let native = &cmd[1..];
+        if !native.iter().any(|a| a.starts_with("--tb")) { args.push("--tb=short".into()); }
+        if !native.iter().any(|a| a == "-q" || a == "--quiet") { args.push("-q".into()); }
+        if !native.iter().any(|a| a.starts_with("-r") && !a.starts_with("--")) { args.push("-rxX".into()); }
+    }
+    args.extend_from_slice(&cmd[1..]);
+    args
+}
+
 /// A bounded RTK recipe over an already executed native capture; never re-executes the user's command.
 fn filter(
     install: &Path,
@@ -96,7 +109,7 @@ fn filter(
         .env("AGENTQ_RUN_REPLAY", &dir)
         .env(
             "AGENTQ_RUN_DIGEST",
-            crate::configure::digest(&json!(&cmd[1..])),
+            crate::configure::digest(&json!(replay_args(cmd))),
         )
         .env("RTK_DB_PATH", dir.join("no-engine-db/gain.db"))
         .env("RTK_RECALL_DB", dir.join("no-engine-db/recall.db"))
@@ -818,6 +831,15 @@ pub fn stats(data: &Path) -> Result<Value, String> {
 mod tests {
     use super::*;
     /// §3 / VERIFICATION A2,A4: result -> protected bytes -> one metadata-only record -> aggregate; corrupt/missing is unknown.
+    #[test]
+    fn pinned_pytest_replay_injection_matches_exact_native_args() {
+        let args = |s: &str| s.split_ascii_whitespace().map(String::from).collect::<Vec<_>>();
+        assert_eq!(replay_args(&args("pytest -v test_native.py")), args("--tb=short -q -rxX -v test_native.py"));
+        assert_eq!(replay_args(&args("pytest --tb=no --quiet -ra test_native.py")), args("--tb=no --quiet -ra test_native.py"));
+        assert_eq!(replay_args(&args("pytest --randomly-seed=1")), args("--tb=short -q -rxX --randomly-seed=1"));
+        assert_eq!(replay_args(&args("cargo test --color never")), args("test --color never"));
+    }
+
     #[test]
     fn result_stats_chain() {
         let d = std::env::temp_dir().join(format!("agentq-compression-{}", crate::mcp::new_id()));
