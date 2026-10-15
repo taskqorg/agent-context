@@ -36,6 +36,8 @@ class VerdictChain(unittest.TestCase):
         self.assertEqual(self.judge([unrelated])['result'], 'fail')
         self.assertEqual(self.judge([dict(self.record, adapter='run')])['result'], 'fail')
         self.assertEqual(self.judge([], [])['result'], 'unknown')
+        denied = [self.rows[0], dict(type='item.completed', item=dict(type='command_execution', command=check.COMMAND, exit_code=None))]
+        self.assertEqual(self.judge([], denied)['result'], 'unknown')
 
     def test_record_original_and_model_visibility_are_all_required(self):
         def recover(*args, **kwargs):
