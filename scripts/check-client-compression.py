@@ -57,7 +57,7 @@ def stats(install):
 
 def events(path):
     result = []
-    for line in path.read_text(errors='replace').splitlines():
+    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
         try:
             item = json.loads(line)
             if isinstance(item, dict):
@@ -150,6 +150,10 @@ def telemetry_diagnostic(stderr):
     return 'unknown: verify delivered observations separately'
 
 
+def codex_command(executable, fixture):
+    return [executable, 'exec', '--json', '--skip-git-repo-check', '--color', 'never', '-C', str(fixture), '-']
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('client', choices=['codex', 'claude', 'both'])
@@ -197,8 +201,7 @@ def main():
                   '(write null if no reference exists). Do not infer or invent a reference.')
         stem = output / client
         if client == 'codex':
-            command = [client, '-a', 'never', 'exec', '--json', '--sandbox', 'workspace-write',
-                       '--skip-git-repo-check', '--color', 'never', '-C', str(fixture), '-']
+            command = codex_command(client, fixture)
         else:
             command = [client, '-p', prompt, '--output-format', 'stream-json', '--verbose',
                        '--tools', 'Bash', '--allowedTools', 'Bash(cargo test *)',
@@ -214,7 +217,7 @@ def main():
                        agentq, fixture, output)
         result['installation'] = (install / 'data/installation').read_text().strip() if (install / 'data/installation').is_file() else None
         result['runtime'] = 'windows' if os.name == 'nt' else 'macos' if sys.platform == 'darwin' else 'wsl' if os.environ.get('WSL_DISTRO_NAME') or Path('/proc/sys/fs/binfmt_misc/WSLInterop').exists() else 'linux'
-        result['native_telemetry_delivery'] = telemetry_diagnostic(stem.with_suffix('.stderr.log').read_text(errors='replace'))
+        result['native_telemetry_delivery'] = telemetry_diagnostic(stem.with_suffix('.stderr.log').read_text(encoding='utf-8', errors='replace'))
         result['observed_usage'] = next((r.get('usage') for r in reversed(events(stem.with_suffix('.stdout.jsonl'))) if r.get('type') == ('turn.completed' if client == 'codex' else 'result')), None)
         result.update(client_version=subprocess.run([client, '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),
                       agentq_version=subprocess.run([str(agentq), '--version'], capture_output=True, text=True, timeout=10).stdout.strip(),

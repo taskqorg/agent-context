@@ -54,6 +54,15 @@ class VerdictChain(unittest.TestCase):
         self.assertIn('cancelled', check.telemetry_diagnostic('SessionEnd hook [command] failed: Hook cancelled'))
         self.assertTrue(check.telemetry_diagnostic('').startswith('unknown:'))
 
+    def test_codex_uses_native_policy_and_preserves_fixture_path(self):
+        fixture = self.root / 'fixture with spaces'
+        argv = check.codex_command('installed-codex', fixture)
+        self.assertEqual(argv[0], 'installed-codex')
+        self.assertEqual(argv[argv.index('-C') + 1], str(fixture))
+        forbidden = {'--sandbox', '--full-auto', '--dangerously-bypass-approvals-and-sandbox',
+                     '-a', '--ask-for-approval', '--model', '-m', '--config', '-c', '--profile', '-p'}
+        self.assertFalse(forbidden.intersection(argv), 'qualification must inherit the installed policy/model/profile')
+
     def test_claude_native_tool_evidence(self):
         rows = [dict(type='assistant', session_id='claude-session', message=dict(content=[
                     dict(type='tool_use', id='tool-id', name='Bash', input=dict(command=check.COMMAND))])),

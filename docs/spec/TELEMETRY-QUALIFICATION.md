@@ -93,3 +93,5 @@ Reuse existing paired experiment evidence under ACCOUNTING O3. Same task/model/c
 - Claude Code Desktop: https://code.claude.com/docs/en/desktop . Shared settings/hooks do not replace a real interactive Desktop run.
 - Claude hooks: https://code.claude.com/docs/en/hooks . Newer documented result replacement is schema-sensitive; telemetry can represent original pre-hook output. Capability-test the actual installed version; do not change our approved PreToolUse recipe based on latest docs alone.
 - Claude usage: https://code.claude.com/docs/en/monitoring-usage . Input excludes cache reads/writes; preserve those categories when normalizing. Do not add parent totals and their subcategories.
+
+Native Codex qualification inherits the installed permission and approval settings. The checker must not force `--sandbox`, `--full-auto`, approval flags, model or profile overrides: forcing workspace-write created a sandbox runner failure on a Windows profile already configured for full access. A native launch failure stays unknown and never becomes a compression failure or PASS.
