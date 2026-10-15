@@ -93,6 +93,14 @@ class ProviderChain(unittest.TestCase):
             self.assertEqual(self.state.transform('native-session', BODY), BODY)
             core.assert_not_called()
 
+    def test_unavailable_storage_does_not_break_proxy_start_or_native_result(self):
+        blocked = Path(self.tmp.name) / 'blocked'
+        blocked.write_text('not a directory')
+        state = p.State(blocked, '/agentq')
+        state.observe('native-session', CALL)
+        with patch.object(p.subprocess, 'run', side_effect=self.compress):
+            self.assertEqual(state.transform('native-session', BODY), BODY)
+
     def test_malformed_core_reply_keeps_previously_transmitted_prefix(self):
         with patch.object(p.subprocess, 'run', side_effect=self.compress):
             sent = self.state.transform('native-session', BODY)

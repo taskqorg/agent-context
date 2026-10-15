@@ -82,7 +82,10 @@ class State:
         self.install = Path(install)
         self.binary = str(binary)
         self.root = self.install / 'data/provider'
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError:
+            LOG.warning('provider replay storage unavailable; original will be preserved')
         self.lock = threading.RLock()
         self.calls = {}
 
