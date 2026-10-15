@@ -64,6 +64,31 @@ class VerdictChain(unittest.TestCase):
                      '-a', '--ask-for-approval', '--model', '-m', '--config', '-c', '--profile', '-p'}
         self.assertFalse(forbidden.intersection(argv), 'qualification must inherit the installed policy/model/profile')
 
+    def test_readonly_pytest_uses_native_session_call_and_full_original(self):
+        session = '01234567-1234-1234-1234-0123456789ab'
+        native = self.root / 'sessions/2026/10/15' / ('rollout-' + session + '.jsonl')
+        native.parent.mkdir(parents=True)
+        original = '\n'.join(f'test_native.py::test_pass_{i:03} PASSED' for i in range(180)) + '\n1 failed, 180 passed\n' + self.marker
+        payloads = [dict(type='custom_tool_call', name='exec', call_id='actual-call', input='await tools.exec_command({cmd:"'+check.PYTEST+'"});'),
+                    dict(type='custom_tool_call_output', call_id='actual-call', output=json.dumps(dict(exit_code=1, output=self.marker+' '+self.ref)))]
+        native.write_text(''.join(json.dumps(dict(type='response_item', payload=p))+'\n' for p in payloads))
+        rows = [dict(type='thread.started', thread_id=session), self.rows[-1]]
+        with patch.dict(os.environ, CODEX_HOME=str(self.root)):
+            rows, source = check.codex_native_rows(rows, check.PYTEST)
+            self.assertEqual(source, 'native session transcript')
+            self.assertEqual(check.observed('codex', rows)[1][0]['tool_call'], 'actual-call')
+            other = [dict(type='thread.started', thread_id='ffffffff-ffff-ffff-ffff-ffffffffffff')]
+            self.assertEqual(check.codex_native_rows(other, check.PYTEST)[0], other)
+        def recover(*args, **kwargs):
+            reply = dict(result=dict(content=[dict(type='text', text=json.dumps(dict(content=original)))]))
+            (self.root / 'codex-recovery.stdout.jsonl').write_text(json.dumps(reply)+'\n')
+            return 0
+        record = dict(self.record, session=session, bytes_in=len(original.encode()))
+        with patch.object(check, 'run', side_effect=recover):
+            result = check.judge('codex', rows, [record], self.marker, Path('/agentq'), self.root, self.root, check.PYTEST)
+            self.assertEqual(result['result'], 'pass')
+            self.assertEqual(check.judge('codex', rows, [dict(record, session='other')], self.marker, Path('/agentq'), self.root, self.root, check.PYTEST)['result'], 'fail')
+
     def test_stats_use_package_export_and_reject_missing_or_conflicting_evidence(self):
         def response(records, errors=None):
             return subprocess.CompletedProcess([], 0, json.dumps(dict(schema=1, records=records, errors=errors or [])), '')

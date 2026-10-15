@@ -28,11 +28,14 @@ With Python 3.9+, cargo, the installed client and its usual login:
 
 ```sh
 agentq check compression both
+agentq check compression codex --fixture pytest
 # Or: codex / claude. --codex PATH / --claude PATH select a specific version.
 # The source checker remains scripts/check-client-compression.py.
 ```
 
 This opt-in live check uses the current client settings and paid model access. It creates a temporary dependency-free crate (180 passing tests and one intentional failure), asks each real CLI to run ordinary `cargo test` once, and checks session-correlated compression stats, a model-visible recovery reference and complete original recovery. It never asks the client to invoke `agentq run` manually or changes routing, hooks, credentials or services.
+
+For a read-only Codex CLI, use `--fixture pytest` with real pytest on PATH. The same 180 passing tests and one failure run without pytest cache writes. The checker never installs dependencies or changes sandbox policy. When code-mode tool calls are absent from CLI stdout, it reads only that session's native local transcript; missing evidence stays unknown.
 
 Exit 0: both integrations proved compression. Exit 1: failed or unproved; `report.json` distinguishes `fail` (native tool ran without compression proof) from `unknown` (missing prerequisite, client did not run, timeout or unreadable stats). The managed Headroom Python is reused when present. Windows can locate Codex's embedded CLI; this does not qualify the Desktop UI. Private logs and fixture stay in the printed directory. `--output DIR` selects it; each client has a 120 s deadline (`--timeout 30..300`). A green `selftest`, healthy service or proxy traffic alone cannot pass this check. Ordinary CI runs only the verdict checks, never paid clients.
 
