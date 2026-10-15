@@ -27,6 +27,8 @@ Include actual Claude success/failure hook formats and Codex string/typed/nested
 
 R3/R4: [compression qualification](COMPRESSION-BENCHMARK.md) records the reused research, offline real-engine benchmark, native carrier chain and opt-in installed-client check. `python tests/provider_adapter.py` runs in CI without paid clients.
 
+Mandatory local telemetry acceptance of the same native run, with optional connected-mode delivery verification: [telemetry qualification](TELEMETRY-QUALIFICATION.md), ACCOUNTING O4. Read back the actual compression event, not only `agentq.verify`; correlate native session/tool IDs and report usage coverage separately.
+
 ## Installed CLI compression check
 
 A2: `python3 scripts/check-client-compression.py both` tests the installed Codex CLI and Claude Code CLI with their existing configuration and authentication. Native `cargo test` must run through the automatic adapter; explicit `agentq run` in the prompt cannot qualify it. PASS requires a new successful compression record matching the native client session, smaller bytes, the model quoting its recovery reference and unique failure marker, and `get_original` returning all fixture cases and the measured original byte length. Missing prerequisites or incomplete execution read unknown, never pass. The optional check uses paid model access; CI runs `python tests/client_compression_check.py` to check false-positive prevention without a model.
@@ -105,3 +107,5 @@ Live check for agentq.md § 6 `agentq.installation` (`agentq.routing`, `agentq.h
 - Found: every 0.6.0 start heartbeat read codex `unknown`, because the sender beats before the headroom proxy binds (37 s and 48 s measured on Windows); the hourly heartbeats read `agentq.routing_problems` `none` (Windows 20:32:15; hermes-fra1 21:25:54, mac 21:26:13, WSL 21:26:29). The start heartbeat now waits until no agent reads `unknown`, at most 5 min (agentq.md § 6); it ships in the next release.
 - Not checked: dashq Attention rendering (dashq#116) and a forced failure on mac or hermes-fra1 (no host access).
 - Found: `agentq service restart` on this host ended the `AgentQ-host` task and then failed `schtasks /Create` with Access denied, leaving no service. `schtasks /Run /TN AgentQ-host` restored it.
+
+Hermes onboarding ships the §4 `agent-context` transform plugin through the existing ownership journal. `hermes_keeps_foreign_enabled_and_disabled_plugins_on_install_and_restore` proves repeat install/removal preserves other plugins; foreign source conflicts prevent activation before writes. `python tests/hermes_adapter.py` checks native transform metadata, envelope preservation and fail-open behavior. Installed gateway dispatch and model visibility require separate native qualification.

@@ -1,0 +1,166 @@
+{
+  "schema": 1,
+  "requirements": [
+    "PRODUCT R1-R5",
+    "PRODUCT R9-R12",
+    "ACCOUNTING O1-O4",
+    "VERIFICATION A2/A4/A6"
+  ],
+  "identity": [
+    "installation",
+    "runtime",
+    "architecture",
+    "profile",
+    "config_revision",
+    "client_surface",
+    "client_version",
+    "embedded_runtime_version",
+    "agentq_version",
+    "engine_version"
+  ],
+  "required_checks": [
+    "native_execution",
+    "model_visibility",
+    "original_recovery",
+    "local_export_match",
+    "native_tool_correlation",
+    "usage_coverage"
+  ],
+  "cases": [
+    {
+      "os": "macos",
+      "surface": "codex_cli",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "macos",
+      "surface": "codex_desktop",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "macos",
+      "surface": "claude_code_cli",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "macos",
+      "surface": "claude_desktop_code",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "windows",
+      "surface": "codex_cli",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "windows",
+      "surface": "codex_desktop",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "windows",
+      "surface": "claude_code_cli",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "windows",
+      "surface": "claude_desktop_code",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "linux",
+      "surface": "codex_cli",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "linux",
+      "surface": "codex_desktop",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "linux",
+      "surface": "claude_code_cli",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    },
+    {
+      "os": "linux",
+      "surface": "claude_desktop_code",
+      "status": "unknown",
+      "reason": "exact native build/profile and complete telemetry not qualified",
+      "scenario_families": [
+        "A2",
+        "A4",
+        "A6"
+      ]
+    }
+  ],
+  "additional_runtimes": "WSL, SSH and cloud are separate identities and qualifications",
+  "desktop_chat": "MCP-only; no automatic terminal compression qualification",
+  "trigger": "new installed client/app/engine/adapter/permission/config revision invalidates affected qualification"
+}

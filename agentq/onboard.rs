@@ -1,6 +1,6 @@
 //! Owned config edits for Codex, Claude Code and Hermes with the ownership journal (agentq.md § 4, § 8, § 9).
 //!
-//! ponytail: MCP registration, hooks and Codex routing. Claude Code routing, telemetry env, the Hermes plugin and the
+//! ponytail: MCP registration, hooks and Codex routing. Claude Code routing, telemetry env and the
 //! instruction block join with their own tasks.
 
 use coreq::write_atomic;
@@ -25,6 +25,7 @@ impl Want {
         match (&self.routing, self.key[0].as_str()) {
             (Some(_), _) => "routing",
             (None, "hooks") => "hooks",
+            (None, "plugins" | "$file") => "plugin",
             _ => "mcp",
         }
     }
@@ -67,7 +68,12 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
         ],
         // Desktop Chat is MCP-only (CONFIGURATION A1); the same server as Claude Code
         "claude-desktop" => vec![w(root.join("claude_desktop_config.json"), &["mcpServers", "agent_context"], json!({"command": exe, "args": ["mcp", "claude"]}), false)],
-        _ => vec![w(root.join("config.yaml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "hermes"]}), false)],
+        _ => vec![
+            w(root.join("plugins/agent-context/__init__.py"), &["$file"], json!(include_str!("../integrations/hermes/__init__.py").replace("@AGENTQ_EXE@", &json!(exe).to_string())), false),
+            w(root.join("plugins/agent-context/plugin.yaml"), &["$file"], json!(include_str!("../integrations/hermes/plugin.yaml")), false),
+            w(root.join("config.yaml"), &["plugins", "enabled"], json!("agent-context"), true),
+            w(root.join("config.yaml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "hermes"]}), false),
+        ],
     }
 }
 
@@ -99,14 +105,27 @@ fn entry(key: &[String], kind: &str, after: Value) -> Value {
     json!({"key": key, "kind": kind, "before": null, "after": after})
 }
 
+fn read_config(path: &Path) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 /// File by file: a conflict leaves that file untouched; every edit is journaled before the write. Repeat is safe.
 pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
+    // Do not enable a plugin whose source files cannot be installed safely.
+    for w in wants.iter().filter(|w| w.key == ["$file"]) {
+        let old = read_config(&w.file)?;
+        place(old.as_deref().unwrap_or(""), w)?;
+    }
     let mut out = vec![];
     let mut files: Vec<&Path> = wants.iter().map(|w| w.file.as_path()).collect();
     files.sort();
     files.dedup();
     for f in files {
-        let old = std::fs::read_to_string(f).ok();
+        let old = read_config(f)?;
         let mut text = old.clone().unwrap_or_default();
         let mut entries = vec![];
         let placed = wants.iter().filter(|w| w.file == f).try_for_each(|w| {
@@ -140,6 +159,9 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
                     std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
                 }
                 save(journal, &j)?;
+                if let Some(parent) = f.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+                }
                 write_atomic(f, &text)?;
                 let bom = if old.as_deref().is_some_and(|o| o.starts_with(BOM) && !text.starts_with(BOM)) { "; UTF-8 BOM stripped" } else { "" };
                 out.push(format!("edited: {} ({n} owned keys{bom})", f.display()));
@@ -198,6 +220,14 @@ pub fn restore_where(journal: &Path, dry: bool, forget: bool, pick: &dyn Fn(usiz
 }
 
 fn place(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
+    if w.key == ["$file"] {
+        let wanted = w.value.as_str().ok_or("plugin content requires text")?;
+        return if text == wanted { Ok((text.into(), None)) }
+            else if text.is_empty() { Ok((wanted.into(), Some(entry(&w.key, "file", wanted.into())))) }
+            else { Err("plugin file has foreign content".into()) };
+    }
+    if w.key == ["plugins", "enabled"] { return enable_plugin(text, w); }
+
     match w.file.extension().and_then(|e| e.to_str()) {
         Some("json") => place_json(text, w),
         Some("toml") => place_toml(text, w),
@@ -207,6 +237,13 @@ fn place(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
 
 fn unplace(text: &str, e: &Value) -> Option<String> {
     let after = &e["after"];
+    if e["kind"] == "file" {
+        return (text == after.as_str()?).then(|| String::new());
+    }
+    if e["kind"] == "replace" {
+        let a = after.as_str()?;
+        return text.contains(a).then(|| text.replacen(a, e["before"].as_str().unwrap_or(""), 1));
+    }
     if e["kind"] == "text" {
         let a = after.as_str()?;
         return text.contains(a).then(|| text.replacen(a, "", 1));
@@ -316,6 +353,39 @@ fn place_toml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
 }
 
 /// Inserts `agent_context` under a block `mcp_servers:` with its indent, else appends both; JSON scalars are YAML.
+/// Preserve the user's plugin list; journal only our inserted item or empty mapping expansion.
+fn enable_plugin(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
+    let name = w.value.as_str().ok_or("plugin name requires text")?;
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let Some(head) = lines.iter().position(|l| l.starts_with("plugins:")) else {
+        let after = format!("{}plugins:\n  enabled:\n    - {name}\n", sep(text));
+        return Ok((format!("{text}{after}"), Some(entry(&w.key, "text", after.into()))));
+    };
+    if lines[head].trim() == "plugins: {}" {
+        let before = lines[head];
+        let after = format!("plugins:\n  enabled:\n    - {name}\n");
+        let mut e = entry(&w.key, "replace", after.clone().into()); e["before"] = before.into();
+        return Ok((text.replacen(before, &after, 1), Some(e)));
+    }
+    if lines[head].trim() != "plugins:" { return Err("plugins is not a block mapping".into()); }
+    let end = (head+1..lines.len()).find(|&i| !lines[i].trim().is_empty() && !lines[i].starts_with(' ') && !lines[i].starts_with('#')).unwrap_or(lines.len());
+    let enabled = (head+1..end).find(|&i| lines[i].trim_start().starts_with("enabled:"));
+    let (at, after) = if let Some(i) = enabled {
+        let indent = lines[i].len() - lines[i].trim_start().len();
+        if lines[i].trim() == "enabled: []" {
+            let before = lines[i]; let after = format!("{}enabled:\n{}- {name}\n", " ".repeat(indent), " ".repeat(indent+2));
+            let mut e = entry(&w.key, "replace", after.clone().into()); e["before"] = before.into();
+            return Ok((text.replacen(before, &after, 1), Some(e)));
+        }
+        if lines[i].trim() != "enabled:" { return Err("plugins.enabled is not a block list".into()); }
+        let last = (i+1..end).find(|&j| !lines[j].trim().is_empty() && lines[j].len()-lines[j].trim_start().len() <= indent).unwrap_or(end);
+        if lines[i+1..last].iter().any(|l| l.trim().trim_start_matches('-').trim().trim_matches(['\"','\'']) == name) { return Ok((text.into(), None)); }
+        (i+1, format!("{}- {name}\n", " ".repeat(indent+2)))
+    } else { (head+1, format!("  enabled:\n    - {name}\n")) };
+    let offset: usize = lines[..at].iter().map(|l|l.len()).sum();
+    Ok((format!("{}{after}{}", &text[..offset], &text[offset..]), Some(entry(&w.key,"text",after.into()))))
+}
+
 fn place_yaml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
     let head = lines.iter().position(|l| l.starts_with(&format!("{}:", w.key[0])));
@@ -391,7 +461,7 @@ mod tests {
 
         let out = apply(&all(), &journal).unwrap();
         assert!(out.iter().all(|l| l.starts_with("edited:")), "{out:?}");
-        assert_eq!(load(&journal).len(), 7, "one journal entry per edit");
+        assert_eq!(load(&journal).len(), 10, "one journal entry per edit");
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         let toml = std::fs::read_to_string(codex.join("config.toml")).unwrap();
@@ -408,7 +478,7 @@ mod tests {
 
         let edited = snapshot(&files);
         assert!(apply(&all(), &journal).unwrap().iter().all(|l| l.starts_with("kept:")), "repeat is safe");
-        assert_eq!(load(&journal).len(), 7);
+        assert_eq!(load(&journal).len(), 10);
         assert_eq!(snapshot(&files), edited);
 
         assert!(restore(&journal, true, None).unwrap().iter().all(|l| l.starts_with("would restore:")));
@@ -416,6 +486,42 @@ mod tests {
         assert!(restore(&journal, false, None).unwrap().iter().all(|l| l.starts_with("restored:")));
         assert_eq!(snapshot(&files), before, "uninstall leaves no diff");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn hermes_keeps_foreign_enabled_and_disabled_plugins_on_install_and_restore() {
+        let d = std::env::temp_dir().join(format!("agentq-plugin-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d); std::fs::create_dir_all(&d).unwrap();
+        let before = "plugins:\n  enabled:\n    - tight-langfuse\n    - web/tavily\n  disabled:\n    - observability/langfuse\n";
+        std::fs::write(d.join("config.yaml"), before).unwrap();
+        let journal = d.join("owned.json");
+        let wants = wants("hermes", &d, &d.join("unused"), Path::new("/agentq"));
+        apply(&wants, &journal).unwrap();
+        let after = std::fs::read_to_string(d.join("config.yaml")).unwrap();
+        assert!(after.contains("    - agent-context\n"));
+        assert!(after.contains("    - tight-langfuse\n    - web/tavily\n  disabled:\n    - observability/langfuse\n"));
+        assert!(apply(&wants, &journal).unwrap().iter().all(|l| l.starts_with("kept:")));
+        restore(&journal, false, None).unwrap();
+        assert_eq!(std::fs::read_to_string(d.join("config.yaml")).unwrap(), before);
+        assert!(!d.join("plugins/agent-context/__init__.py").exists());
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn foreign_plugin_prevents_activation_before_any_write() {
+        let d = std::env::temp_dir().join(format!("agentq-plugin-conflict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let source = d.join("plugins/agent-context/__init__.py");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "foreign plugin").unwrap();
+        let config = "model: native\nplugins:\n  enabled:\n    - other\n";
+        std::fs::write(d.join("config.yaml"), config).unwrap();
+        let journal = d.join("owned.json");
+        assert!(apply(&wants("hermes", &d, &d.join("unused"), Path::new("/agentq")), &journal).is_err());
+        assert_eq!(std::fs::read_to_string(d.join("config.yaml")).unwrap(), config);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "foreign plugin");
+        assert!(!journal.exists());
+        std::fs::remove_dir_all(d).unwrap();
     }
 
     /// #71 A2: a BOM is reported and stripped, not `is not JSON`; uninstall brings the original bytes back.

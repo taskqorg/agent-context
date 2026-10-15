@@ -50,6 +50,10 @@ class VerdictChain(unittest.TestCase):
             self.assertEqual(self.judge([self.record], self.rows[:-1])['result'], 'fail')
             self.assertEqual(self.judge([dict(self.record, bytes_in=99)])['result'], 'fail')
 
+    def test_cancelled_export_is_visible_without_disabling_local_compression(self):
+        self.assertIn('cancelled', check.telemetry_diagnostic('SessionEnd hook [command] failed: Hook cancelled'))
+        self.assertTrue(check.telemetry_diagnostic('').startswith('unknown:'))
+
     def test_claude_native_tool_evidence(self):
         rows = [dict(type='assistant', session_id='claude-session', message=dict(content=[
                     dict(type='tool_use', id='tool-id', name='Bash', input=dict(command=check.COMMAND))])),

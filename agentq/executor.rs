@@ -465,6 +465,26 @@ mod tests {
     /// configured (not verified), leave Claude Code and host-wide defaults alone; a duplicate returns the stored
     /// result, a changed payload is refused; a newer hook event verifies the Direct bypass until a foreign edit.
     #[test]
+    fn hermes_plugin_plan_apply_uses_owned_files_and_preserves_other_plugins() {
+        let d = dir("hermes-plugin");
+        let mut h = host(&d);
+        let root = d.join("hermes"); std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("config.yaml"), "plugins:\n  enabled:\n    - other\n").unwrap();
+        h.clients.push(profiles::Client { kind: "hermes", agent: "hermes", files: vec![root.join("config.yaml")], root: root.clone() });
+        let profile = id(&h, "hermes");
+        h.grant["profiles"].as_array_mut().unwrap().push(profile.clone());
+        let (plan, req) = plan_apply(&h, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", json!([{ "profile": profile, "field": "plugin", "value": "enabled" }]), 1000);
+        assert_eq!(plan["writable"], true, "{plan}");
+        let result = execute(&h, &req.to_string(), 1001);
+        assert_eq!(result["outcome"], "applied", "{result}");
+        assert!(root.join("plugins/agent-context/__init__.py").is_file());
+        assert!(std::fs::read_to_string(root.join("config.yaml")).unwrap().contains("    - other\n"));
+        assert!(onboard::restore(&h.journal(), false, None).unwrap().iter().all(|s| s.starts_with("restored:")));
+        assert_eq!(std::fs::read_to_string(root.join("config.yaml")).unwrap(), "plugins:\n  enabled:\n    - other\n");
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
     fn apply_reads_back_and_verifies_by_evidence() {
         let d = dir("apply");
         let h = host(&d);

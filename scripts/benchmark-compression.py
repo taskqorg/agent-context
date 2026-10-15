@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import re
+from unittest.mock import patch
 
 
 def main():
@@ -51,6 +53,8 @@ def main():
             captures['failure' if failure else 'success'] = (run.stdout, run.returncode)
         raw, code = captures['failure']
         cases = [
+            ('hermes_success', *captures['success'], 'cargo test --color never -- --test-threads=1', {}, True),
+            ('hermes_failure', *captures['failure'], 'cargo test --color never -- --test-threads=1', {}, True),
             ('noisy_success', *captures['success'], 'cargo test --color never -- --test-threads=1', {}, True),
             ('noisy_failure', raw, code, 'cargo test --color never -- --test-threads=1', {}, True),
             ('unicode_failure', raw.replace('AGENTQ_BENCH_ERROR', 'AGENTQ_BENCH_ERROR ошибка 日本語'), code, 'cargo test --color never -- --test-threads=1', {}, True),
@@ -67,9 +71,25 @@ def main():
             (lab / 'data/config.json').write_text(json.dumps(dict(compression=dict(stats='off', **config))))
             payload = dict(adapter='provider', tool='exec_command', command=command, text=text, exit_code=exit_code, session='benchmark', tool_call=name)
             started = time.monotonic()
-            proc = subprocess.run([str(binary), 'compress', 'codex'], input=json.dumps(payload), env=env, capture_output=True, text=True, timeout=10)
-            value = json.loads(proc.stdout) if proc.returncode == 0 else {}
-            transformed = value.get('text', '')
+            envelope_ok = True
+            if name.startswith('hermes_'):
+                namespace = {}
+                plugin = (Path(__file__).resolve().parents[1] / 'integrations/hermes/__init__.py').read_text()
+                exec(compile(plugin.replace('@AGENTQ_EXE@', repr(str(binary))), 'hermes-adapter', 'exec'), namespace)
+                native = dict(output=text, exit_code=exit_code, opaque='preserved')
+                with patch.dict(os.environ, AGENTQ_INSTALL=str(lab)):
+                    transformed_result = namespace['transform'](tool_name='terminal', args=dict(command=command), result=json.dumps(native), session_id='benchmark', turn_id='turn', tool_call_id=name)
+                wrapped = json.loads(transformed_result) if transformed_result else {}
+                transformed = wrapped.get('output', '')
+                envelope_ok = wrapped == dict(native, output=transformed)
+                ref = re.search(r'\[Agent Context original ref: (rtk:[^;]+);', transformed)
+                value = dict(text=transformed, ref=ref.group(1) if ref else None)
+                returncode = 0 if transformed_result else 1
+            else:
+                proc = subprocess.run([str(binary), 'compress', 'codex'], input=json.dumps(payload), env=env, capture_output=True, text=True, timeout=10)
+                value = json.loads(proc.stdout) if proc.returncode == 0 else {}
+                transformed = value.get('text', '')
+                returncode = proc.returncode
             recovery = None
             if smaller and value.get('ref'):
                 request = dict(jsonrpc='2.0', id=1, method='tools/call', params=dict(name='get_original', arguments=dict(ref=value['ref'])))
@@ -81,7 +101,7 @@ def main():
             correct = (len(transformed.encode()) < len(text.encode()) and recovery is True) if smaller else transformed == text and value.get('ref') is None
             if smaller:
                 correct &= ('180 passed' in transformed and 'FAIL' not in transformed and '1 failed' not in transformed) if exit_code == 0 else ('AGENTQ_BENCH_ERROR' in transformed and ('1 FAIL' in transformed or '1 failed' in transformed))
-            report['results'].append(dict(scenario=name, result='pass' if proc.returncode == 0 and correct else 'fail', bytes_in=len(text.encode()), bytes_out=len(transformed.encode()), original_recovered=recovery, fixture_sha256=hashlib.sha256(text.encode()).hexdigest(), duration_ms=round(1000*(time.monotonic()-started))))
+            report['results'].append(dict(scenario=name, result='pass' if returncode == 0 and correct and envelope_ok else 'fail', bytes_in=len(text.encode()), bytes_out=len(transformed.encode()), original_recovered=recovery, fixture_sha256=hashlib.sha256(text.encode()).hexdigest(), duration_ms=round(1000*(time.monotonic()-started))))
         report['binary_version'] = subprocess.run([str(binary), '--version'], capture_output=True, text=True, timeout=10).stdout.strip()
     report['result'] = 'pass' if all(r['result']=='pass' for r in report['results']) else 'fail'
     (output / 'report.json').write_text(json.dumps(report, indent=2)+'\n')

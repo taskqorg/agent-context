@@ -25,3 +25,7 @@ The benchmark writes per-scenario bytes, duration, fixture hash, recovery and ve
 Byte reduction is not billed-token savings. The local benchmark does not qualify LongBench/RULER quality, cache savings, long-session eviction, model retries or paired billed cost. Those historical results stay historical. For cost comparisons freeze client/model/prompt, use paired A/B then B/A order and collect actual input/cache/output usage and latency; never infer these from bytes.
 
 2026-10-15 staged Mac candidate: Codex CLI 0.159.3, 4414 -> 420 bytes; Claude Code 2.1.299, 4206 -> 320 bytes. Both quoted the actual original ref and error marker; recovery was exact. This staged result is separate from installed-artifact qualification. Windows and FRA native clients remain unqualified by these Mac runs.
+
+Hermes terminal adapter cases run in the same offline benchmark: native success/failure capture -> shipped transform -> actual pinned RTK -> exact MCP original recovery, preserving the result envelope and native exit. These two cases do not certify a running Hermes gateway or model-visible delivery; qualify those on the installed host.
+
+Pinned pytest replay mapping follows RTK v0.51.0 `src/cmds/python/pytest_cmd.rs`: only its conditional display-flag prefix is expected, followed by the exact native argv. The capture and exit code remain native; no command is rerun. An exact mapping regression test retains rejection of other argv changes.
