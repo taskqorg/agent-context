@@ -24,27 +24,57 @@ Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases
 
 ## Temporarily disable optimization or integrations
 
-Available in 0.8.0. Isolated Mac CLI checks prove Codex pause/resume, cached-session continuity and Direct-baseline restore, plus Claude auto-mode pause/resume and disable/enable in one active session. Actual Linux systemd disable/reboot/enable and original retention passed. Desktop, Mac/Windows service lifecycle and Codex routed service-baseline restoration remain unqualified. Exact artifacts and open gates: [qualification record](docs/spec/INTEGRATION-CONTROL-PLAN.md#implementation-candidate-and-remaining-qualification). Contract: [temporary controls](agentq.md#temporary-controls).
+Requires AgentQ 0.8.0 or later. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
+
+Start with status:
 
 ```sh
+agentq --version
 agentq status
-agentq status --json
-agentq optimization off             # host compression switch; integrations keep working
-agentq optimization off claude      # only Claude's compression preference
-agentq optimization on              # preserve individually disabled agents
-agentq optimization on claude       # remove Claude's individual pause
-agentq disable codex --dry-run      # preview owned changes and affected aliases
-agentq disable codex                # detach Codex routing, MCP and hooks
-agentq enable codex                 # restore only the saved supported integration
+agentq status --json                 # machine-readable details
 ```
 
-`disable` and `enable` without an agent select this installation. Other targets are `claude`, `hermes` and `claude-desktop` (Desktop Chat: integration only). CLI/Desktop aliases sharing a profile switch together; workers using that installation/profile follow it. No command selects one worker or discovers sibling installations.
+Choose the mode:
 
-Compression switches affect new results without a restart. Full detach preserves installation, data, originals, credentials, grants and queued observations under their retention limits. Enable preserves a prior Direct state, absent optional registrations and compression preferences; a later foreign edit is kept and reported. Repeating a command never replaces its original recovery baseline. Only enable clears disable intent; onboarding, configure and service activation cannot reconnect it.
+| Goal | Turn off | Restore |
+|---|---|---|
+| Pause compression for the host; keep integrations connected | `agentq optimization off` | `agentq optimization on` |
+| Pause compression for one agent | `agentq optimization off claude` | `agentq optimization on claude` |
+| Detach every owned integration on this host | `agentq disable` | `agentq enable` |
+| Detach one agent's integration | `agentq disable codex` | `agentq enable codex` |
 
-Old clients may retain their provider, hooks or MCP connection. Status shows requested integration, observed configuration, effective compression reason and `pending_reload`/`pending_drain` separately. Close or reload affected clients normally and repeat disable to finish. An idle socket or elapsed timeout is insufficient proof to stop transport, and unknown inventory remains pending. A stopped service still permits local status and enable. Claude auto mode compresses successful Bash results through PostToolUse without changing the command or permissions; failures remain native. Older PreToolUse-only auto profiles require explicit hook configuration; enable preserves their saved registrations. `direct` remains a routing-only emergency bypass: it does not disable Claude's compression hook.
+Compression switches apply to new results immediately, without a client restart. The host pause takes precedence over individual preferences: `optimization on` preserves individually paused agents. To resume Claude after both pauses, run both `agentq optimization on` and `agentq optimization on claude`.
 
-An unidentified Python, Node or Electron process can hold a client session. Unless it is an owned service child, the dependency inventory stays unknown and automatic service shutdown waits. Native service-registration read failures also remain unknown. Enable preserves whether the saved service was loaded, including an idle service with no live process.
+For a full detach, preview the affected registrations and shared profiles first:
+
+```sh
+agentq disable --dry-run             # preview the whole installation
+agentq disable                      # detach owned integrations
+agentq status                       # inspect configuration and pending work
+agentq enable                       # restore the saved setup
+agentq status
+
+agentq disable codex --dry-run       # preview one agent instead
+agentq disable codex
+agentq enable codex
+```
+
+Targets are `codex`, `claude`, `hermes` and `claude-desktop`. `claude-desktop` means Desktop Chat and supports integration detach only. Codex CLI/Desktop share a profile; Claude Code CLI/Desktop Code share another. Workers using the same installation and profile switch together. There is no per-worker switch.
+
+Read status as separate observations:
+
+- `integration: on|off|mixed|unknown` describes owned configuration. `on` alone does not prove that a running client loaded it.
+- `optimization: on|off|mixed|unknown` summarizes effective compression; per-profile preferences and reasons explain a host pause or disabled integration.
+- Service state describes the background process separately. A service can remain running during detach to preserve active work and original recovery.
+- `pending_reload` means a client may still have cached settings. Reload or close that client normally. `pending_drain`, or unknown dependencies, means safe transport shutdown is not yet proved. Repeat `disable` after clients finish; never kill workers to clear the status. After `enable`, open or reload affected clients normally and check status again.
+
+Full detach keeps the installation, engines, local data, originals, credentials, grants and queued observations under their existing retention limits. Enable restores the saved supported registrations, prior Direct state and independent compression preferences. Later foreign edits remain conflicts. Repeating a command preserves the first recovery baseline. Only `enable` clears disable intent; onboarding, configure and service activation cannot reconnect a disabled integration. Local status and enable work with the service stopped.
+
+If `agentq` is not on PATH, use the installed launcher. On macOS/Linux: `"$HOME/.local/share/agentq/agentq" status`. In Windows PowerShell: `& "$env:LOCALAPPDATA\agentq\agentq.exe" status`. Replace `status` with the desired command and arguments.
+
+Claude auto mode compresses successful Bash output through PostToolUse without changing native commands or permissions; failures remain native. Older PreToolUse-only profiles need explicit hook configuration; enable preserves their saved registrations. `direct` is a routing-only emergency bypass and does not pause Claude's hook.
+
+Qualification: Mac Codex/Claude CLI controls and isolated Linux systemd lifecycle/retention have native evidence. Desktop, native Mac/Windows reboot/logon and Codex originally routed service-baseline restoration are tracked separately; an unrun check remains unknown. See the [qualification record](docs/spec/INTEGRATION-CONTROL-PLAN.md#implementation-candidate-and-remaining-qualification) and [control contract](agentq.md#temporary-controls).
 
 ## Check installed client compression
 
