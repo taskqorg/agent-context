@@ -17,11 +17,14 @@ pub struct Want {
     value: Value,
     append: bool,
     routing: Option<String>,
+    agent: String,
+    instruction: bool,
 }
 
 impl Want {
     /// The configuration field this edit serves (CONFIGURATION A3): `routing`, `hooks` or `mcp`.
     pub fn field(&self) -> &'static str {
+        if self.instruction { return "instructions"; }
         match (&self.routing, self.key[0].as_str()) {
             (Some(_), _) => "routing",
             (None, "hooks") => "hooks",
@@ -54,7 +57,7 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
     let exe = exe.display().to_string();
     let hook = |event: &str| json!({"type": "command", "command": format!("\"{exe}\" hook {agent} {event}"), "timeout": 5});
     let tools: Vec<Value> = crate::mcp::tools().as_array().into_iter().flatten().map(|t| t["name"].clone()).collect();
-    let w = |file: PathBuf, key: &[&str], value: Value, append: bool| Want { file, key: key.iter().map(|k| k.to_string()).collect(), value, append, routing: None };
+    let w = |file: PathBuf, key: &[&str], value: Value, append: bool| Want { file, key: key.iter().map(|k| k.to_string()).collect(), value, append, routing: None, agent: agent.into(), instruction: false };
     match agent {
         "codex" => vec![
             w(root.join("config.toml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "codex"], "enabled_tools": tools}), false),
@@ -64,10 +67,11 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
         "claude" => vec![
             w(root.join("settings.json"), &["hooks", "SessionStart"], json!({"hooks": [hook("SessionStart")]}), true),
             w(root.join("settings.json"), &["hooks", "PreToolUse"], json!({"matcher": "Bash", "hooks": [hook("PreToolUse")]}), true),
+            w(root.join("settings.json"), &["hooks", "PostToolUse"], json!({"matcher": "Bash", "hooks": [hook("PostToolUse")]}), true),
             w(claude_json.into(), &["mcpServers", "agent_context"], json!({"type": "stdio", "command": exe, "args": ["mcp", "claude"]}), false),
         ],
-        // Desktop Chat is MCP-only (CONFIGURATION A1); the same server as Claude Code
-        "claude-desktop" => vec![w(root.join("claude_desktop_config.json"), &["mcpServers", "agent_context"], json!({"command": exe, "args": ["mcp", "claude"]}), false)],
+        // Desktop Chat is MCP-only (CONFIGURATION A1), with its own control identity.
+        "claude-desktop" => vec![w(root.join("claude_desktop_config.json"), &["mcpServers", "agent_context"], json!({"command": exe, "args": ["mcp", "claude-desktop"]}), false)],
         _ => vec![
             w(root.join("plugins/agent-context/__init__.py"), &["$file"], json!(include_str!("../integrations/hermes/__init__.py").replace("@AGENTQ_EXE@", &json!(exe).to_string())), false),
             w(root.join("plugins/agent-context/plugin.yaml"), &["$file"], json!(include_str!("../integrations/hermes/plugin.yaml")), false),
@@ -79,7 +83,7 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
 
 /// Codex routing edits to the agent's loopback port (§ 4); `agentq direct` removes only these.
 pub fn routing_wants(agent: &str, root: &Path, port: u16) -> Vec<Want> {
-    let w = |key: &[&str], value: Value| Want { file: root.join("config.toml"), key: key.iter().map(|k| k.to_string()).collect(), value, append: false, routing: Some(agent.into()) };
+    let w = |key: &[&str], value: Value| Want { file: root.join("config.toml"), key: key.iter().map(|k| k.to_string()).collect(), value, append: false, routing: Some(agent.into()), agent: agent.into(), instruction: false };
     match agent {
         "codex" => vec![
             w(&["model_provider"], "agent_context".into()),
@@ -131,6 +135,7 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
         let placed = wants.iter().filter(|w| w.file == f).try_for_each(|w| {
             let (t, e) = place(&text, w)?;
             entries.extend(e.map(|mut e| {
+                e["agent"] = w.agent.clone().into();
                 if let Some(a) = &w.routing {
                     e["routing"] = a.as_str().into();
                 }
@@ -168,6 +173,223 @@ pub fn apply(wants: &[Want], journal: &Path) -> Result<Vec<String>, String> {
             }
         }
     }
+    Ok(out)
+}
+
+/// Select supported owned fields, expanding old JSON parent receipts to the owned leaves only.
+/// This lets a later foreign MCP/hook share the same parent without being removed or blocking its sibling.
+pub fn capture(wants: &[Want], journal: &Path) -> Result<Vec<Value>, String> {
+    let j = match std::fs::read(journal) {
+        Ok(b) => serde_json::from_slice::<Vec<Value>>(&b).map_err(|_| "owned.json unreadable")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(_) => return Err("owned.json unreadable".into()),
+    };
+    let mut out = vec![];
+    for e in j {
+        let file = e["file"].as_str().ok_or("invalid owned entry")?;
+        if !wants.iter().any(|w| w.file == Path::new(file)) { continue; }
+        let keys: Vec<String> = e["key"].as_array().ok_or("invalid owned key")?.iter()
+            .map(|k| k.as_str().map(String::from).ok_or("invalid owned key")).collect::<Result<_, _>>()?;
+        let source = crate::configure::digest(&e);
+        let mut matched = false;
+        for w in wants.iter().filter(|w| w.file == Path::new(file) && w.key.starts_with(&keys)) {
+            if e["agent"].as_str().is_some_and(|a| a != w.agent) { continue; }
+            let mut n = e.clone();
+            n.as_object_mut().ok_or("invalid owned entry")?.shift_remove("orig");
+            if w.instruction && !e["after"].as_str().is_some_and(|s| s.trim().starts_with("<!-- agent-context:start -->") && s.trim().ends_with("<!-- agent-context:end -->")
+                && s.matches("<!-- agent-context:start -->").count() == 1 && s.matches("<!-- agent-context:end -->").count() == 1) {
+                return Err("instruction receipt contains foreign text".into());
+            }
+            if e["kind"] == "set" && Path::new(file).extension().is_some_and(|x| x == "json") {
+                let mut v = &e["after"];
+                for key in &w.key[keys.len()..] { v = &v[key]; }
+                if v.is_null() { continue; }
+                n["key"] = json!(w.key);
+                n["after"] = v.clone();
+                if w.append {
+                    let items = v.as_array().ok_or("invalid owned hook array")?;
+                    for item in items {
+                        let mut item_entry = n.clone();
+                        item_entry["kind"] = "append".into();
+                        item_entry["after"] = item.clone();
+                        item_entry["source"] = source.clone().into();
+                        item_entry["field"] = w.field().into();
+                        item_entry["agent"] = w.agent.clone().into();
+                        out.push(item_entry);
+                    }
+                    matched = true;
+                    continue;
+                }
+            } else if w.key != keys { continue; }
+            if w.key != ["$file"] && matches!(w.file.extension().and_then(|s| s.to_str()), Some("yaml" | "yml")) {
+                let after = e["after"].as_str().ok_or("invalid owned YAML")?;
+                if w.key == ["plugins", "enabled"] {
+                    let line = after.split_inclusive('\n').find(|l| l.trim() == "- agent-context").ok_or("unresolved plugin receipt")?;
+                    n["after"] = line.into();
+                } else if w.key == ["mcp_servers", "agent_context"] {
+                    let at = after.find("agent_context:").ok_or("unresolved MCP receipt")?;
+                    let start = after[..at].rfind('\n').map_or(0, |n| n + 1);
+                    n["after"] = after[start..].into();
+                } else { return Err("unresolved YAML scope".into()); }
+                n["kind"] = "text".into();
+                n["before"] = Value::Null;
+                n["scoped_yaml"] = true.into();
+            }
+            n["source"] = source.clone().into();
+            n["field"] = w.field().into();
+            n["agent"] = w.agent.clone().into();
+            out.push(n);
+            matched = true;
+        }
+        if !matched { return Err("unresolved owned scope".into()); }
+    }
+    Ok(out)
+}
+
+/// Reapply the current canonical writer only for the fields present in the saved owned receipts.
+pub fn saved_wants(wants: Vec<Want>, entries: &[Value]) -> Result<Vec<Want>, String> {
+    if entries.iter().any(|e| !wants.iter().any(|w| {
+        let kind = if w.instruction { e["kind"] == "text" }
+            else if w.key == ["$file"] { e["kind"] == "file" }
+            else if w.file.extension().is_some_and(|s| s == "json") { e["kind"] == if w.append { "append" } else { "set" } }
+            else { e["kind"] == "text" || e["kind"] == "replace" };
+        e["file"] == w.file.display().to_string() && e["key"] == json!(w.key) && e["field"] == w.field() && kind
+    })) {
+        return Err("saved profile scope changed".into());
+    }
+    Ok(wants.into_iter().filter(|w| entries.iter().any(|e| e["file"] == w.file.display().to_string() && e["key"] == json!(w.key))).collect())
+}
+
+pub fn instruction_wants(agent: &str, root: &Path, entries: &[Value]) -> Vec<Want> {
+    if agent == "claude-desktop" { return vec![]; }
+    let file = root.join(if agent == "claude" { "CLAUDE.md" } else { "AGENTS.md" });
+    let mut out = vec![];
+    for e in entries.iter().filter(|e| e["file"] == file.display().to_string()) {
+        let Some(keys) = e["key"].as_array() else { continue };
+        let Some(key) = keys.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else { continue };
+        let key: Vec<_> = key.into_iter().map(String::from).collect();
+        if key.is_empty() || out.iter().any(|w: &Want| w.key == key) { continue; }
+        out.push(Want { file: file.clone(), key, value: crate::mcp::INSTRUCTIONS.into(), append: false, routing: None,
+            agent: agent.into(), instruction: true });
+    }
+    out
+}
+
+pub fn unowned_present(wants: &[Want], entries: &[Value]) -> Result<bool, String> {
+    for w in wants {
+        if w.key == ["$file"] || entries.iter().any(|e| e["file"] == w.file.display().to_string() && e["key"] == json!(w.key)) { continue; }
+        let Some(text) = read_config(&w.file)? else { continue };
+        if w.field() == "routing" && !text.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| {
+            l.split_once('=').is_some_and(|(key, v)| key.trim() == "model_provider" && ["\"agent_context\"", "'agent_context'"].iter().any(|id| v.trim_start().starts_with(id)))
+        }) { continue; }
+        match place(&text, w) {
+            Ok((_, None)) => return Ok(true),
+            Err(_) if w.field() != "routing" || text.contains("agent_context") => return Err("foreign or unreadable integration registration".into()),
+            _ => {},
+        }
+    }
+    Ok(false)
+}
+
+pub fn present(wants: &[Want]) -> Result<bool, String> {
+    for w in wants {
+        let Some(text) = read_config(&w.file)? else { return Ok(false); };
+        match place(&text, w) {
+            Ok((_, None)) => {},
+            _ => return Ok(false),
+        }
+    }
+    Ok(true)
+}
+
+pub fn preflight(wants: &[Want]) -> Result<(), String> {
+    let mut files: std::collections::BTreeMap<PathBuf, String> = Default::default();
+    for w in wants {
+        let text = if let Some(t) = files.get(&w.file) { t.clone() } else { read_config(&w.file)?.unwrap_or_default() };
+        let (after, _) = place(&text, w)?;
+        files.insert(w.file.clone(), after);
+    }
+    Ok(())
+}
+
+/// Readback/restore for suspended receipts. Missing values after a crash count only as detached,
+/// never as evidence that a client reloaded. Later foreign values fail closed.
+pub fn detached(e: &Value) -> Result<bool, String> {
+    let path = Path::new(e["file"].as_str().ok_or("invalid saved file")?);
+    let text = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(_) => return Err("config unreadable".into()),
+    };
+    if e["kind"] == "file" { return Ok(false); }
+    if e["kind"] == "text" || e["kind"] == "replace" {
+        if text.contains(e["after"].as_str().ok_or("invalid saved block")?) { return Ok(false); }
+        let keys: Vec<_> = e["key"].as_array().ok_or("invalid saved key")?.iter().filter_map(Value::as_str).collect();
+        let still_registered = match keys.as_slice() {
+            ["model_provider"] => text.lines().take_while(|l| !l.trim_start().starts_with('['))
+                .any(|l| l.split('=').next().is_some_and(|k| k.trim() == "model_provider") && l.contains("agent_context")),
+            ["mcp_servers", "agent_context"] | ["model_providers", "agent_context"] => text.contains(&format!("[{}]", keys.join(".")))
+                || text.lines().any(|l| l.trim_start().starts_with("agent_context:")),
+            ["plugins", "enabled"] => text.contains("agent-context"),
+            _ if e["field"] == "instructions" => text.contains("<!-- agent-context:start -->") || text.contains("<!-- agent-context:end -->"),
+            _ => true,
+        };
+        return if still_registered { Err("owned block changed".into()) } else { Ok(true) };
+    }
+    let mut v: Value = serde_json::from_str(no_bom(&text)).map_err(|_| "config unreadable")?;
+    for k in e["key"].as_array().ok_or("invalid saved key")? {
+        v = v.get(k.as_str().ok_or("invalid saved key")?).cloned().unwrap_or(Value::Null);
+    }
+    if e["kind"] == "append" {
+        if v.as_array().is_some_and(|a| a.contains(&e["after"])) { return Ok(false); }
+        let mut strings = vec![];
+        fn collect<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+            match v {
+                Value::String(s) => out.push(s),
+                Value::Array(a) => a.iter().for_each(|v| collect(v, out)),
+                Value::Object(o) => o.values().for_each(|v| collect(v, out)),
+                _ => {},
+            }
+        }
+        collect(&v, &mut strings);
+        let mut old = vec![];
+        collect(&e["after"], &mut old);
+        if old.iter().filter_map(|s| s.split_once(" hook ").map(|s| s.0)).any(|prefix| !prefix.is_empty() && strings.iter().any(|s| s.starts_with(prefix))) {
+            return Err("owned hook changed".into());
+        }
+        return Ok(true);
+    }
+    Ok(v.is_null())
+}
+
+pub fn detach(journal: &Path, entries: &[Value], dry: bool) -> Result<Vec<String>, String> {
+    let mut out = vec![];
+    let mut files: std::collections::BTreeMap<PathBuf, (String, String)> = Default::default();
+    for e in entries.iter().rev() {
+        let path = PathBuf::from(e["file"].as_str().ok_or("invalid saved file")?);
+        if detached(e)? { continue; }
+        let (before, text) = if let Some(t) = files.get(&path) { t.clone() } else {
+            let t = std::fs::read_to_string(&path).map_err(|_| "config unreadable")?;
+            (t.clone(), t)
+        };
+        let after = unplace(&text, e).ok_or("owned value changed")?;
+        files.insert(path, (before, after));
+    }
+    if dry { return Ok(files.keys().map(|p| format!("would detach: {}", p.display())).collect()); }
+    for (path, (before, after)) in files {
+        if std::fs::read_to_string(&path).map_err(|_| "config unreadable")? != before { return Err("config changed during detach".into()); }
+        if after.is_empty() { std::fs::remove_file(&path).map_err(|e| e.to_string())?; }
+        else { write_atomic(&path, &after)?; }
+        out.push(format!("detached: {}", path.display()));
+    }
+    if !entries.iter().all(|e| detached(e) == Ok(true)) { return Err("detach readback mismatch".into()); }
+    let mut j: Vec<Value> = match std::fs::read(journal) {
+        Ok(b) => serde_json::from_slice(&b).map_err(|_| "owned.json unreadable")?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![],
+        Err(_) => return Err("owned.json unreadable".into()),
+    };
+    j.retain(|e| !entries.iter().any(|n| n["source"].as_str() == Some(crate::configure::digest(e).as_str())));
+    if journal.exists() { save(journal, &j)?; }
     Ok(out)
 }
 
@@ -220,6 +442,13 @@ pub fn restore_where(journal: &Path, dry: bool, forget: bool, pick: &dyn Fn(usiz
 }
 
 fn place(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
+    if w.instruction {
+        let wanted = w.value.as_str().ok_or("invalid instruction block")?;
+        if text.contains(wanted) { return Ok((text.into(), None)); }
+        if text.contains("<!-- agent-context:start -->") || text.contains("<!-- agent-context:end -->") { return Err("instruction block has foreign content".into()); }
+        let after = format!("{}{wanted}\n", sep(text));
+        return Ok((format!("{text}{after}"), Some(entry(&w.key, "text", after.into()))));
+    }
     if w.key == ["$file"] {
         let wanted = w.value.as_str().ok_or("plugin content requires text")?;
         return if text == wanted { Ok((text.into(), None)) }
@@ -237,6 +466,26 @@ fn place(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
 
 fn unplace(text: &str, e: &Value) -> Option<String> {
     let after = &e["after"];
+    if e["scoped_yaml"] == true {
+        let a = after.as_str()?;
+        if !text.contains(a) { return None; }
+        let text = text.replacen(a, "", 1);
+        let mut lines: Vec<String> = text.split_inclusive('\n').map(String::from).collect();
+        let head = if e["key"][0] == "plugins" { "enabled:" } else { "mcp_servers:" };
+        let parent = if head == "enabled:" { "plugins:" } else { "mcp_servers:" };
+        let start = lines.iter().position(|l| l.trim_end() == parent);
+        let end = start.map(|start| (start + 1..lines.len()).find(|&i| !lines[i].trim().is_empty() && !lines[i].starts_with([' ', '#'])).unwrap_or(lines.len()));
+        let wanted_indent = if head == "enabled:" { (a.len() - a.trim_start().len()).checked_sub(2)? } else { 0 };
+        let index = start.zip(end).and_then(|(start, end)| (start..end).find(|&i| lines[i].trim() == head && lines[i].len() - lines[i].trim_start().len() == wanted_indent));
+        if let Some(i) = index {
+            let indent = lines[i].len() - lines[i].trim_start().len();
+            let children: Vec<_> = lines[i+1..].iter().take_while(|l| l.trim().is_empty() || l.trim_start().starts_with('#') || l.len()-l.trim_start().len() > indent).collect();
+            if children.iter().all(|l| l.trim().is_empty() || l.trim_start().starts_with('#')) {
+                lines[i] = format!("{}{head} {}\n", " ".repeat(indent), if head == "enabled:" { "[]" } else { "{}" });
+            }
+        }
+        return Some(lines.concat());
+    }
     if e["kind"] == "file" {
         return (text == after.as_str()?).then(|| String::new());
     }
@@ -411,6 +660,13 @@ fn place_yaml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
             let at: usize = lines[..=h].iter().map(|l| l.len()).sum();
             (format!("{}{block}{}", &text[..at], &text[at..]), block)
         }
+        Some(h) if lines[h].trim_end() == format!("{}: {{}}", w.key[0]) => {
+            let before = lines[h];
+            let after = format!("{}:\n{block}", w.key[0]);
+            let mut e = entry(&w.key, "replace", after.clone().into());
+            e["before"] = before.into();
+            return Ok((text.replacen(before, &after, 1), Some(e)));
+        }
         Some(_) => return Err(format!("{} is not a block mapping", w.key[0])),
     };
     Ok((text, Some(entry(&w.key, "text", after.into()))))
@@ -461,7 +717,7 @@ mod tests {
 
         let out = apply(&all(), &journal).unwrap();
         assert!(out.iter().all(|l| l.starts_with("edited:")), "{out:?}");
-        assert_eq!(load(&journal).len(), 10, "one journal entry per edit");
+        assert_eq!(load(&journal).len(), 11, "one journal entry per edit, including Claude PostToolUse");
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         let toml = std::fs::read_to_string(codex.join("config.toml")).unwrap();
@@ -473,12 +729,13 @@ mod tests {
         let settings: Value = serde_json::from_str(&settings).unwrap();
         assert_eq!(settings["hooks"]["SessionStart"].as_array().unwrap().len(), 2, "foreign hook kept");
         assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+        assert_eq!(settings["hooks"]["PostToolUse"][0]["matcher"], "Bash");
         let hooks: Value = serde_json::from_str(&std::fs::read_to_string(codex.join("hooks.json")).unwrap()).unwrap();
         assert!(hooks["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap().ends_with(" hook codex Stop"));
 
         let edited = snapshot(&files);
         assert!(apply(&all(), &journal).unwrap().iter().all(|l| l.starts_with("kept:")), "repeat is safe");
-        assert_eq!(load(&journal).len(), 10);
+        assert_eq!(load(&journal).len(), 11);
         assert_eq!(snapshot(&files), edited);
 
         assert!(restore(&journal, true, None).unwrap().iter().all(|l| l.starts_with("would restore:")));
@@ -552,7 +809,8 @@ mod tests {
         let cj = d.join(".claude.json");
         let foreign = "{\n  \"mcpServers\": {\n    \"agent_context\": {\n      \"command\": \"node\"\n    }\n  }\n}\n";
         std::fs::write(&cj, foreign).unwrap();
-        std::fs::write(d.join("config.yaml"), "mcp_servers: {}\n").unwrap();
+        let foreign_yaml = "mcp_servers: {agent_context: {command: foreign-tool}}\n";
+        std::fs::write(d.join("config.yaml"), foreign_yaml).unwrap();
         let journal = d.join("owned.json");
         let mut w = wants("claude", &d, &cj, Path::new("/x/agentq"));
         w.extend(wants("hermes", &d, &cj, Path::new("/x/agentq")));
@@ -560,6 +818,7 @@ mod tests {
         assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("mcpServers.agent_context has a foreign value")), "{out:?}");
         assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("not a block mapping")), "{out:?}");
         assert_eq!(std::fs::read_to_string(&cj).unwrap(), foreign);
+        assert_eq!(std::fs::read_to_string(d.join("config.yaml")).unwrap(), foreign_yaml);
 
         // a later foreign edit of an owned key is kept and reported
         let s = d.join("settings.json");

@@ -72,10 +72,11 @@ pub struct Sender {
 
 /// DashQ serves every machine route under `/machine/` (dashq#110); coreq posts `destination + route`, so the
 /// destination stays the DashQ origin the person named and only the route gains the prefix.
-struct Machine<'a>(&'a mut dyn Wire);
+struct Machine<'a>(&'a mut dyn Wire, Option<&'a Path>);
 
 impl Wire for Machine<'_> {
     fn post(&mut self, destination: &str, route: &str, auth: Option<&str>, body: &Value) -> Result<(u16, Value), String> {
+        if self.1.is_some_and(|data| crate::control::host_disabled(data) != Ok(false)) { return Err("integration_disabled: export suspended".into()); }
         self.0.post(destination, &format!("/machine{route}"), auth, body)
     }
     fn now(&self) -> u64 {
@@ -91,6 +92,7 @@ impl Wire for Machine<'_> {
 
 /// One service pass over HTTPS.
 pub fn pass(data: &Path, now: u64, s: &mut Sender) {
+    if crate::control::host_disabled(data) != Ok(false) { return; }
     pass_with(data, now, s, &mut enroll::Https { browser: false });
 }
 
@@ -98,7 +100,7 @@ pub fn pass(data: &Path, now: u64, s: &mut Sender) {
 /// nothing.
 // ponytail: offline revokes take one 10 s try each per pass, at most 16; skip them for a while if passes run late
 fn pass_with(data: &Path, now: u64, s: &mut Sender, wire: &mut dyn Wire) {
-    let wire = &mut Machine(wire);
+    let wire = &mut Machine(wire, Some(data));
     let d = dir(data);
     if !d.join("connection.json").exists() {
         return;
@@ -281,7 +283,7 @@ pub fn enroll_with(data: &Path, destination: &str, wire: &mut dyn Wire) -> Resul
     if !destination.starts_with("https://") {
         return Err("destination must be https".into());
     }
-    let wire = &mut Machine(wire);
+    let wire = &mut Machine(wire, None);
     let d = seed(data)?;
     let host = crate::host();
     let req = Request { installation: None, product: "agentq", host_label: &host, schemas: &[SCHEMA], scope: None, capabilities: &[configure::CAPABILITY] };
@@ -319,7 +321,7 @@ pub fn enroll_with(data: &Path, destination: &str, wire: &mut dyn Wire) -> Resul
 
 /// `agentq disconnect`: stop sending at once; the revoke retries until DashQ confirms it.
 pub fn disconnect_with(data: &Path, wire: &mut dyn Wire) -> Result<&'static str, String> {
-    let wire = &mut Machine(wire);
+    let wire = &mut Machine(wire, None);
     let d = dir(data);
     let s = read(&d.join("connection.json")).unwrap_or_default();
     if !s["active"].is_object() && !s["pending"].is_object() && s["revoke"].as_array().is_none_or(Vec::is_empty) {
@@ -655,6 +657,12 @@ mod tests {
         enroll_with(&d, "https://dash.example", &mut w).unwrap();
         assert_eq!(w.sent[0].1["capabilities"], json!([configure::CAPABILITY]), "asked for separately");
         assert_eq!(status(&d)["configure"]["granted"], true);
+        crate::control::save(&d, "integration.json", &json!({"schema": 1, "generation": 1, "host_disabled": true, "profiles": {}})).unwrap();
+        let sent = w.sent.len();
+        assert!(Machine(&mut w, Some(&d)).post("https://dash.example", "/operations", None, &json!({})).unwrap_err().contains("integration_disabled"));
+        assert_eq!(w.sent.len(), sent, "a pending pass may not start another remote request after host disable");
+        assert_eq!(status(&d)["configure"]["granted"], true, "disable preserves enrollment for enable");
+        std::fs::remove_file(d.join("integration.json")).unwrap();
         let clients = desktop(&d);
         let file = clients[0].files[0].clone();
         let id = profiles::status_with(&clients, &d, w.now)["profiles"][0]["id"].clone();

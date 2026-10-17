@@ -28,7 +28,7 @@ pub fn fix_port(data: &Path, agent: &str) -> Result<u16, String> {
         return Ok(p);
     }
     let p = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).and_then(|l| l.local_addr()).map_err(|e| format!("no free loopback port: {e}"))?.port();
-    let mut c = config(data);
+    let mut c = crate::control::config(data)?;
     c["ports"][agent] = p.into();
     std::fs::create_dir_all(data).map_err(|e| format!("{}: {e}", data.display()))?;
     write_atomic(&data.join("config.json"), &serde_json::to_string_pretty(&c).unwrap_or_default())?;
@@ -89,9 +89,18 @@ fn provider_adapter(install: &Path) -> Result<std::path::PathBuf, String> {
 
 /// Service side: keep one passthrough headroom worker per fixed port; a dead or missing one is started again.
 pub fn supervise(install: &Path, workers: &mut Vec<(u16, Child)>) {
+    let data = install.join("data");
+    workers.retain_mut(|(p, c)| {
+        if ROUTED.iter().any(|a| port(&data, a) == Some(*p) && !crate::control::transport(&data, a)) {
+            let _ = c.kill();
+            let _ = c.wait();
+            false
+        } else { true }
+    });
     workers.retain_mut(|(_, c)| matches!(c.try_wait(), Ok(None)));
     let Some(exe) = crate::engines::headroom_exe(install) else { return };
     for agent in ROUTED {
+        if !crate::control::transport(&data, agent) { continue; }
         let Some(p) = port(&install.join("data"), agent) else { continue };
         if workers.iter().any(|w| w.0 == p) {
             continue;
@@ -135,12 +144,12 @@ pub fn open_connections(ports: &[u16]) -> Result<usize, String> {
         return Ok(0);
     }
     let list = if cfg!(target_os = "linux") {
-        ["/proc/net/tcp", "/proc/net/tcp6"].iter().filter_map(|p| std::fs::read_to_string(p).ok()).collect::<String>()
+        ["/proc/net/tcp", "/proc/net/tcp6"].iter().map(|p| std::fs::read_to_string(p).map_err(|_| "connection list unavailable".to_string())).collect::<Result<Vec<_>, _>>()?.concat()
     } else {
         let (cmd, args) = if cfg!(target_os = "macos") { ("lsof", &["-nP", "-iTCP", "-sTCP:ESTABLISHED"][..]) } else { ("netstat", &["-an"][..]) };
         let o = coreq::quiet(Command::new(cmd).args(args)).output().map_err(|e| format!("{cmd}: {e}"))?;
-        // lsof exits 1 with no output when nothing matches
-        if o.stdout.is_empty() && o.stderr.is_empty() && cmd == "lsof" {
+        // lsof exits 1 with no output when nothing matches.
+        if empty_connections(cmd, o.status.code(), &o.stdout, &o.stderr)? {
             return Ok(0);
         }
         String::from_utf8_lossy(&o.stdout).into_owned()
@@ -149,6 +158,12 @@ pub fn open_connections(ports: &[u16]) -> Result<usize, String> {
         return Err("no connection list".into());
     }
     Ok(established_in(&list, ports))
+}
+
+fn empty_connections(cmd: &str, code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> Result<bool, String> {
+    if cmd == "lsof" && code == Some(1) && stdout.is_empty() && stderr.is_empty() { return Ok(true); }
+    if code != Some(0) || !stderr.is_empty() { return Err("connection inventory failed".into()); }
+    Ok(false)
 }
 
 /// Counts `netstat -an` lines (`127.0.0.1.8787`, `127.0.0.1:8787`), `lsof` names (`127.0.0.1:8787->127.0.0.1:54321`)
@@ -229,6 +244,11 @@ fn journal_shape(j: &Value) -> bool {
 /// Whether the agent should be routed (#132): an onboarded agent with shipped routing and no `agentq direct`.
 /// ponytail: Claude Code and Hermes are intended direct until their routing ships (owner decision on #132).
 pub fn intended(data: &Path, agent: &str, root: &Path) -> (&'static str, &'static str) {
+    match crate::control::disabled(data, agent) {
+        Ok(true) => return ("disabled", "`agentq disable`"),
+        Err(_) => return ("unknown", "integration.json unreadable"),
+        Ok(false) => {},
+    }
     if !ROUTED.contains(&agent) {
         return ("direct", "routing not shipped");
     }
@@ -262,7 +282,7 @@ pub fn agents(data: &Path) -> Value {
 pub fn problems(agents: &Value) -> Vec<String> {
     agents.as_object().into_iter().flatten()
         .filter_map(|(a, r)| match (r["intended"].as_str(), r["routing"].as_str()) {
-            (Some("routed"), Some("routed")) | (Some("direct"), _) => None,
+            (Some("routed"), Some("routed")) | (Some("direct"), _) | (Some("disabled"), Some("direct")) => None,
             (Some("routed"), routing) => Some(format!("{a} {} ({})", routing.unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""))),
             _ => Some(format!("{a} intended unknown ({})", r["intended_reason"].as_str().unwrap_or(""))),
         })
@@ -285,6 +305,33 @@ pub fn drift(journal: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Temporary controls: an enabled sibling must not respawn Codex's safely drained proxy.
+    #[cfg(unix)]
+    #[test]
+    fn drained_proxy_stays_down_while_shared_service_remains_enabled() {
+        use std::os::unix::fs::PermissionsExt;
+        let install = std::env::temp_dir().join(format!("agentq-no-respawn-{}", crate::mcp::new_id()));
+        let data = install.join("data");
+        let engine = install.join("engines").join(format!("headroom-{}", crate::engines::HEADROOM));
+        std::fs::create_dir_all(engine.join("bin")).unwrap();
+        std::fs::write(engine.join("ready"), "fixture").unwrap();
+        let python = engine.join("bin/python");
+        std::fs::write(&python, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::control::save(&data, "config.json", &json!({"ports": {"codex": 1}})).unwrap();
+        crate::control::save(&data, "integration.json", &json!({"schema": 1, "generation": 1, "host_disabled": false,
+            "profiles": {"codex": {"root": install, "phase": "detached", "runtime": "drained", "at": 1, "direct": false, "entries": []}}})).unwrap();
+        let mut workers = vec![(1, Command::new("sleep").arg("30").spawn().unwrap())];
+        supervise(&install, &mut workers);
+        let first = workers.len();
+        supervise(&install, &mut workers);
+        let second = workers.len();
+        stop(&mut workers);
+        assert_eq!((first, second), (0, 0), "a drained port is stopped and is not started on subsequent passes");
+        assert!(!crate::control::host_disabled(&data).unwrap(), "enabled siblings retain the shared service");
+        std::fs::remove_dir_all(install).unwrap();
+    }
 
     #[test]
     fn port_is_fixed_once() {
@@ -318,6 +365,10 @@ mod tests {
         assert_eq!(established_in(proc, &[0x2253]), 1);
         assert_eq!(established_in(mac, &[9999]), 0);
         assert_eq!(open_connections(&[]), Ok(0));
+        assert_eq!(empty_connections("lsof", Some(1), b"", b""), Ok(true));
+        for (cmd, code, out, err) in [("lsof", Some(2), &b""[..], &b""[..]), ("lsof", Some(1), &b""[..], &b"denied"[..]), ("netstat", Some(1), &b"partial"[..], &b""[..]), ("lsof", None, &b""[..], &b""[..])] {
+            assert!(empty_connections(cmd, code, out, err).is_err(), "failed socket inventory must not prove a safe drain");
+        }
         // this host's own list: a live loopback connection counts
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let p = l.local_addr().unwrap().port();

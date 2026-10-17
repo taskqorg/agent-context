@@ -24,11 +24,11 @@ pub fn tools() -> Value {
 }
 
 // ponytail: names `agentq run`/`agentq doctor` (agentq.md § 4) once those commands ship (#53, #54)
-const INSTRUCTIONS: &str = "<!-- agent-context:start -->\n# Agent Context\nUse agent_context index_document/search_document for large reference documents when selected passages suffice; get_original recovers retained bytes without rerunning commands. Read code, complete JSON and short results normally. Proxy routes traffic and telemetry; it does not shorten history, user requests or tool schemas. Never recompress results. Keep normal login, model, sandbox and approval policy.\n<!-- agent-context:end -->";
+pub(crate) const INSTRUCTIONS: &str = "<!-- agent-context:start -->\n# Agent Context\nUse agent_context index_document/search_document for large reference documents when selected passages suffice; get_original recovers retained bytes without rerunning commands. Read code, complete JSON and short results normally. Proxy routes traffic and telemetry; it does not shorten history, user requests or tool schemas. Never recompress results. Keep normal login, model, sandbox and approval policy.\n<!-- agent-context:end -->";
 
 /// Newline-delimited JSON-RPC on stdin/stdout until EOF.
 // ponytail: no Content-Length framing; Codex and Claude Code send newline JSON
-pub fn serve(dir: &Path) -> i32 {
+pub fn serve(dir: &Path, agent: &str) -> i32 {
     let stdout = std::io::stdout();
     for line in std::io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -38,7 +38,10 @@ pub fn serve(dir: &Path) -> i32 {
         let reply = match serde_json::from_str::<Value>(&line) {
             Ok(m) if m["method"] == "tools/call" => {
                 let t0 = std::time::Instant::now();
-                let r = handle(dir, &m);
+                let r = if m["params"]["name"] != "get_original" && crate::control::disabled(dir.parent().unwrap_or(dir), agent) != Ok(false) {
+                    Some(json!({"jsonrpc": "2.0", "id": m["id"], "result": {"isError": true,
+                        "content": [{"type": "text", "text": "integration_disabled: enable AgentQ to use this tool"}]}}))
+                } else { handle(dir, &m) };
                 // `<install>/data/originals`; the tool name only from the known list (agentq.md § 6)
                 let tool = tools().as_array().into_iter().flatten().find(|t| t["name"] == m["params"]["name"]).map_or(json!("unknown"), |t| t["name"].clone());
                 let ok = r.as_ref().is_some_and(|r| r["result"]["isError"] != true);

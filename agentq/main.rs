@@ -5,6 +5,7 @@ mod check;
 mod configure;
 mod compression;
 mod connect;
+mod control;
 mod engines;
 mod hooks;
 mod executor;
@@ -34,7 +35,7 @@ const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
 /// `onboard --yes` waits this long for a started proxy to answer, before and after one restart (#137).
 const PROXY_START: Duration = Duration::from_secs(60);
-const USAGE: &str = "agentq run -- <cmd> [args..] | compress <agent> | stats [--json|--records] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | check compression [codex|claude|both] | mcp codex|claude|hermes | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify|export | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq status [--json] | optimization on|off [agent] [--dry-run] | disable|enable [agent] [--dry-run] | run -- <cmd> [args..] | compress <agent> | stats [--json|--records] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | check compression [codex|claude|both] | mcp codex|claude|hermes|claude-desktop | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify|export | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -117,16 +118,40 @@ fn main() {
             Ok(_) => println_code("profile: trace off"),
             Err(e) => fail(&format!("profile trace: {e}"), "fix data/config.json, then run `agentq profile trace off` again"),
         },
-        ["mcp", "codex" | "claude" | "hermes"] => mcp::serve(&t.install.join("data").join("originals")),
+        ["mcp", agent @ ("codex" | "claude" | "hermes" | "claude-desktop")] => mcp::serve(&t.install.join("data").join("originals"), agent),
         ["service", cmd] => service_cmd(&t, cmd),
         ["onboard", rest @ ..] => onboard(&t, rest),
         ["direct", rest @ ..] => direct(&t, rest),
+        ["status"] => control_status(&t, false),
+        ["status", "--json"] => control_status(&t, true),
+        [action @ ("disable" | "enable"), rest @ ..] => integration_cmd(&t, rest, *action == "enable"),
+        ["optimization", mode @ ("on" | "off"), rest @ ..] => {
+            let agents: Vec<_> = rest.iter().copied().filter(|a| *a != "--dry-run").collect();
+            if agents.len() > 1 { fail("optimization: select one agent or the host", "agentq optimization on|off [agent] [--dry-run]"); }
+            match control::optimization(&t.install.join("data"), agents.first().copied(), *mode == "on", rest.contains(&"--dry-run")) {
+                Ok(v) => println_code(&v.to_string()),
+                Err(e) => fail(&e, "inspect AgentQ control state; no native settings were changed"),
+            }
+        }
         ["configure", rest @ ..] => configure_cmd(&t, rest),
         ["hook", agent @ ("codex" | "claude" | "hermes"), event] => {
             let data = t.install.join("data");
             // A failed hook answers `{}` and exits 0; closed stdout is recorded without panicking.
             let input = std::io::read_to_string(std::io::stdin());
-            let response = input.as_ref().map_err(|e| format!("stdin: {e}")).and_then(|s| hooks::response(agent,event,s,&t.install.join(t.exe_name())));
+            let response = input.as_ref().map_err(|e| format!("stdin: {e}")).and_then(|s| {
+                match control::disabled(&data, agent) {
+                    Ok(false) => {
+                        if *agent == "claude" && ["PreToolUse", "PostToolUse"].contains(event) {
+                            let c = compression::policy(&data, agent)?;
+                            // A wrapper can change native approval decisions even when its compression is paused.
+                            if c["enabled"] == false || c["agents"][*agent] == false { return Ok(serde_json::json!({})); }
+                        }
+                        hooks::response(agent,event,s,&t.install.join(t.exe_name()))
+                    },
+                    Ok(true) => Ok(serde_json::json!({})),
+                    Err(e) => Err(e),
+                }
+            });
             let payload = response.as_ref().cloned().unwrap_or_else(|_| serde_json::json!({}));
             let wrote = writeln!(std::io::stdout(), "{payload}").err().map(|e| format!("stdout: {e}"));
             let errors: Vec<String> = response.err().into_iter().chain(wrote).collect();
@@ -211,12 +236,12 @@ fn doctor(t: &Tool) -> i32 {
         Some(v) => line(true, format!("install: {} current {v}", t.install.display())),
         None => line(false, format!("install: none at {}; run `agentq onboard --yes`", t.install.display())),
     }
-    match read_status(t, 3 * PASS) {
-        Some(s) => line(true, format!("service: running {} pid {}", s["version"].as_str().unwrap_or("?"), s["pid"])),
-        None => line(false, format!("service: unknown (no status.json newer than {} s); run `agentq service install`", 3 * PASS)),
-    }
-    for l in engines::check(&t.install) {
-        line(!l.contains("unavailable"), l);
+    let report = control_report(t);
+    let service = &report["service"];
+    line(matches!(service["state"].as_str(), Some("running" | "stopped")), format!("service: {} ({})", service["state"].as_str().unwrap_or("unknown"), service["reason"].as_str().unwrap_or("fresh process and status readback")));
+    line(report["control"] != "unknown", format!("control: {}", report["control"].as_str().unwrap_or("unknown")));
+    if service["state"] != "stopped" {
+        for l in engines::check(&t.install) { line(!l.contains("unavailable"), l); }
     }
     let agents = routing::agents(&t.install.join("data"));
     for (a, r) in agents.as_object().into_iter().flatten() {
@@ -225,7 +250,12 @@ fn doctor(t: &Tool) -> i32 {
         line(r["routing"] != "unknown" && want != "unknown" && fix.is_empty(), format!("routing: {a} {} ({}), intended {want} ({}){fix}", r["routing"].as_str().unwrap_or("unknown"), r["reason"].as_str().unwrap_or(""), r["intended_reason"].as_str().unwrap_or("")));
     }
     for f in executor::hook_failures(&t.install.join("data")) {
+        if f.split_whitespace().next().is_some_and(|a| control::disabled(&t.install.join("data"), a) == Ok(true)) { continue; }
         line(false, format!("hooks: {f} failed; its next successful run clears it"));
+    }
+    for p in report["configuration"]["profiles"].as_array().into_iter().flatten().filter(|p| p["integration"]["desired"] == "disabled") {
+        line(p["integration"]["configuration"] == "detached", format!("integration: {} disabled, configuration {}, runtime {}", p["kind"].as_str().unwrap_or("unknown"),
+            p["integration"]["configuration"].as_str().unwrap_or("unknown"), p["integration"]["runtime"].as_str().unwrap_or("unknown")));
     }
     for d in routing::drift(&journal(t)) {
         line(false, format!("routing: drift: {d} changed since onboard; run `agentq onboard --yes`"));
@@ -255,6 +285,263 @@ fn println_code(line: &str) -> i32 {
     0
 }
 
+fn integration_host(t: &Tool) -> executor::Host {
+    executor::Host { data: t.install.join("data"), exe: t.install.join(t.exe_name()), clients: profiles::clients(),
+        installation: String::new(), generation: 0, grant: Value::Null }
+}
+
+fn unit_snapshot(t: &Tool) -> Value {
+    let u = service::unit(t, &t.install, PROJECT);
+    let read = std::fs::read(&u.path);
+    let readable = read.as_ref().map_or_else(|e| e.kind() == std::io::ErrorKind::NotFound, |_| true);
+    let bytes = read.ok();
+    let text = bytes.as_ref().map(|b| {
+        if b.starts_with(&[0xff, 0xfe]) {
+            String::from_utf16_lossy(&b[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect::<Vec<_>>())
+        } else { String::from_utf8_lossy(b).into_owned() }
+    });
+    let launcher = t.install.join(t.exe_name()).display().to_string();
+    let launcher = if cfg!(target_os = "macos") || cfg!(windows) { launcher.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;") } else { launcher };
+    let marker = if cfg!(target_os = "macos") { format!("<key>ProgramArguments</key><array><string>{launcher}</string><string>service</string><string>run</string></array>") }
+        else if cfg!(windows) { format!("<Command>{launcher}</Command><Arguments>service run</Arguments>") }
+        else { format!("ExecStart=\"{launcher}\" service run") };
+    let owned = text.as_ref().is_some_and(|s| s.contains(&marker));
+    let loaded = unit_loaded(t);
+    let foreign = loaded.as_ref().err().is_some_and(|e| e == "foreign_service");
+    let observed = loaded.is_ok() || foreign;
+    serde_json::json!({"registered": if readable && observed { Some(owned) } else { None }, "foreign": if readable && observed { Some((text.is_some() && !owned) || foreign) } else { None }, "active": service_owners(t).ok().map(|r| !r.is_empty()),
+        "loaded": loaded.ok(),
+        "digest": bytes.map(|b| resource::hex(ring::digest::digest(&ring::digest::SHA256, &b).as_ref()))})
+}
+
+fn integration_cmd(t: &Tool, args: &[&str], enabled: bool) -> i32 {
+    let agents: Vec<_> = args.iter().copied().filter(|a| *a != "--dry-run").collect();
+    if agents.len() > 1 { fail("select one agent or the host", "agentq disable|enable [agent] [--dry-run]"); }
+    if !args.contains(&"--dry-run") {
+        if let Err(e) = recover_service(t) { fail(&e, "run `agentq status`; service state remains unknown"); }
+    }
+    let h = integration_host(t);
+    let prepare = &mut |ports: &[u16], start: bool| -> Result<(), String> {
+        if !start { return Ok(()); }
+        let s = control::state(&h.data)?;
+        let u = unit_snapshot(t);
+        if u["active"].is_null() { return Err("service process inventory unavailable".into()); }
+        if u["foreign"] == true { return Err("service unit belongs to another installation".into()); }
+        if s["service"]["registered"] != true || u["registered"] != true { return Err("saved service registration is unavailable".into()); }
+        if u["loaded"].is_null() { return Err("service registration inventory unavailable".into()); }
+        if u["digest"] != s["service"]["digest"] { return Err("service registration changed while disabled".into()); }
+        if !ports.is_empty() && engines::headroom_exe(&t.install).is_none() { return Err("existing Headroom engine unavailable".into()); }
+        if u["active"] != true && !(cfg!(target_os = "macos") && u["loaded"] == true) { service::run_all(&service::unit(t, &t.install, PROJECT).load, false)?; }
+        if !routing::await_proxies(ports, PROXY_START, &mut || {}).is_empty() { return Err("saved proxy not answering".into()); }
+        Ok(())
+    };
+    match control::integrations(&h, agents.first().copied(), enabled, args.contains(&"--dry-run"), unit_snapshot(t), prepare) {
+        Ok(mut result) => {
+            if !args.contains(&"--dry-run") && !enabled {
+                if let Err(e) = finish_disable(t, false) { result["service_error"] = e.into(); }
+                result["status"] = control_report(t);
+            }
+            let good = matches!(result["outcome"].as_str(), Some("planned" | "applied" | "unchanged"));
+            println!("{result}");
+            if good { 0 } else { 1 }
+        }
+        Err(e) => fail(&e, "run `agentq status`; preserve the saved state and resolve its conflict"),
+    }
+}
+
+fn finish_disable(t: &Tool, from_service: bool) -> Result<(), String> {
+    recover_service(t)?;
+    let data = t.install.join("data");
+    let s = control::state(&data)?;
+    if s["profiles"].as_object().is_some_and(|p| p.is_empty()) && s["host_disabled"] != true { return Ok(()); }
+    if !from_service && s["service"]["state"] == "stopped" && service_owners(t)?.is_empty() { return Ok(()); }
+    let ignore = service_owners(t)?;
+    let deps = control::dependencies(&ignore);
+    let ports: Vec<u16> = routing::ROUTED.iter().filter_map(|a| routing::port(&data, a)).collect();
+    if !control::drain(&data, deps, routing::open_connections(&ports))? { return Ok(()); }
+    let generation;
+    {
+        let _lock = executor::lock(&data)?;
+        let mut s = control::state(&data)?;
+        if s["host_disabled"] != true || s["service"]["state"] != "ready_to_stop" { return Ok(()); }
+        generation = s["generation"].clone();
+        s["service"]["state"] = "stopping".into();
+        s["service"]["owner"] = std::process::id().into();
+        control::save(&data, "integration.json", &s)?;
+    }
+    let current = unit_snapshot(t);
+    let saved = control::state(&data)?;
+    let result = if current["foreign"] == true {
+        Err("service registration belongs to another installation".into())
+    } else if current["registered"].is_null() || current["active"].is_null() {
+        Err("service registration or process state unavailable".into())
+    } else if current["registered"] == true && current["digest"] != saved["service"]["digest"] {
+        Err("service registration changed while disabled".into())
+    } else if current["registered"] == true {
+        unload_disabled(t).and_then(|_| end_tree(t))
+    } else if current["active"] != true { Ok(()) } else { Err("service registration unavailable".into()) };
+    let _lock = executor::lock(&data)?;
+    let mut s = control::state(&data)?;
+    if s["generation"] != generation { return Err("integration operation superseded".into()); }
+    s["service"]["state"] = if result.is_ok() && (from_service || service_owners(t).is_ok_and(|r| r.is_empty())) { "stopped" } else { "unknown" }.into();
+    control::save(&data, "integration.json", &s)?;
+    result?;
+    if from_service { std::process::exit(0); }
+    Ok(())
+}
+
+/// An absent OS registration is already unloaded; process absence alone cannot establish that.
+fn unit_loaded(t: &Tool) -> Result<bool, String> {
+    let u = service::unit(t, &t.install, PROJECT);
+    let launcher = t.install.join(t.exe_name()).display().to_string();
+    let (mut command, label, platform) = if cfg!(target_os = "macos") {
+        let target = &u.unload[0][2];
+        let (domain, label) = target.rsplit_once('/').ok_or("invalid service target")?;
+        let mut c = Command::new("launchctl");
+        c.args(["print", domain]);
+        (c, label.to_string(), "macos")
+    } else if cfg!(windows) {
+        let label = format!("{}-{PROJECT}", t.title);
+        let mut c = Command::new("powershell");
+        let expected = launcher.replace('\'', "''");
+        c.args(["-NoProfile", "-Command", &format!("$tasks=@(Get-ScheduledTask -ErrorAction Stop | Where-Object {{ $_.TaskName -eq '{label}' -and $_.TaskPath -eq '\\' }}); if ($tasks.Count -eq 0) {{ 'absent' }} elseif ($tasks.Count -eq 1 -and @($tasks[0].Actions).Count -eq 1 -and $tasks[0].Actions[0].Execute -eq '{expected}' -and $tasks[0].Actions[0].Arguments -eq 'service run') {{ 'owned' }} else {{ 'foreign' }}")]);
+        (c, label, "windows")
+    } else {
+        let label = format!("{}-{PROJECT}.service", t.name);
+        let mut c = Command::new("systemctl");
+        c.args(["--user", "show", &label, "--property=LoadState,UnitFileState,ActiveState,ExecStart"]);
+        (c, label, "linux")
+    };
+    let o = coreq::quiet(&mut command).output().map_err(|_| "service registration inventory unavailable")?;
+    if !o.status.success() || !o.stderr.is_empty() { return Err("service registration inventory failed".into()); }
+    let listing = std::str::from_utf8(&o.stdout).map_err(|_| "service registration inventory unreadable")?;
+    let loaded = unit_loaded_in(platform, listing, &label)?;
+    if !loaded || platform == "windows" { return Ok(loaded); }
+    let registration = if platform == "macos" {
+        let o = Command::new("launchctl").args(["print", &u.unload[0][2]]).output().map_err(|_| "service registration inventory unavailable")?;
+        if !o.status.success() || !o.stderr.is_empty() { return Err("service registration inventory failed".into()); }
+        String::from_utf8(o.stdout).map_err(|_| "service registration inventory unreadable")?
+    } else { listing.into() };
+    if !unit_owned_in(platform, &registration, &launcher) { return Err("foreign_service".into()); }
+    Ok(true)
+}
+
+fn unit_loaded_in(platform: &str, listing: &str, label: &str) -> Result<bool, String> {
+    match platform {
+        "macos" if listing.lines().any(|l| l.trim() == "services = {") => Ok(listing.split_whitespace().any(|t| t == label)),
+        "windows" => match listing.trim() { "owned" => Ok(true), "absent" => Ok(false), "foreign" => Err("foreign_service".into()), _ => Err("service registration inventory incomplete".into()) },
+        "linux" if listing.lines().any(|l| l == "LoadState=not-found") => Ok(false),
+        "linux" if listing.lines().any(|l| l == "LoadState=loaded") && listing.lines().any(|l| l.starts_with("ActiveState=")) => Ok(!listing.lines().any(|l| l == "UnitFileState=disabled")
+            || !listing.lines().any(|l| matches!(l, "ActiveState=inactive" | "ActiveState=failed"))),
+        _ => Err("service registration inventory incomplete".into()),
+    }
+}
+
+fn unit_owned_in(platform: &str, listing: &str, launcher: &str) -> bool {
+    if platform == "macos" {
+        let program = listing.lines().find_map(|l| l.trim().strip_prefix("program = "));
+        let args: Vec<_> = listing.lines().skip_while(|l| l.trim() != "arguments = {").skip(1).take_while(|l| l.trim() != "}").map(str::trim).collect();
+        program == Some(launcher) && args == [launcher, "service", "run"]
+    } else {
+        let start = listing.lines().find_map(|l| l.strip_prefix("ExecStart="));
+        [launcher.to_string(), launcher.replace(' ', "\\x20")].iter().any(|exe| start.is_some_and(|s| s.contains(&format!("path={exe} ;")) && s.contains(&format!("argv[]={exe} service run ;"))))
+    }
+}
+
+fn unload_disabled(t: &Tool) -> Result<(), String> {
+    if !unit_loaded(t)? && service_owners(t)?.is_empty() { return Ok(()); }
+    let u = service::unit(t, &t.install, PROJECT);
+    for (i, cmd) in u.unload.iter().enumerate() {
+        // Windows /End fails for an idle task; /Delete still has to remove its logon trigger.
+        if cfg!(windows) && i == 0 && service_owners(t)?.is_empty() { continue; }
+        if let Err(e) = service::run_all(std::slice::from_ref(cmd), false) {
+            if !unit_loaded(t)? && service_owners(t)?.is_empty() { return Ok(()); }
+            return Err(e);
+        }
+    }
+    if unit_loaded(t)? { return Err("service registration remains active".into()); }
+    Ok(())
+}
+
+fn recover_service(t: &Tool) -> Result<(), String> {
+    let data = t.install.join("data");
+    let s = control::state(&data)?;
+    if s["service"]["state"] != "stopping" { return Ok(()); }
+    let owner = s["service"]["owner"].as_u64().and_then(|p| u32::try_from(p).ok()).ok_or("service operation identity unavailable")?;
+    let alive = control::process_alive(owner)?;
+    let runs = service_owners(t)?;
+    let deps = control::dependencies(&runs)?;
+    control::reconcile_stop(&data, owner, alive, !runs.is_empty(), deps.get("controllers").copied().unwrap_or(0) > 0)
+}
+
+fn control_report(t: &Tool) -> Value {
+    let data = t.install.join("data");
+    let clients = profiles::clients();
+    let process_result = service_runs(t);
+    let runs = process_result.as_deref().unwrap_or(&[]);
+    let owners = service_owners(t);
+    let inventory = if process_result.is_ok() { owners.as_ref().map_err(|e| e.clone()).and_then(|p| control::dependencies(p)) } else { Err("service inventory unavailable".into()) };
+    let ports: Vec<u16> = routing::ROUTED.iter().filter_map(|a| routing::port(&data, a)).collect();
+    let connections = routing::open_connections(&ports);
+    let mut configuration = profiles::readonly(&clients, &data, now());
+    for p in configuration["profiles"].as_array_mut().into_iter().flatten() {
+        if let Some(c) = clients.iter().find(|c| p["kind"] == c.kind) {
+            p["aliases"] = serde_json::json!(profiles::KINDS.iter().find(|k| k.0 == c.kind).map(|k| k.2).unwrap_or(&[]));
+            p["integration"] = control::observation(&data, c, &t.install.join(t.exe_name()));
+            if p["integration"]["desired"] == "disabled" {
+                p["integration"]["runtime"] = match &inventory {
+                    Ok(i) => {
+                        let agent = if c.agent == "claude-desktop" { "claude" } else { c.agent };
+                        if p["integration"]["configuration"] != "detached" { "unknown" }
+                        else if i.get(agent).copied().unwrap_or(0) + i.get("agentq").copied().unwrap_or(0) > 0 {
+                            if c.agent == "codex" { "pending_drain" } else { "pending_reload" }
+                        } else if c.agent == "codex" && connections != Ok(0) { "pending_drain" }
+                        else { "drained" }
+                    },
+                    Err(_) => "unknown",
+                }.into();
+                p["integration"]["runtime_at"] = now().into();
+            }
+        }
+    }
+    let state = control::state(&data);
+    let config = control::config(&data);
+    let service = if process_result.is_err() { serde_json::json!({"state": "unknown", "reason": "inventory_unavailable"}) }
+        else if let Some(status) = read_status(t, 3 * PASS).filter(|s| runs.iter().any(|p| s["pid"].as_u64() == Some(u64::from(*p)))) {
+            serde_json::json!({"state": "running", "version": status["version"], "pid": status["pid"], "at": status["at"]})
+        } else if owners.as_ref().is_ok_and(|p| p.is_empty()) && state.as_ref().is_ok_and(|s| s["host_disabled"] == true && s["service"]["state"] == "stopped")
+            && unit_snapshot(t)["loaded"] == false {
+            serde_json::json!({"state": "stopped", "reason": "integration_disabled"})
+        } else { serde_json::json!({"state": "unknown", "reason": "no_fresh_service_evidence"}) };
+    let owned: Vec<_> = configuration["profiles"].as_array().into_iter().flatten().filter(|p| p["owned"] == true || p["integration"]["desired"] == "disabled").collect();
+    let integration: Vec<_> = owned.iter().map(|p| match p["integration"]["configuration"].as_str() { Some("attached") => "on", Some("detached") => "off", _ => "unknown" }).collect();
+    let optimization: Vec<_> = owned.iter().filter(|p| p["effective"]["state"] != "unsupported").map(|p| {
+        if p["effective"]["state"] == "unknown" { "unknown" } else if p["effective"]["state"] == "configured" { "on" } else { "off" }
+    }).collect();
+    serde_json::json!({"schema": 1, "at": now(), "service": service, "configuration": configuration,
+        "integration": control::summary(&integration), "optimization": control::summary(&optimization), "engines": engines::status(&t.install),
+        "host_disabled": state.as_ref().ok().map(|s| &s["host_disabled"]),
+        "compression": config.as_ref().ok().map(|c| serde_json::json!({"enabled": c["compression"]["enabled"].as_bool().unwrap_or(true),
+            "min_bytes": c["compression"]["min_bytes"].as_u64().unwrap_or(2048), "stats": c["compression"]["stats"].as_str().unwrap_or("queue")})),
+        "control": if state.is_ok() && config.is_ok() { "readable" } else { "unknown" }})
+}
+
+fn control_status(t: &Tool, json: bool) -> i32 {
+    let report = control_report(t);
+    if json { println!("{report}"); } else {
+        println!("service: {}", report["service"]["state"].as_str().unwrap_or("unknown"));
+        println!("integration: {}, optimization: {} (configured, runtime verification separate)", report["integration"].as_str().unwrap_or("unknown"), report["optimization"].as_str().unwrap_or("unknown"));
+        println!("host optimization: {}", report["compression"]["enabled"].as_bool().map_or("unknown", |b| if b { "on" } else { "off" }));
+        for p in report["configuration"]["profiles"].as_array().into_iter().flatten() {
+            println!("{}: integration {}, configuration {}, runtime {}; optimization {}, adapter {} ({})", p["kind"].as_str().unwrap_or("unknown"),
+                p["integration"]["desired"].as_str().unwrap_or("unknown"), p["integration"]["configuration"].as_str().unwrap_or("unknown"),
+                p["integration"]["runtime"].as_str().unwrap_or("unknown"), p["optimization"].as_str().unwrap_or("unsupported"),
+                p["effective"]["adapter"].as_str().unwrap_or("unsupported"), p["effective"]["state"].as_str().unwrap_or("unknown"));
+        }
+    }
+    i32::from(report["control"] == "unknown")
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -275,32 +562,32 @@ fn read_status(t: &Tool, max_age: u64) -> Option<Value> {
 }
 
 fn service_cmd(t: &Tool, cmd: &str) -> i32 {
+    if matches!(cmd, "install" | "restart") && control::host_disabled(&t.install.join("data")) != Ok(false) {
+        fail("integration_disabled: service activation is disabled", "run `agentq enable` to restore the saved integrations");
+    }
+    if matches!(cmd, "install" | "restart" | "stop" | "uninstall") && unit_snapshot(t)["foreign"] == true {
+        fail("service unit belongs to another installation", "select that installation explicitly; its service was kept");
+    }
+    if matches!(cmd, "install" | "restart" | "stop" | "uninstall") && unit_snapshot(t)["registered"].is_null() {
+        fail("service registration unreadable", "restore access to its existing unit; it was kept");
+    }
     let u = service::unit(t, &t.install, PROJECT);
     let res = match cmd {
         "run" => serve(t),
         "install" => install_release(t).and_then(|_| start_unit(&u)),
         // the task first: its launcher would restart a killed service run (agentq.md § 5)
         "restart" => service::run_all(&u.stop, true).and_then(|_| {
-            end_tree(t);
+            end_tree(t)?;
             service::run_all(&u.load, false)
         }).and_then(|_| if cfg!(windows) { one_service_run(t) } else { Ok(()) }),
-        "stop" => {
-            end_tree(t);
-            service::run_all(&u.stop, false)
-        }
-        "uninstall" => {
-            end_tree(t);
-            service::run_all(&u.unload, true).and_then(|_| std::fs::remove_file(&u.path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string()))
-        }
+        "stop" => end_tree(t).and_then(|_| service::run_all(&u.stop, false)),
+        "uninstall" => end_tree(t).and_then(|_| service::run_all(&u.unload, true)).and_then(|_| std::fs::remove_file(&u.path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }).map_err(|e| e.to_string())),
         "status" => {
-            let code = match read_status(t, 3 * PASS) {
-                Some(s) => println_code(&format!("service: running {} pid {}, error: {}", s["version"].as_str().unwrap_or("?"), s["pid"], s["error"].as_str().unwrap_or("none"))),
-                None => {
-                    println!("service: unknown (no status.json newer than {} s)", 3 * PASS);
-                    1
-                }
-            };
-            let runs = service_runs(t);
+            let report = control_report(t);
+            let s = &report["service"];
+            println!("service: {} {} pid {}, reason: {}", s["state"].as_str().unwrap_or("unknown"), s["version"].as_str().unwrap_or(""), s["pid"], s["reason"].as_str().unwrap_or("fresh process and status readback"));
+            let code = i32::from(s["state"] == "unknown");
+            let runs = service_runs(t).unwrap_or_default();
             if runs.len() > 1 {
                 println!("service: error: {} service run processes, pids {}; run `agentq service restart`", runs.len(), pids(&runs));
                 return 1;
@@ -341,17 +628,18 @@ fn route_and_start<'a>(
     restart: &mut dyn FnMut(),
 ) -> Result<Vec<(&'a str, u16, bool)>, String> {
     let mut ports = vec![];
-    for a in agents.iter().filter(|a| routing::ROUTED.contains(a)) {
-        match headroom.clone().and_then(|_| routing::fix_port(data, a)) {
-            Ok(port) => {
-                wants.extend(onboard::routing_wants(a, &root(a), port));
-                ports.push((*a, port));
-            }
-            Err(e) => println!("routing: {a} direct: {e}"),
-        }
-    }
     {
         let _lock = executor::lock(data).map_err(|e| format!("onboard: {e}"))?;
+        if agents.iter().any(|a| control::disabled(data, a) != Ok(false)) { return Err("integration_disabled: run `agentq enable`".into()); }
+        for a in agents.iter().filter(|a| routing::ROUTED.contains(a)) {
+            match headroom.clone().and_then(|_| routing::fix_port(data, a)) {
+                Ok(port) => {
+                    wants.extend(onboard::routing_wants(a, &root(a), port));
+                    ports.push((*a, port));
+                }
+                Err(e) => println!("routing: {a} direct: {e}"),
+            }
+        }
         routing::set_direct(data, agents, false).map_err(|e| format!("onboard: {e}"))?;
         onboard::apply(&wants, journal).map_err(|e| format!("onboard: {e}"))?.iter().for_each(|l| println!("{l}"));
     }
@@ -395,12 +683,14 @@ fn copy_unless_same(me: &Path, dst: &Path) -> Result<bool, String> {
 }
 
 /// `schtasks /End` ends only the launcher; end every service run tree too, orphans included (agentq.md § 5).
-fn end_tree(t: &Tool) {
+fn end_tree(t: &Tool) -> Result<(), String> {
     if cfg!(windows) {
-        for pid in service_runs(t) {
-            let _ = coreq::quiet(Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"])).output();
+        for pid in service_runs(t)? {
+            let o = coreq::quiet(Command::new("taskkill").args(["/PID", &pid.to_string(), "/T", "/F"])).output().map_err(|_| "service process stop unavailable")?;
+            if !o.status.success() && control::process_alive(pid)? { return Err(format!("service process {pid} could not be stopped")); }
         }
     }
+    Ok(())
 }
 
 /// Windows restart: wait until exactly one service run is live and `status.json` names it (agentq.md § 5).
@@ -408,7 +698,7 @@ fn one_service_run(t: &Tool) -> Result<(), String> {
     let mut runs = vec![];
     for _ in 0..3 * PASS {
         std::thread::sleep(Duration::from_secs(1));
-        runs = service_runs(t);
+        runs = service_runs(t)?;
         if let [pid] = runs[..]
             && read_status(t, 3 * PASS).and_then(|s| s["pid"].as_u64()) == Some(pid.into())
         {
@@ -419,24 +709,40 @@ fn one_service_run(t: &Tool) -> Result<(), String> {
 }
 
 /// Live `service run` processes of this install (agentq.md § 5).
-fn service_runs(t: &Tool) -> Vec<u32> {
+fn service_listing(t: &Tool) -> Result<String, String> {
     let out = if cfg!(windows) {
-        let ps = format!("Get-CimInstance Win32_Process -Filter \"Name='{}'\" | ForEach-Object {{ \"$($_.ProcessId) $($_.CommandLine)\" }}", t.exe_name());
+        let ps = format!("[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); Get-CimInstance Win32_Process -Filter \"Name='{}'\" | ForEach-Object {{ \"$($_.ProcessId) $($_.CommandLine)\" }}", t.exe_name());
         coreq::quiet(Command::new("powershell").args(["-NoProfile", "-Command", &ps])).output()
     } else {
         Command::new("ps").args(["-axo", "pid=,args="]).output()
     };
-    out.map(|o| service_runs_in(&String::from_utf8_lossy(&o.stdout), &t.install.join("releases"))).unwrap_or_default()
+    let out = out.map_err(|_| "service process inventory unavailable")?;
+    if !out.status.success() { return Err("service process inventory unavailable".into()); }
+    let listing = std::str::from_utf8(&out.stdout).map_err(|_| "service process inventory unreadable")?;
+    if !cfg!(windows) && listing.trim().is_empty() { return Err("empty service process inventory".into()); }
+    Ok(listing.into())
+}
+
+fn service_runs(t: &Tool) -> Result<Vec<u32>, String> {
+    service_listing(t).map(|s| service_runs_in(&s, &t.install.join("releases")))
+}
+
+fn service_owners(t: &Tool) -> Result<Vec<u32>, String> {
+    service_listing(t).map(|s| service_runs_in(&s, &t.install))
 }
 
 /// Pids from `<pid> <command line>` lines that run a binary under `releases` with `service run`; the launcher is not one.
 fn service_runs_in(list: &str, releases: &Path) -> Vec<u32> {
-    let dir = releases.display().to_string().to_lowercase();
+    let dir = releases.display().to_string().replace('\\', "/");
+    let windows = cfg!(windows) || dir.as_bytes().get(1) == Some(&b':');
+    let dir = if windows { dir.to_lowercase() } else { dir };
+    let prefix = format!("{}/", dir.trim_end_matches('/'));
     list.lines()
         .filter_map(|l| {
-            let (pid, cmd) = l.trim().split_once(' ')?;
-            let cmd = cmd.trim().to_lowercase();
-            if cmd.contains(&dir) && cmd.ends_with("service run") { pid.parse().ok() } else { None }
+            let (pid, cmd) = l.trim().split_once(char::is_whitespace)?;
+            let exe = cmd.trim().strip_suffix(" service run")?.trim().trim_matches(['\"', '\'']).replace('\\', "/");
+            let exe = if windows { exe.to_lowercase() } else { exe };
+            if exe.starts_with(&prefix) && (exe.ends_with("/agentq") || exe.ends_with("/agentq.exe")) { pid.parse().ok() } else { None }
         })
         .collect()
 }
@@ -452,13 +758,17 @@ fn single_instance_selftest() -> bool {
                 5230 C:\\Users\\u\\AppData\\Local\\agentq\\releases\\0.5.3\\agentq.exe service run\r\n\
                 6001 \"C:\\Users\\u\\AppData\\Local\\agentq\\releases\\0.5.3\\agentq.exe\" service status\r\n";
     service_runs_in(list, Path::new(r"C:\Users\u\AppData\Local\agentq\releases")) == [4188, 5230]
+        && service_runs_in(list, Path::new(r"C:\Users\u\AppData\Local\agentq")) == [4120, 4188, 5230]
+        && service_runs_in("77 /tmp/install-other/releases/v1/agentq service run\n", Path::new("/tmp/install")).is_empty()
 }
 
 /// One status pass every 30 s, update check hourly; a new release exits 75 so the unit restarts into it.
 fn serve(t: &Tool) -> ! {
     // a release with a new engine pin installs it here; status keeps its 30 s pace meanwhile
     let install = t.install.clone();
-    std::thread::spawn(move || engines::ensure(&install).iter().for_each(|l| eprintln!("agentq: {l}")));
+    if control::host_disabled(&install.join("data")) == Ok(false) {
+        std::thread::spawn(move || engines::ensure(&install).iter().for_each(|l| eprintln!("agentq: {l}")));
+    }
     let install = t.install.clone();
     std::thread::spawn(move || telemetry::sender(&install, PASS));
     // CONFIGURATION "Host executor": an operation interrupted by the last stop resolves before anything else
@@ -471,8 +781,10 @@ fn serve(t: &Tool) -> ! {
     let launched = std::env::current_exe().ok() == Some(t.release_exe(VERSION));
     let mut seen: Option<(u64, String)> = None;
     loop {
+        if let Err(e) = finish_disable(t, true) { eprintln!("agentq: disable: {e}"); }
         routing::supervise(&t.install, &mut workers);
-        if now() >= checked + UPDATE_EVERY {
+        let maintenance = control::host_disabled(&t.install.join("data")) == Ok(false);
+        if maintenance && now() >= checked + UPDATE_EVERY {
             checked = now();
             error = match update::update(t, false) {
                 Ok(Some(v)) => {
@@ -484,7 +796,7 @@ fn serve(t: &Tool) -> ! {
             };
         }
         // agentq.md § 5: the CLI `agentq update` moves `current` too; restart into it once the proxy drains
-        match t.current().filter(|c| launched && c != VERSION) {
+        match t.current().filter(|c| control::host_disabled(&t.install.join("data")) == Ok(false) && launched && c != VERSION) {
             None => seen = None,
             Some(c) => {
                 let since = seen.as_ref().map_or(now(), |s| s.0);
@@ -588,6 +900,16 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
     }
     if !yes {
         return 0;
+    }
+    let selected = if picked.is_empty() { &ready } else { &picked };
+    if control::host_disabled(&t.install.join("data")) != Ok(false)
+        || selected.iter().any(|a| control::disabled(&t.install.join("data"), a) != Ok(false))
+    {
+        fail("integration_disabled: onboarding cannot restore a disabled integration", "run `agentq enable` first");
+    }
+    let unit = unit_snapshot(t);
+    if unit["foreign"] == true || unit["registered"].is_null() {
+        fail("service registration belongs to another installation or is unreadable", "keep it and select the intended installation explicitly");
     }
     // `--yes` is the consent (§ 10)
     if installed {
@@ -795,6 +1117,13 @@ mod tests {
         assert_eq!(restarts, 0);
         assert_eq!(routing::state("codex", &codex, Some(p)).0, "routed", "doctor right after onboard");
         drop(proxy);
+        let paused = r#"{"compression":{"enabled":false}}"#;
+        std::fs::write(data.join("config.json"), paused).unwrap();
+        control::save(&data, "integration.json", &serde_json::json!({"schema":1,"generation":1,"host_disabled":true,"profiles":{}})).unwrap();
+        let rejected = route_and_start(&data, &|_| codex.clone(), &["codex"], vec![], &d.join("journal.json"), Ok(()), Duration::ZERO,
+            &mut || panic!("a disabled installation must not start"), &mut || panic!("a disabled installation must not restart"));
+        assert!(rejected.unwrap_err().contains("integration_disabled"));
+        assert_eq!(std::fs::read_to_string(data.join("config.json")).unwrap(), paused, "disabled onboarding must not allocate a port or race with compression preferences");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -836,6 +1165,27 @@ mod tests {
     fn service_runs_skip_launcher() {
         assert!(single_instance_selftest());
         assert_eq!(service_runs_in("  77 /h/.local/share/agentq/releases/0.5.3/agentq service run\n", Path::new("/h/.local/share/agentq/releases")), [77]);
+        for (platform, listing, loaded) in [
+            ("macos", "gui/501 = {\n services = {\n 7 0 com.agentq.host\n }\n}", true),
+            ("macos", "gui/501 = {\n services = {\n 7 0 com.agentq.host-other\n }\n}", false),
+            ("windows", "owned\r\n", true), ("windows", "absent\n", false),
+            ("linux", "LoadState=loaded\nUnitFileState=enabled\nActiveState=inactive\n", true),
+            ("linux", "LoadState=loaded\nUnitFileState=disabled\nActiveState=inactive\n", false),
+            ("linux", "LoadState=loaded\nUnitFileState=disabled\nActiveState=activating\n", true),
+            ("linux", "LoadState=not-found\nActiveState=inactive\n", false),
+        ] {
+            let label = if platform == "windows" { "AgentQ-host" } else { "com.agentq.host" };
+            assert_eq!(unit_loaded_in(platform, listing, label), Ok(loaded), "repeated disable must distinguish an unloaded unit from an idle registered service");
+        }
+        assert!(unit_loaded_in("macos", "", "com.agentq.host").is_err());
+        assert!(unit_loaded_in("windows", "foreign", "AgentQ-host").is_err());
+        for platform in ["macos", "linux"] {
+            let owned = if platform == "macos" { "program = /install/agentq\narguments = {\n/install/agentq\nservice\nrun\n}\n" }
+                else { "ExecStart={ path=/install/agentq ; argv[]=/install/agentq service run ; ignore_errors=no ; }\n" };
+            assert!(unit_owned_in(platform, owned, "/install/agentq"));
+            assert!(!unit_owned_in(platform, owned, "/other-install/agentq"), "a matching OS label is not ownership");
+            assert!(!unit_owned_in(platform, &owned.replace("service run", "service stop").replace("service\nrun", "service\nstop"), "/install/agentq"));
+        }
     }
 
     /// #64 A3: a running legacy process recreated the folder with leftovers only: removed, and its pid is named.

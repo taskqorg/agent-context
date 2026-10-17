@@ -22,6 +22,17 @@ A user request to remove agentq allows this step.
 3. Run `agentq uninstall`. It restores owned edits whose value is unchanged, keeps later foreign edits and reports conflicts, removes the service, engines, data and install folder. Logins, shared keys and exported history stay. A second run prints `already removed`.
 4. A legacy Node install is removed by `agentq uninstall --legacy [--dry-run]`, which runs its own uninstall.
 
+## Temporarily disable and restore
+
+Use the commands from [README](README.md#temporarily-disable-optimization-or-integrations) with 0.8.0 or later. The owner authorized rollout to the existing Mac, Windows and FRA installations on 2026-10-17. Check the [qualification record](docs/spec/INTEGRATION-CONTROL-PLAN.md#implementation-candidate-and-remaining-qualification): Desktop, macOS/Windows service lifecycle and Codex routed service-baseline restoration remain open gates. Claude auto mode now uses successful-result PostToolUse replacement; older PreToolUse-only profiles need explicit hook configuration. Enable preserves the saved baseline.
+
+1. Read `agentq status --json`. Distinguish a compression preference, configured integration, runtime evidence and service health; none implies the others.
+2. For compression only, run `agentq optimization off [codex|claude|hermes]`; omit the agent for the host. Resume with `on`. The host switch preserves individually disabled preferences. No native config edits or client restart.
+3. For complete integration detach, run `agentq disable [codex|claude|hermes|claude-desktop] --dry-run`, then the same command without `--dry-run`. Omit the agent for the installation. Explicit user intent is consent; do not add another approval round. Preview aliases because CLI and Desktop can share a profile.
+4. Keep active workers and conversations. If status is pending, close/reload affected clients normally and repeat disable; never kill them or force a timeout. Host disable suspends export, automatic activation and remote configuration while needed transport drains. Foreign registrations or unknown scope remain conflicts.
+5. Restore with `agentq enable [agent]`. It uses the saved supported fields and current canonical writers, preserves Direct/compression preferences and later foreign edits, and prepares the existing proxy before routing. It never runs uninstall, legacy removal or onboarding. A missing saved integration is unchanged.
+6. Read status again. Matching configuration is configured; a required native client check remains unverified until it actually runs. Preserve data and recovery records on a partial/unknown result and report the conflict. Remote management gains no disable/enable permission from these local commands.
+
 ## DashQ connection target
 
 Accepted, pending implementation: [ENROLLMENT](docs/spec/ENROLLMENT.md). Once qualified, use `agentq enroll <https-url>` and approve once in the browser (headless: link/code elsewhere). The command verifies a real dashboard snapshot. No file/key copying or repeated onboarding; use connection status and disconnect for recovery. Do not advertise this path as available before its release gate passes.

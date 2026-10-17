@@ -17,10 +17,34 @@ Native Windows and WSL are separate installs. Procedure: [INSTALL.md](INSTALL.md
 - `agentq onboard` finds ready agents and a legacy install; writes nothing. `agentq onboard --yes [codex|claude|hermes..]` applies config edits, installs the service and prints what to verify by a real turn.
 - `agentq langfuse` reads the Langfuse host and keys from hidden stdin into protected storage. `agentq telemetry status|verify` shows the queue and checks delivery.
 - `agentq service status`, `agentq update [--check]`, `agentq selftest` check the install.
-- `agentq doctor [--fix]` is decided (agentq.md § 1) and not shipped yet; until then use `service status` and `telemetry status`.
+- `agentq doctor` reads installation, service, routing intent, engines and local telemetry health. Intentional detach is distinct from drift; runtime verification remains separate.
 - `agentq uninstall --dry-run`, then `agentq uninstall`, restores owned edits and removes the service and install folder.
 
 Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases), one `agentq-<ver>-<os>-<arch>` binary per platform plus `SHA256SUMS`. Check a download with `sha256sum -c SHA256SUMS --ignore-missing`; trace it to the workflow run that built it with `gh attestation verify <file> --repo taskqorg/agentq`.
+
+## Temporarily disable optimization or integrations
+
+Available in 0.8.0. Isolated Mac CLI checks prove Codex pause/resume, cached-session continuity and Direct-baseline restore, plus Claude auto-mode pause/resume and disable/enable in one active session. Actual Linux systemd disable/reboot/enable and original retention passed. Desktop, Mac/Windows service lifecycle and Codex routed service-baseline restoration remain unqualified. Exact artifacts and open gates: [qualification record](docs/spec/INTEGRATION-CONTROL-PLAN.md#implementation-candidate-and-remaining-qualification). Contract: [temporary controls](agentq.md#temporary-controls).
+
+```sh
+agentq status
+agentq status --json
+agentq optimization off             # host compression switch; integrations keep working
+agentq optimization off claude      # only Claude's compression preference
+agentq optimization on              # preserve individually disabled agents
+agentq optimization on claude       # remove Claude's individual pause
+agentq disable codex --dry-run      # preview owned changes and affected aliases
+agentq disable codex                # detach Codex routing, MCP and hooks
+agentq enable codex                 # restore only the saved supported integration
+```
+
+`disable` and `enable` without an agent select this installation. Other targets are `claude`, `hermes` and `claude-desktop` (Desktop Chat: integration only). CLI/Desktop aliases sharing a profile switch together; workers using that installation/profile follow it. No command selects one worker or discovers sibling installations.
+
+Compression switches affect new results without a restart. Full detach preserves installation, data, originals, credentials, grants and queued observations under their retention limits. Enable preserves a prior Direct state, absent optional registrations and compression preferences; a later foreign edit is kept and reported. Repeating a command never replaces its original recovery baseline. Only enable clears disable intent; onboarding, configure and service activation cannot reconnect it.
+
+Old clients may retain their provider, hooks or MCP connection. Status shows requested integration, observed configuration, effective compression reason and `pending_reload`/`pending_drain` separately. Close or reload affected clients normally and repeat disable to finish. An idle socket or elapsed timeout is insufficient proof to stop transport, and unknown inventory remains pending. A stopped service still permits local status and enable. Claude auto mode compresses successful Bash results through PostToolUse without changing the command or permissions; failures remain native. Older PreToolUse-only auto profiles require explicit hook configuration; enable preserves their saved registrations. `direct` remains a routing-only emergency bypass: it does not disable Claude's compression hook.
+
+An unidentified Python, Node or Electron process can hold a client session. Unless it is an owned service child, the dependency inventory stays unknown and automatic service shutdown waits. Native service-registration read failures also remain unknown. Enable preserves whether the saved service was loaded, including an idle service with no live process.
 
 ## Check installed client compression
 

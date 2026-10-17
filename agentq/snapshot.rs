@@ -74,8 +74,8 @@ const FIELDS: [(&str, &[&str]); 5] = [
 ];
 const EFFECTIVE: [&str; 6] = ["configured", "disabled", "bypassed", "missing", "unknown", "unsupported"];
 const ADAPTERS: [&str; 3] = ["provider", "hook", "plugin"];
-const CONFLICTS: [&str; 2] = ["foreign_provider", "unparseable_config"];
-const INCOMPLETE: [&str; 1] = ["unreadable_config"];
+const CONFLICTS: [&str; 3] = ["foreign_provider", "unparseable_config", "integration_disabled"];
+const INCOMPLETE: [&str; 2] = ["unreadable_config", "unreadable_control"];
 
 fn id16(v: &Value) -> Option<&str> {
     v.as_str().filter(|s| s.len() == 16 && s.bytes().all(|b| b.is_ascii_hexdigit()))
@@ -135,6 +135,23 @@ pub fn configuration(status: Option<&Value>, now: u64) -> Value {
             let state = pick(p["effective"]["state"].as_str(), &EFFECTIVE);
             let adapter = p["effective"]["adapter"].as_str().filter(|a| ADAPTERS.contains(a));
             out["effective"] = json!({"adapter": adapter, "state": state});
+            if let Some(event) = p["effective"]["event"].as_str().filter(|e| ["PreToolUse", "PostToolUse"].contains(e)) {
+                out["effective"]["event"] = event.into();
+            }
+            if p["optimization_preference"].is_string() {
+                out["optimization_preference"] = pick(p["optimization_preference"].as_str(), &["enabled", "disabled", "unknown"]).into();
+                out["optimization_reason"] = pick(p["optimization_reason"].as_str(), &["unreadable_control", "integration_disabled", "host_pause", "agent_pause", "direct", "adapter_missing", "configured", "unsupported", "unknown"]).into();
+            }
+            if p["integration"].is_object() {
+                let i = &p["integration"];
+                out["integration"] = json!({
+                    "desired": pick(i["desired"].as_str(), &["enabled", "disabled", "unknown"]),
+                    "configuration": pick(i["configuration"].as_str(), &["attached", "detached", "unknown"]),
+                    "runtime": if i["runtime_at"].as_u64().is_some_and(|at| at <= now && now-at <= STALE) { pick(i["runtime"].as_str(), &["pending_reload", "pending_drain", "drained", "unknown"]) } else { "unknown" },
+                    "phase": pick(i["phase"].as_str(), &["detaching", "detached", "enabling", "conflict"]),
+                    "at": i["at"].as_u64(), "runtime_at": i["runtime_at"].as_u64(), "generation": i["generation"].as_u64(),
+                });
+            }
             out["configured"] = json!(state == "configured");
             out["verification"] = verification(&p["verification"], adapter, rev);
             out["owned"] = json!(p["owned"].as_bool());
@@ -148,6 +165,7 @@ pub fn configuration(status: Option<&Value>, now: u64) -> Value {
                     writes.push(code);
                 }
             }
+            if p["integration"]["desired"] == "disabled" { writes.push("integration_disabled"); }
             out["conflicts"] = conflicts.into();
             out["incomplete"] = incomplete.into();
             out["writes"] = json!({"enabled": false, "reasons": writes});

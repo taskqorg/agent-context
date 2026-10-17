@@ -14,7 +14,7 @@ use std::time::Duration;
 /// Resolved records kept; an unresolved (`accepted`) one is never pruned.
 const KEEP: usize = 64;
 /// Events whose stamp proves a client turn through the profile (CONFIGURATION "Host executor").
-const EVENTS: [&str; 3] = ["SessionStart", "Stop", "PreToolUse"];
+const EVENTS: [&str; 4] = ["SessionStart", "Stop", "PreToolUse", "PostToolUse"];
 
 /// Everything one request runs against. `grant`: the `agentq.configure` grant, or null.
 pub struct Host {
@@ -67,6 +67,11 @@ fn records(data: &Path) -> Vec<Value> {
     files.filter_map(|e| std::fs::read_to_string(e.path()).ok()).filter_map(|s| serde_json::from_str(&s).ok()).collect()
 }
 
+// The lifecycle lock serializes writes; wall-clock seconds do not order rapid applies.
+fn record_order(rec: &Value) -> (u64, u64) {
+    (rec["sequence"].as_u64().unwrap_or(0), rec["at"].as_u64().unwrap_or(0))
+}
+
 fn store(data: &Path, rec: &Value) -> Result<(), String> {
     std::fs::create_dir_all(ops(data)).map_err(|e| e.to_string())?;
     write_atomic(&ops(data).join(format!("{}.json", rec["operation"].as_str().unwrap_or_default())), &rec.to_string())
@@ -82,7 +87,7 @@ fn durable(data: &Path) -> bool {
 
 fn prune(data: &Path) {
     let mut done: Vec<Value> = records(data).into_iter().filter(|r| r["result"]["outcome"] != "accepted").collect();
-    done.sort_by_key(|r| std::cmp::Reverse(r["at"].as_u64().unwrap_or(0)));
+    done.sort_by_key(|r| std::cmp::Reverse(record_order(r)));
     for r in done.iter().skip(KEEP) {
         let _ = std::fs::remove_file(ops(data).join(format!("{}.json", r["operation"].as_str().unwrap_or_default())));
     }
@@ -100,7 +105,8 @@ pub fn execute(h: &Host, raw: &str, now: u64) -> Value {
     let Ok(_lock) = lock(&h.data) else { return configure::result(op, "rejected", Some("busy"), None) };
     reconcile(h);
     let seen = op.and_then(|o| std::fs::read_to_string(ops(&h.data).join(format!("{o}.json"))).ok()).and_then(|s| serde_json::from_str::<Value>(&s).ok());
-    let outstanding = records(&h.data).into_iter().find(|r| r["result"]["outcome"] == "accepted").map(|r| r["operation"].clone());
+    let history = records(&h.data);
+    let outstanding = history.iter().find(|r| r["result"]["outcome"] == "accepted").map(|r| r["operation"].clone());
     let configuration = profiles::status_with(&h.clients, &h.data, now);
     let host = json!({
         "installation": h.installation, "generation": h.generation, "now": now, "durable": durable(&h.data), "grant": h.grant,
@@ -114,7 +120,8 @@ pub fn execute(h: &Host, raw: &str, now: u64) -> Value {
     let changes: Vec<Value> = plan["profiles"].as_array().into_iter().flatten().flat_map(|p| p["changes"].as_array().into_iter().flatten().map(move |c| json!({"profile": p["id"], "field": c["field"], "old": c["old"], "new": c["new"]}))).collect();
     let mut rec = json!({
         "operation": op, "digest": configure::digest(&req), "actor": h.grant["actor"], "workspace": h.grant["workspace"], "installation": req["installation"],
-        "generation": req["generation"], "plan": plan["digest"], "at": now, "changes": changes, "journal": entries(h),
+        "generation": req["generation"], "plan": plan["digest"], "at": now,
+        "sequence": history.iter().map(|r| record_order(r).0).max().unwrap_or(0).saturating_add(1), "changes": changes, "journal": entries(h),
         "compression": compression(&h.data)["agents"], "result": r,
     });
     // A3: the record is durable before any write
@@ -216,6 +223,14 @@ fn by_profile(rec: &Value) -> Vec<(Value, Vec<Value>)> {
     out
 }
 
+fn record_applied(data: &Path, rec: &mut Value, id: &Value, profile: &Value, agent: &str) {
+    let id = id.as_str().unwrap_or_default();
+    rec["applied"][id] = profile["revision"].clone();
+    // Existing hook stamps cannot verify a later apply, even after the wall clock moves back.
+    rec["evidence_after"][id] = EVENTS.iter().filter_map(|event| stamped(data, agent, event)).max().unwrap_or(0)
+        .max(rec["at"].as_u64().unwrap_or(u64::MAX)).into();
+}
+
 /// Write, read back, restore a mismatch; `rec.result` becomes the actual outcome and `rec.applied` the read-back
 /// revision of every applied profile.
 fn apply(h: &Host, rec: &mut Value) {
@@ -246,7 +261,7 @@ fn apply(h: &Host, rec: &mut Value) {
             if changes.iter().all(|ch| back[ch["field"].as_str().unwrap_or("")] == ch["old"]) { "restored" } else { "unknown" }
         };
         if state == "applied" || state == "unchanged" {
-            rec["applied"][id.as_str().unwrap_or_default()] = p["revision"].clone();
+            record_applied(&h.data, rec, &id, &p, c.agent);
         }
         states.push((id, state));
     }
@@ -275,10 +290,11 @@ pub fn reconcile(h: &Host) {
     for mut rec in records(&h.data).into_iter().filter(|r| r["result"]["outcome"] == "accepted") {
         let mut states = vec![];
         for (id, changes) in by_profile(&rec) {
-            let p = client(h, &id).map(|c| read_profile(h, c)).unwrap_or_default();
+            let c = client(h, &id);
+            let p = c.map(|c| read_profile(h, c)).unwrap_or_default();
             let all = |k: &str| changes.iter().all(|ch| p[ch["field"].as_str().unwrap_or("")] == ch[k]);
             let state = if all("new") {
-                rec["applied"][id.as_str().unwrap_or_default()] = p["revision"].clone();
+                if let Some(c) = c { record_applied(&h.data, &mut rec, &id, &p, c.agent); }
                 "applied"
             } else if all("old") {
                 "restored"
@@ -379,14 +395,15 @@ fn stamped(data: &Path, agent: &str, event: &str) -> Option<u64> {
 pub fn verification(data: &Path, agent: &str, p: &Value) -> Value {
     let id = p["id"].as_str().unwrap_or_default();
     let unknown = |r: &str| json!({"state": "unknown", "reason": r});
-    let Some(rec) = records(data).into_iter().filter(|r| r["applied"][id].is_string()).max_by_key(|r| r["at"].as_u64().unwrap_or(0)) else {
+    let Some(rec) = records(data).into_iter().filter(|r| r["applied"][id].is_string()).max_by_key(record_order) else {
         return unknown("no_evidence");
     };
     if rec["applied"][id] != p["revision"] {
         return unknown("revision_changed");
     }
-    let applied = rec["at"].as_u64().unwrap_or(u64::MAX);
+    let Some(applied) = rec["evidence_after"][id].as_u64() else { return unknown("no_evidence"); };
     let events: &[&str] = match (p["effective"]["state"].as_str(), p["effective"]["adapter"].as_str()) {
+        (Some("configured"), Some("hook")) if p["effective"]["event"] == "PostToolUse" => &["PostToolUse"],
         (Some("configured"), Some("hook")) => &["PreToolUse"],
         (Some("bypassed" | "disabled"), _) => &EVENTS,
         // ponytail: the provider and plugin adapters have no evidence source yet
@@ -505,7 +522,7 @@ mod tests {
         assert_eq!(cfg, json!({"enabled": true, "min_bytes": 4096, "agents": {"hermes": false, "codex": false}}), "host-wide keys and siblings stay");
         assert_eq!(std::fs::read_to_string(&h.clients[1].files[0]).unwrap(), claude_before, "sibling profile untouched");
         let desk: Value = serde_json::from_str(&std::fs::read_to_string(&h.clients[2].files[0]).unwrap()).unwrap();
-        assert_eq!(desk["mcpServers"]["agent_context"]["args"], json!(["mcp", "claude"]));
+        assert_eq!(desk["mcpServers"]["agent_context"]["args"], json!(["mcp", "claude-desktop"]));
 
         let st = profiles::status_with(&h.clients, &h.data, 1002);
         let p = st["profiles"].as_array().unwrap().iter().find(|p| p["id"] == codex).unwrap().clone();
@@ -526,6 +543,38 @@ mod tests {
         let v = verification(&h.data, "codex", &p);
         assert_eq!((v["state"].as_str(), v["at"].as_u64(), v["revision"].clone()), (Some("verified"), Some(1005), p["revision"].clone()), "{v}");
         assert!(!d.join("install/data/x").exists() && !d.join("install/x").exists(), "event names no path");
+        let mut native_settings: Value = serde_json::from_str(&claude_before).unwrap();
+        native_settings["permissions"] = json!({"defaultMode": "auto"});
+        std::fs::write(&h.clients[1].files[0], native_settings.to_string()).unwrap();
+        let (_, auto_req) = plan_apply(&h, "a0000000000000000000000000000002", json!([{"profile": claude, "field": "hooks", "value": "registered"}]), 1010);
+        assert_eq!(execute(&h, &auto_req.to_string(), 1010)["outcome"], "applied");
+        let auto_status = profiles::status_with(&h.clients, &h.data, 1011);
+        let auto_profile = auto_status["profiles"].as_array().unwrap().iter().find(|p| p["id"] == claude).unwrap();
+        assert_eq!(auto_profile["effective"]["event"], "PostToolUse");
+        stamp(&h.data, "claude", "PreToolUse", 1012);
+        assert_eq!(verification(&h.data, "claude", auto_profile)["state"], "unknown", "the auto-mode pre-hook cannot verify result replacement");
+        stamp(&h.data, "claude", "PostToolUse", 1013);
+        assert_eq!(verification(&h.data, "claude", auto_profile)["state"], "verified");
+        // A2: rapid applies and a wall-clock rollback still select the last committed profile state.
+        for (index, (op, value, at)) in [
+            ("a0000000000000000000000000000004", "disabled", 1010),
+            ("a0000000000000000000000000000003", "enabled", 1010),
+            ("a0000000000000000000000000000005", "disabled", 1009),
+        ].into_iter().enumerate() {
+            let (_, req) = plan_apply(&h, op, json!([{"profile": claude, "field": "optimization", "value": value}]), at);
+            assert_eq!(execute(&h, &req.to_string(), at)["outcome"], "applied");
+            let current = read_profile(&h, &h.clients[1]);
+            assert_eq!(verification(&h.data, "claude", &current)["state"], "unknown", "an old hook stamp cannot verify a later apply after clock rollback: {op}");
+            stamp(&h.data, "claude", "PostToolUse", 1014 + index as u64);
+            assert_eq!(verification(&h.data, "claude", &current)["state"], "verified", "newest operation must win: {op}");
+        }
+        let current = read_profile(&h, &h.clients[1]);
+        let latest = records(&h.data).into_iter().max_by_key(record_order).unwrap();
+        let mut legacy = latest.clone();
+        legacy.as_object_mut().unwrap().shift_remove("evidence_after");
+        store(&h.data, &legacy).unwrap();
+        assert_eq!(verification(&h.data, "claude", &current)["reason"], "no_evidence", "legacy records cannot prove event ordering");
+        store(&h.data, &latest).unwrap();
         std::fs::write(&h.clients[0].files[0], format!("{toml}\n# edited\n")).unwrap();
         let st = profiles::status_with(&h.clients, &h.data, 1006);
         let p = st["profiles"].as_array().unwrap().iter().find(|p| p["id"] == codex).unwrap();
@@ -641,12 +690,17 @@ mod tests {
         assert_eq!(hook_failures(&d), ["codex Stop (stdout: broken pipe)"]);
         stamp(&d, "codex", "Stop", 400);
         assert!(hook_failures(&d).is_empty());
+        hook_failed(&d, "claude", "PostToolUse", 401, "stdout: broken pipe");
+        assert_eq!(hook_failures(&d), ["claude PostToolUse (stdout: broken pipe)"], "result-hook failures must remain visible");
+        stamp(&d, "claude", "PostToolUse", 402);
+        assert!(hook_failures(&d).is_empty());
         std::fs::write(d.join("evidence").join("claude.SessionStart.failed"), "{").unwrap();
         assert_eq!(hook_failures(&d), ["claude SessionStart (unreadable failure record)"]);
         // #134: the heartbeat keeps the last failure after the success that cleared it; unreadable reads unknown
         assert_eq!(hooks(&d), json!([
             {"agent": "codex", "event": "Stop", "state": "ok", "last_ok_at": 400, "last_failure": {"at": 400, "error": "stdout: broken pipe"}},
             {"agent": "claude", "event": "SessionStart", "state": "unknown", "reason": "unreadable failure record", "last_ok_at": null, "last_failure": {"at": null, "error": "unreadable failure record"}},
+            {"agent": "claude", "event": "PostToolUse", "state": "ok", "last_ok_at": 402, "last_failure": {"at": 401, "error": "stdout: broken pipe"}},
         ]));
         let _ = std::fs::remove_dir_all(&d);
     }
