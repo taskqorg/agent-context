@@ -530,6 +530,33 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_legacy_receipts_detach_once_and_restore_canonical_fields() {
+        let h = host("duplicate-receipts", false);
+        let journal = h.data.join("owned.json");
+        let mut entries = onboard::load(&journal);
+        let duplicates: Vec<_> = entries.iter().filter(|e| e["file"] == h.clients[0].files[0].display().to_string()
+            || e["file"] == h.clients[1].files[1].display().to_string()).cloned().map(|mut e| {
+                e["orig"] = "{\"historical_context\":true}".into();
+                e
+            }).collect();
+        assert_eq!(duplicates.len(), 2);
+        entries.extend(duplicates);
+        std::fs::write(&journal, serde_json::to_string(&entries).unwrap()).unwrap();
+        let preview = integrations(&h, None, false, true, json!({}), &mut |_, _| panic!("dry-run starts no service")).unwrap();
+        assert_eq!(preview["blocked"], false, "duplicate owned receipts are not foreign edits");
+        assert_eq!(change(&h, None, false)["outcome"], "applied");
+        assert!(onboard::load(&journal).is_empty(), "all duplicate source receipts must be suspended");
+        assert_eq!(change(&h, None, true)["outcome"], "applied");
+        assert_eq!(change(&h, None, false)["outcome"], "applied");
+        let c = &h.clients[1];
+        std::fs::write(&c.files[1], r#"{"mcpServers":{"agent_context":{"command":"foreign-tool"}}}"#).unwrap();
+        let foreign = std::fs::read(&c.files[1]).unwrap();
+        assert_eq!(change(&h, Some("claude"), true)["outcome"], "partial");
+        assert_eq!(std::fs::read(&c.files[1]).unwrap(), foreign);
+        std::fs::remove_dir_all(h.data.parent().unwrap().parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn interrupted_detach_and_enable_reconcile_without_replacing_foreign_values() {
         let h = host("crash", false);
         let codex = std::fs::read(&h.clients[0].files[0]).unwrap();

@@ -321,6 +321,10 @@ pub fn detached(e: &Value) -> Result<bool, String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(_) => return Err("config unreadable".into()),
     };
+    detached_in(e, &text)
+}
+
+fn detached_in(e: &Value, text: &str) -> Result<bool, String> {
     if e["kind"] == "file" { return Ok(false); }
     if e["kind"] == "text" || e["kind"] == "replace" {
         if text.contains(e["after"].as_str().ok_or("invalid saved block")?) { return Ok(false); }
@@ -367,11 +371,12 @@ pub fn detach(journal: &Path, entries: &[Value], dry: bool) -> Result<Vec<String
     let mut files: std::collections::BTreeMap<PathBuf, (String, String)> = Default::default();
     for e in entries.iter().rev() {
         let path = PathBuf::from(e["file"].as_str().ok_or("invalid saved file")?);
-        if detached(e)? { continue; }
         let (before, text) = if let Some(t) = files.get(&path) { t.clone() } else {
-            let t = std::fs::read_to_string(&path).map_err(|_| "config unreadable")?;
+            let Some(t) = read_config(&path)? else { continue };
             (t.clone(), t)
         };
+        // Older receipts see the simulated restore, including a file already scheduled for removal.
+        if (files.contains_key(&path) && text.is_empty()) || detached_in(e, &text)? { continue; }
         let after = unplace(&text, e).ok_or("owned value changed")?;
         files.insert(path, (before, after));
     }

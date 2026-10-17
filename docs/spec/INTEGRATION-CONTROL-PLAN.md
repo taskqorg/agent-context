@@ -146,6 +146,8 @@ All volume measurements are fixture observations, not billed-token savings or pr
 
 ### Defects found and fixed
 
+- During the owner-authorized 0.8.0 rollout, Windows dry-run found repeated legacy MCP receipts with identical owned values. Detach incorrectly evaluated each receipt against the original disk file, so an already simulated removal appeared as a conflict on the next duplicate. Version 0.8.1 evaluates the simulated file instead; the regression failed before and passed after, proves all duplicate sources leave the active journal, canonical restoration works, and later foreign values remain untouched. The private `receipt-compat-gate.json` records the full source gate; no working ownership journal was manually deduplicated.
+
 - Service stop now checks actual loaded executable/arguments as well as recipe ownership, preventing a same-name foreign registration from being unloaded. The CLI regression failed before and passed after; Mac/Linux/Windows parser cases are covered. A read-only native Mac probe (private artifact `native-service-identity.json`) confirmed identity without changing the unit.
 - Paused Claude hooks return an empty response and preserve native command classification.
 - Native Claude auto mode rejected the old rewritten Bash command with `[Auto-Mode Bypass]`. The safe fix uses the documented `PostToolUse.updatedToolOutput` for successful Bash results, without rewriting commands or changing native permissions. The capability probe (private artifact `claude-post-output-probe.json`) and lifecycle above passed. PostToolUseFailure cannot replace failed output: failed, interrupted and image results stay native. Outside auto mode the existing PreToolUse/run adapter remains.
