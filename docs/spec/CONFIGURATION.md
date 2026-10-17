@@ -4,11 +4,11 @@ Accepted target under agentq.md §§ 4/6/8 and PRODUCT R1–R5/R7/R9. Extends [e
 
 Local temporary controls are defined in [agentq.md Temporary controls](../../agentq.md#temporary-controls). They add reversible detach/enable and compression switches without adding remote removal values or broadening a grant. A configure request against a disabled profile is blocked with `integration_disabled`. A project override blocks selected native-file fields, never an optimization-only preference change. Revisions include the host compression switch, Direct membership and local lifecycle intent. Optional lifecycle snapshot fields separate requested integration, configured detach and pending/unknown runtime evidence; they carry no local restore metadata.
 
-Scoped YAML detach preserves foreign siblings and leaves empty collections valid. Reapply can expand an empty `mcp_servers: {}`; nonempty inline mappings remain unsupported and unchanged, including foreign `agent_context` values.
+Scoped YAML detach preserves foreign siblings and leaves empty collections valid. Reapply can expand an empty `mcp_servers: {}`; nonempty inline mappings remain unsupported and unchanged, including foreign `agentq` values.
 
 ## A1. Scope and ownership
 
-Manage existing Codex, Claude Code, Claude Desktop Chat and Hermes integrations: owned routing, agent_context MCP, supported hooks/plugin and qualified tool-result optimization. Exclude client login, model/provider selection, sandbox/approvals, foreign instructions, TaskQ work/admission and arbitrary commands. Engine versions and qualified recipes remain release-pinned, not client choices.
+Manage existing Codex, Claude Code, Claude Desktop Chat and Hermes integrations: owned routing, agentq MCP, supported hooks/plugin and qualified tool-result optimization. Exclude client login, model/provider selection, sandbox/approvals, foreign instructions, TaskQ work/admission and arbitrary commands. Engine versions and qualified recipes remain release-pinned, not client choices.
 
 Reuse discovery, ownership journal, lifecycle lock and existing apply/restore functions. Discover actual configuration roots locally; use stable opaque profile IDs without exporting paths. Clients sharing a configuration root are aliases of one target: display every affected alias in review, never promise isolation between them. Project overrides are reported read-only; conflicts with foreign providers/optimizers block affected writes.
 

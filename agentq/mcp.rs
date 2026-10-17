@@ -1,4 +1,4 @@
-//! Stdio MCP server `agent_context` (agentq.md § 2): index_document, search_document, get_original.
+//! Stdio MCP server `agentq` (agentq.md § 2): index_document, search_document, get_original.
 
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
@@ -13,7 +13,7 @@ const PAGE: usize = 64000;
 const CHUNK: usize = 1500;
 const TOP: usize = 3;
 
-/// Names, schemas and descriptions are the Node package's text, so registrations and trust survive (PRODUCT R2).
+/// Tool schemas stay stable; the current server namespace is agentq (PRODUCT R2).
 pub fn tools() -> Value {
     let schema = |p: Value| json!({"type": "object", "properties": p, "required": p.as_object().unwrap().keys().collect::<Vec<_>>(), "additionalProperties": false});
     json!([
@@ -24,7 +24,7 @@ pub fn tools() -> Value {
 }
 
 // ponytail: names `agentq run`/`agentq doctor` (agentq.md § 4) once those commands ship (#53, #54)
-pub(crate) const INSTRUCTIONS: &str = "<!-- agent-context:start -->\n# Agent Context\nUse agent_context index_document/search_document for large reference documents when selected passages suffice; get_original recovers retained bytes without rerunning commands. Read code, complete JSON and short results normally. Proxy routes traffic and telemetry; it does not shorten history, user requests or tool schemas. Never recompress results. Keep normal login, model, sandbox and approval policy.\n<!-- agent-context:end -->";
+pub(crate) const INSTRUCTIONS: &str = "<!-- agentq:start -->\n# AgentQ\nUse agentq index_document/search_document for large reference documents when selected passages suffice; get_original recovers retained bytes without rerunning commands. Read code, complete JSON and short results normally. Proxy routes traffic and telemetry; it does not shorten history, user requests or tool schemas. Never recompress results. Keep normal login, model, sandbox and approval policy.\n<!-- agentq:end -->";
 
 /// Newline-delimited JSON-RPC on stdin/stdout until EOF.
 // ponytail: no Content-Length framing; Codex and Claude Code send newline JSON
@@ -69,7 +69,7 @@ pub fn handle(dir: &Path, m: &Value) -> Option<Value> {
         "initialize" => json!({
             "protocolVersion": p["protocolVersion"].as_str().unwrap_or("2024-11-05"),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "agent-context", "version": env!("CARGO_PKG_VERSION")},
+            "serverInfo": {"name": "agentq", "version": env!("CARGO_PKG_VERSION")},
             "instructions": INSTRUCTIONS,
         }),
         "ping" => json!({}),

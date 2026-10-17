@@ -13,6 +13,7 @@ mod executor;
 mod legacy;
 mod local;
 mod mcp;
+mod names;
 mod onboard;
 mod profile;
 mod profiles;
@@ -36,7 +37,7 @@ const UPDATE_EVERY: u64 = 3600;
 const DRAIN: u64 = 900;
 /// `onboard --yes` waits this long for a started proxy to answer, before and after one restart (#137).
 const PROXY_START: Duration = Duration::from_secs(60);
-const USAGE: &str = "agentq status [--json] | optimization on|off [agent] [--dry-run] | disable|enable [agent] [--dry-run] | run -- <cmd> [args..] | compress <agent> | stats [--json|--records] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | setup-path | check compression [codex|claude|both] | mcp codex|claude|hermes|claude-desktop | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify|export | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
+const USAGE: &str = "agentq status [--json] | optimization on|off [agent] [--dry-run] | disable|enable [agent] [--dry-run] | run -- <cmd> [args..] | compress <agent> | stats [--json|--records] | stats --accounting [--from <unix>] [--to <unix>] [--bucket <s>] [--events <path>] | profile [--json] | profile trace on [<minutes>]|off | onboard [--yes] [codex|claude|hermes..] | direct [codex|claude|hermes..] | configure [<profile> <field>=<value>.. [--yes]] | hook <agent> <event> | update [--check] | selftest | setup-path | migrate-names [--dry-run|--rollback] | check compression [codex|claude|both] | mcp codex|claude|hermes|claude-desktop | service install|run|restart|stop|uninstall|status | doctor | langfuse | telemetry status|verify|export | enroll <https-url> [--headless] | connection status [--json] | disconnect | uninstall [--legacy] [--dry-run] | --version";
 
 fn tool() -> Tool {
     Tool::new("agentq", "AgentQ", "taskqorg/agentq", VERSION)
@@ -73,6 +74,10 @@ fn main() {
             Err(e)=>fail(&e,"install Python or use the managed Headroom runtime; run agentq check compression --help"),
         },
         ["selftest"] => selftest(&t),
+        ["migrate-names"] | ["migrate-names", "--rollback"] | ["migrate-names", "--dry-run"] => match names::migrate(&integration_host(&t), a.contains(&"--rollback"), a.contains(&"--dry-run")) {
+            Ok(v) => println_code(&v.to_string()),
+            Err(e) => fail(&e, "keep native settings and resolve the name migration conflict"),
+        },
         ["setup-path"] => match command_path::register(&t.install) {
             Ok(()) => 0,
             Err(e) => fail(&e, "resolve the command registration error and run `agentq setup-path` again"),
@@ -323,6 +328,7 @@ fn integration_cmd(t: &Tool, args: &[&str], enabled: bool) -> i32 {
     let agents: Vec<_> = args.iter().copied().filter(|a| *a != "--dry-run").collect();
     if agents.len() > 1 { fail("select one agent or the host", "agentq disable|enable [agent] [--dry-run]"); }
     if !args.contains(&"--dry-run") {
+        if let Err(e) = names::migrate(&integration_host(t), false, false) { fail(&e, "resolve the name migration conflict"); }
         if let Err(e) = recover_service(t) { fail(&e, "run `agentq status`; service state remains unknown"); }
     }
     let h = integration_host(t);
@@ -609,7 +615,7 @@ fn service_cmd(t: &Tool, cmd: &str) -> i32 {
 
 /// `service install` before the unit: the release, then its engines.
 fn install_release(t: &Tool) -> Result<(), String> {
-    install_self(t).and_then(|_| command_path::register(&t.install))
+    names::migrate(&integration_host(t), false, false).and_then(|_| install_self(t)).and_then(|_| command_path::register(&t.install))
         .map(|_| engines::ensure(&t.install).iter().for_each(|l| println!("{l}")))
 }
 
@@ -770,6 +776,7 @@ fn single_instance_selftest() -> bool {
 
 /// One status pass every 30 s, update check hourly; a new release exits 75 so the unit restarts into it.
 fn serve(t: &Tool) -> ! {
+    names::migrate(&integration_host(t), false, false).unwrap_or_else(|e| fail(&e, "resolve the name migration conflict before restarting the service"));
     // a release with a new engine pin installs it here; status keeps its 30 s pace meanwhile
     let install = t.install.clone();
     if control::host_disabled(&install.join("data")) == Ok(false) {
@@ -945,7 +952,7 @@ fn onboard(t: &Tool, args: &[&str]) -> i32 {
         Err(e) => fail(&e, "fix it, then run `agentq onboard --yes` again"),
     }
     doctor(t);
-    println_code(&format!("verify: start a new {} session and call agent_context search_document", agents.join(", ")))
+    println_code(&format!("verify: start a new {} session and call agentq search_document", agents.join(", ")))
 }
 
 /// agentq.md § 1: remove routing edits only; MCP, hooks and telemetry stay. Files only, so it works without the service.
@@ -953,6 +960,7 @@ fn direct(t: &Tool, args: &[&str]) -> i32 {
     if let Some(a) = args.iter().find(|a| !onboard::AGENTS.contains(a)) {
         fail(&format!("unknown agent `{a}`"), &format!("usage: {USAGE}"));
     }
+    names::migrate(&integration_host(t), false, false).unwrap_or_else(|e| fail(&e, "resolve the name migration conflict"));
     let agents = if args.is_empty() { &onboard::AGENTS[..] } else { args };
     let _lock = executor::lock(&t.install.join("data")).unwrap_or_else(|e| fail(&format!("direct: {e}"), "wait for it to finish, then run `agentq direct` again"));
     if let Err(e) = routing::set_direct(&t.install.join("data"), agents, true) {
@@ -997,6 +1005,9 @@ fn accounting_cmd(t: &Tool, args: &[&str]) -> i32 {
 
 /// CONFIGURATION "Host executor": no change prints the profiles; changes print the plan; `--yes` applies that plan.
 fn configure_cmd(t: &Tool, args: &[&str]) -> i32 {
+    if args.contains(&"--yes") {
+        names::migrate(&integration_host(t), false, false).unwrap_or_else(|e| fail(&e, "resolve the name migration conflict"));
+    }
     let exe = t.install.join(t.exe_name());
     let at = now();
     let host = executor::Host::local(&t.install, exe, at);
@@ -1032,6 +1043,7 @@ fn uninstall(t: &Tool, dry: bool) -> i32 {
     if !t.install.exists() {
         return println_code("uninstall: already removed");
     }
+    if !dry { names::migrate(&integration_host(t), false, false).unwrap_or_else(|e| fail(&e, "resolve the name migration conflict")); }
     onboard::restore(&journal(t), dry, None).unwrap_or_else(|e| fail(&format!("uninstall: {e}"), "fix the file, then run `agentq uninstall` again")).iter().for_each(|l| println!("{l}"));
     if dry {
         return println_code(&format!("would remove: command registration, service unit, {}", t.install.display()));

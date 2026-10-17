@@ -1,4 +1,4 @@
-name: agent-context
+name: agentq
 version: 1.0.0
 description: Compress qualified terminal results through AgentQ and retain originals.
 kind: standalone

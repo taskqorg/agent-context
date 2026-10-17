@@ -507,7 +507,7 @@ mod tests {
             assert_eq!(doc["mcpServers"]["foreign"]["command"], "foreign-tool");
             let text = std::fs::read_to_string(hermes).unwrap();
             assert!(text.contains("mcp_servers:\n  foreign:\n"), "{text}");
-            assert!(!text.contains("agent_context:"));
+            assert!(!text.contains("agentq:"));
             let mut prepared = false;
             let r = integrations(&h, None, true, false, json!({}), &mut |ports, _| {
                 prepared = true;
@@ -567,7 +567,7 @@ mod tests {
         assert_eq!(change(&h, None, true)["outcome"], "applied");
         assert_eq!(change(&h, None, false)["outcome"], "applied");
         let c = &h.clients[1];
-        std::fs::write(&c.files[1], r#"{"mcpServers":{"agent_context":{"command":"foreign-tool"}}}"#).unwrap();
+        std::fs::write(&c.files[1], r#"{"mcpServers":{"agentq":{"command":"foreign-tool"}}}"#).unwrap();
         let foreign = std::fs::read(&c.files[1]).unwrap();
         assert_eq!(change(&h, Some("claude"), true)["outcome"], "partial");
         assert_eq!(std::fs::read(&c.files[1]).unwrap(), foreign);
@@ -600,7 +600,7 @@ mod tests {
         change(&h, Some("claude"), false);
         let path = &h.clients[1].files[1];
         let mut doc: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-        doc["mcpServers"]["agent_context"] = json!({"command": "foreign-tool"});
+        doc["mcpServers"]["agentq"] = json!({"command": "foreign-tool"});
         std::fs::write(path, doc.to_string()).unwrap();
         let before = std::fs::read(path).unwrap();
         assert_eq!(change(&h, Some("claude"), true)["outcome"], "partial");
