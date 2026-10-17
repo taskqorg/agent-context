@@ -44,6 +44,15 @@ gone() {
 }
 
 "$bin" service install
+# Installation must expose the command outside its folder in a refreshed user environment.
+case "$(uname -s)" in
+  MINGW* | MSYS*)
+    powershell.exe -NoProfile -NonInteractive -Command '$env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User"); Set-Location $env:TEMP; agentq --version; if ($LASTEXITCODE -ne 0) { exit 1 }'
+    ;;
+  *)
+    (cd /; env PATH=/usr/bin:/bin bash -lc 'agentq --version')
+    ;;
+esac
 p1=$(started none)
 "$bin" service status
 "$bin" service restart
@@ -55,4 +64,7 @@ gone "$p2"
 "$bin" service uninstall
 "$bin" service uninstall
 gone "$p2"
+"$bin" uninstall
+"$bin" uninstall
+if [ -L "$HOME/.local/bin/agentq" ]; then echo 'command link survived uninstall' >&2; exit 1; fi
 echo "service lifecycle: ok ($p1, $p2)"

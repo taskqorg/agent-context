@@ -10,6 +10,28 @@ Paste into a supported agent:
 
 Native Windows and WSL are separate installs. Procedure: [INSTALL.md](INSTALL.md).
 
+## Make the command available in terminals
+
+Onboarding and `agentq service install` register `agentq` for the current OS user automatically, without administrator rights. Open a new terminal after installation, then run `agentq --version` and `agentq status` from any directory.
+
+For an existing installation, update AgentQ and repair its command registration:
+
+```sh
+# macOS / Linux
+"$HOME/.local/share/agentq/agentq" update
+"$HOME/.local/share/agentq/agentq" setup-path
+```
+
+```powershell
+# Native Windows PowerShell
+& "$env:LOCALAPPDATA\agentq\agentq.exe" update
+& "$env:LOCALAPPDATA\agentq\agentq.exe" setup-path
+```
+
+`setup-path` requires 0.8.2 or later. With a custom install root, invoke that root's launcher. It repairs registration without onboarding, configuration changes or service restarts. macOS/Linux use `~/.local/bin/agentq` and configure Bash/Zsh startup files; other shells should add `~/.local/bin` to PATH. Windows adds the install directory to the user PATH. Existing terminals and applications retain their old environment: reopen them, or on Bash/Zsh run `export PATH="$HOME/.local/bin:$PATH"` for the current shell.
+
+A foreign Unix file or link at `~/.local/bin/agentq` is preserved and reported as a conflict. Uninstall removes this installation's command registration; the shared Unix PATH block stays for other tools. Registration applies to one user account; each account and each native Windows/WSL environment has its own installation.
+
 ## Commands
 
 - `agentq compress <agent>` reads one tool-result JSON object (`adapter`, `tool`, `text`) and returns `text` and a recovery `ref`. Unqualified hook/provider recipes pass unchanged. `agentq stats [--json]` shows local call outcomes and bytes; missing or corrupt records are unknown.
@@ -17,6 +39,7 @@ Native Windows and WSL are separate installs. Procedure: [INSTALL.md](INSTALL.md
 - `agentq onboard` finds ready agents and a legacy install; writes nothing. `agentq onboard --yes [codex|claude|hermes..]` applies config edits, installs the service and prints what to verify by a real turn.
 - `agentq langfuse` reads the Langfuse host and keys from hidden stdin into protected storage. `agentq telemetry status|verify` shows the queue and checks delivery.
 - `agentq service status`, `agentq update [--check]`, `agentq selftest` check the install.
+- `agentq setup-path` repairs the current user's command registration.
 - `agentq doctor` reads installation, service, routing intent, engines and local telemetry health. Intentional detach is distinct from drift; runtime verification remains separate.
 - `agentq uninstall --dry-run`, then `agentq uninstall`, restores owned edits and removes the service and install folder.
 
