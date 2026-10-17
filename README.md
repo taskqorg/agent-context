@@ -47,7 +47,7 @@ Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases
 
 ## Temporarily disable optimization or integrations
 
-Requires AgentQ 0.8.1 or later for existing installations. Version 0.8.1 fixes detach with duplicate ownership receipts from older setups. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
+Use AgentQ 0.8.3 or later: 0.8.1 fixes duplicate legacy ownership receipts, and 0.8.3 preserves resume of Codex conversations created through AgentQ. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
 
 Start with status:
 
@@ -92,6 +92,10 @@ Read status as separate observations:
 - `pending_reload` means a client may still have cached settings. Reload or close that client normally. `pending_drain`, or unknown dependencies, means safe transport shutdown is not yet proved. Repeat `disable` after clients finish; never kill workers to clear the status. After `enable`, open or reload affected clients normally and check status again.
 
 Full detach keeps the installation, engines, local data, originals, credentials, grants and queued observations under their existing retention limits. Enable restores the saved supported registrations, prior Direct state and independent compression preferences. Later foreign edits remain conflicts. Repeating a command preserves the first recovery baseline. Only `enable` clears disable intent; onboarding, configure and service activation cannot reconnect a disabled integration. Local status and enable work with the service stopped.
+
+Codex stores its provider ID in each conversation. `agent_context` is AgentQ's compatibility ID, shared with the retired package; the name alone does not mean the old package is running. Disable, Direct and uninstall retain a marked `[model_providers.agent_context]` definition that connects directly to OpenAI using the existing login. It has no AgentQ URL, hook, MCP or service dependency. New chats use the restored native provider selection; existing chats can keep their saved ID. Enable replaces only the exact unedited compatibility definition with AgentQ routing.
+
+If 0.8.2 or earlier left an old Codex chat unable to resume with `Model provider agent_context not found`, update AgentQ and repeat `agentq disable codex` while it is disabled, then reopen the chat. This repairs the missing definition without changing history, login or the saved enable baseline. If you already ran `agentq enable`, leave it enabled and reopen the chat. Do not rename providers in stored conversations or remove the compatibility definition. Use 0.8.3+ to manage disable/enable after this repair; older binaries do not recognize the definition and report a conflict.
 
 If `agentq` is not on PATH, use the installed launcher. On macOS/Linux: `"$HOME/.local/share/agentq/agentq" status`. In Windows PowerShell: `& "$env:LOCALAPPDATA\agentq\agentq.exe" status`. Replace `status` with the desired command and arguments.
 

@@ -9,6 +9,17 @@ use std::path::{Path, PathBuf};
 
 pub const AGENTS: [&str; 3] = ["codex", "claude", "hermes"];
 
+// Old conversations retain this provider ID; no base_url lets Codex use its native authenticated endpoint.
+pub const CODEX_DIRECT_PROVIDER: &str = "# agentq: direct Codex provider compatibility\n[model_providers.agent_context]\nname = \"OpenAI\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = true\n";
+
+fn direct_codex_provider(text: &str) -> bool {
+    text.matches("[model_providers.agent_context]").count() == 1
+        && !text.contains("[model_providers.agent_context.")
+        && text.split_once(CODEX_DIRECT_PROVIDER).is_some_and(|(_, tail)| {
+            tail.lines().take_while(|l| !l.trim_start().starts_with('[')).all(|l| l.trim().is_empty())
+        })
+}
+
 /// One owned edit. `.json`: `value` at `key`, or appended to the array there. `.toml`, `.yaml`: a rendered block at
 /// `key`; a one-part `.toml` key is a top-level `key = value` line. `routing` names the agent of a routing edit.
 pub struct Want {
@@ -328,6 +339,7 @@ fn detached_in(e: &Value, text: &str) -> Result<bool, String> {
     if e["kind"] == "file" { return Ok(false); }
     if e["kind"] == "text" || e["kind"] == "replace" {
         if text.contains(e["after"].as_str().ok_or("invalid saved block")?) { return Ok(false); }
+        if e["key"] == json!(["model_providers", "agent_context"]) && direct_codex_provider(text) { return Ok(true); }
         let keys: Vec<_> = e["key"].as_array().ok_or("invalid saved key")?.iter().filter_map(Value::as_str).collect();
         let still_registered = match keys.as_slice() {
             ["model_provider"] => text.lines().take_while(|l| !l.trim_start().starts_with('['))
@@ -371,18 +383,31 @@ pub fn detach(journal: &Path, entries: &[Value], dry: bool) -> Result<Vec<String
     let mut files: std::collections::BTreeMap<PathBuf, (String, String)> = Default::default();
     for e in entries.iter().rev() {
         let path = PathBuf::from(e["file"].as_str().ok_or("invalid saved file")?);
+        let provider = e["key"] == json!(["model_providers", "agent_context"]);
         let (before, text) = if let Some(t) = files.get(&path) { t.clone() } else {
-            let Some(t) = read_config(&path)? else { continue };
+            let Some(t) = read_config(&path)? else {
+                if provider { files.insert(path, (String::new(), CODEX_DIRECT_PROVIDER.into())); }
+                continue;
+            };
             (t.clone(), t)
         };
         // Older receipts see the simulated restore, including a file already scheduled for removal.
-        if (files.contains_key(&path) && text.is_empty()) || detached_in(e, &text)? { continue; }
+        if files.contains_key(&path) && text.is_empty() && !provider { continue; }
+        if detached_in(e, &text)? {
+            if provider && !direct_codex_provider(&text) {
+                if text.contains("[model_providers]") || text.contains("model_providers.agent_context") {
+                    return Err("foreign or unreadable provider definition; kept".into());
+                }
+                files.insert(path, (before, format!("{text}{}{CODEX_DIRECT_PROVIDER}", sep(&text))));
+            }
+            continue;
+        }
         let after = unplace(&text, e).ok_or("owned value changed")?;
         files.insert(path, (before, after));
     }
     if dry { return Ok(files.keys().map(|p| format!("would detach: {}", p.display())).collect()); }
     for (path, (before, after)) in files {
-        if std::fs::read_to_string(&path).map_err(|_| "config unreadable")? != before { return Err("config changed during detach".into()); }
+        if read_config(&path)?.unwrap_or_default() != before { return Err("config changed during detach".into()); }
         if after.is_empty() { std::fs::remove_file(&path).map_err(|e| e.to_string())?; }
         else { write_atomic(&path, &after)?; }
         out.push(format!("detached: {}", path.display()));
@@ -423,7 +448,7 @@ pub fn restore_where(journal: &Path, dry: bool, forget: bool, pick: &dyn Fn(usiz
             out.push(format!("conflict: {what} changed since onboard; kept"));
             continue;
         };
-        if let Some(o) = e["orig"].as_str().filter(|o| serde_json::from_str::<Value>(no_bom(o)).ok() == serde_json::from_str(&text).ok()) {
+        if let Some(o) = e["orig"].as_str().filter(|o| serde_json::from_str::<Value>(no_bom(o)).ok().is_some_and(|v| Some(v) == serde_json::from_str(&text).ok())) {
             text = o.into();
         }
         seen.insert(f.clone(), text.clone());
@@ -500,7 +525,12 @@ fn unplace(text: &str, e: &Value) -> Option<String> {
     }
     if e["kind"] == "text" {
         let a = after.as_str()?;
-        return text.contains(a).then(|| text.replacen(a, "", 1));
+        return text.contains(a).then(|| {
+            if e["key"] == json!(["model_providers", "agent_context"]) {
+                let direct = format!("{}{CODEX_DIRECT_PROVIDER}", &a[..a.len() - a.trim_start().len()]);
+                text.replacen(a, &direct, 1)
+            } else { text.replacen(a, "", 1) }
+        });
     }
     let mut doc: Value = serde_json::from_str(no_bom(text)).ok()?;
     let key: Vec<&str> = e["key"].as_array()?.iter().filter_map(Value::as_str).collect();
@@ -597,6 +627,11 @@ fn place_toml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     let block = format!("[{name}]\n{}", fields(w).map(|(k, v)| format!("{k} = {v}\n")).collect::<String>());
     if text.contains(&block) {
         return Ok((text.into(), None));
+    }
+    if w.key == ["model_providers", "agent_context"] && direct_codex_provider(text) {
+        let mut e = entry(&w.key, "replace", block.clone().into());
+        e["before"] = CODEX_DIRECT_PROVIDER.into();
+        return Ok((text.replacen(CODEX_DIRECT_PROVIDER, &block, 1), Some(e)));
     }
     // ponytail: substring check; an inline `agent_context = {..}` under `[mcp_servers]` slips through
     if text.contains(&name) {
@@ -836,7 +871,7 @@ mod tests {
     }
 
     /// #76 A1: Codex routes to the loopback provider; `direct` removes only the routing edits, onboard routes again,
-    /// uninstall leaves no diff; a foreign provider stops the file.
+    /// Direct and uninstall keep old conversations resumable without the AgentQ proxy; foreign edits stay.
     #[test]
     fn codex_routing_then_direct() {
         let d = std::env::temp_dir().join(format!("agentq-routing-{}", std::process::id()));
@@ -861,12 +896,22 @@ mod tests {
         let out = restore(&journal, false, Some(&["codex"])).unwrap();
         assert_eq!(out.len(), 2, "{out:?}");
         let direct = std::fs::read_to_string(&cfg).unwrap();
-        assert!(direct.starts_with(orig) && direct.contains("[mcp_servers.agent_context]") && !direct.contains("model_provider"), "{direct}");
+        assert!(direct.starts_with(orig) && direct.contains("[mcp_servers.agent_context]") && direct_codex_provider(&direct), "{direct}");
+        assert!(!direct.lines().any(|l| l.starts_with("model_provider =")));
         assert_eq!(crate::routing::state("codex", &d, Some(41234)).0, "direct");
         assert_eq!(load(&journal).len(), 3, "MCP and hook entries stay");
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         assert!(restore(&journal, false, Some(&["codex"])).unwrap().is_empty(), "repeat is safe");
+
+        for edit in ["base_url = \"https://foreign.invalid/v1\"\n", "[model_providers.agent_context.http_headers]\nx-foreign = \"kept\"\n"] {
+            let foreign = direct.replacen(CODEX_DIRECT_PROVIDER, &format!("{CODEX_DIRECT_PROVIDER}{edit}"), 1);
+            std::fs::write(&cfg, &foreign).unwrap();
+            let out = apply(&all(), &journal).unwrap();
+            assert!(out.iter().any(|l| l.starts_with("conflict:")), "{out:?}");
+            assert_eq!(std::fs::read_to_string(&cfg).unwrap(), foreign, "compatibility edits must not be reclaimed");
+        }
+        std::fs::write(&cfg, &direct).unwrap();
 
         crate::routing::set_direct(&d, &["codex"], true).unwrap();
         assert_eq!(crate::routing::intended(&d, "codex", &d), ("direct", "`agentq direct`"));
@@ -879,11 +924,21 @@ mod tests {
         assert_eq!(crate::routing::drift(&journal).len(), 1);
         std::fs::write(&cfg, &routed).unwrap();
         restore(&journal, false, None).unwrap();
-        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), orig, "uninstall leaves no diff");
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), format!("{orig}\n{CODEX_DIRECT_PROVIDER}"), "uninstall keeps only native config and the independent compatibility definition");
 
         std::fs::write(&cfg, "model_provider = \"openai\"\n").unwrap();
         let out = apply(&all(), &d.join("owned2.json")).unwrap();
         assert!(out[0].starts_with("conflict:") && out[0].contains("model_provider has a foreign value"), "{out:?}");
+
+        let native = format!("model = \"native\"\n\n{CODEX_DIRECT_PROVIDER}");
+        std::fs::write(&cfg, &native).unwrap();
+        let provider_only: Vec<_> = routing_wants("codex", &d, 41234).into_iter().skip(1).collect();
+        let journal = d.join("provider-only.json");
+        apply(&provider_only, &journal).unwrap();
+        let foreign = "\n[projects.\"/later\"]\ntrust_level = \"trusted\"\n";
+        std::fs::write(&cfg, std::fs::read_to_string(&cfg).unwrap() + foreign).unwrap();
+        restore(&journal, false, None).unwrap();
+        assert_eq!(std::fs::read_to_string(&cfg).unwrap(), native + foreign, "a TOML replacement receipt cannot restore an old whole-file snapshot over later edits");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
