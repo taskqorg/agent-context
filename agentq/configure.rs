@@ -121,9 +121,7 @@ pub fn plan(req: &Value, configuration: &Value) -> Value {
             let mut conflicts: Vec<Value> = vec![];
             if let (Some(p), Some(_)) = (p, kind) {
                 conflicts.extend(p["conflicts"].as_array().into_iter().flatten().chain(p["incomplete"].as_array().into_iter().flatten()).cloned());
-                if p["overrides"].as_u64().is_some_and(|n| n > 0) {
-                    conflicts.push("project_override".into());
-                }
+                if p["integration"]["desired"] == "disabled" { conflicts.push("integration_disabled".into()); }
             } else {
                 conflicts.push("unknown_profile".into());
             }
@@ -131,6 +129,12 @@ pub fn plan(req: &Value, configuration: &Value) -> Value {
         }
         let entry = profiles.iter_mut().find(|p| p["id"] == *id).expect("pushed above");
         let field = c["field"].as_str().unwrap_or("");
+        let target = configuration["profiles"].as_array().into_iter().flatten().find(|p| p["id"] == *id);
+        if field != "optimization" && target.is_some_and(|p| p["overrides"].as_u64().is_some_and(|n| n > 0))
+            && !entry["conflicts"].as_array().is_some_and(|a| a.contains(&json!("project_override")))
+        {
+            entry["conflicts"].as_array_mut().expect("array").push("project_override".into());
+        }
         let ops = crate::profiles::KINDS.iter().find(|k| entry["kind"] == k.0).map_or(&[][..], |k| k.3);
         let no_writer = NO_WRITER.iter().any(|w| entry["kind"] == w.0 && field == w.1 && c["value"] == w.2);
         if entry["kind"].is_string() && (!ops.contains(&field) || no_writer) && !entry["conflicts"].as_array().is_some_and(|a| a.contains(&json!("unsupported_client"))) {
@@ -259,7 +263,9 @@ pub fn conform(fixtures: &str) -> Vec<String> {
         }
         let mut raw = if c["reorder"] == true { canonical(&req) } else { req.clone() }.to_string();
         raw.push_str(&" ".repeat(c["pad"].as_u64().unwrap_or(0) as usize));
-        let got = handle(&raw, &host, &f["configuration"]);
+        let mut configuration = f["configuration"].clone();
+        patch(&mut configuration, &c["configuration"]);
+        let got = handle(&raw, &host, &configuration);
         let shape = got["kind"] == "plan" || valid_result(&got);
         if !shape || !subset(&c["expect"], &got) {
             bad.push(format!("{name}: {got}"));

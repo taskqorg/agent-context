@@ -286,11 +286,13 @@ fn quote(s: &str) -> String {
 /// Post queued spans in batches of 100, deleting each after a 2xx; the last outcome goes to `state.json`. Grant-bound
 /// records keep their own destination (`connect.rs`).
 pub fn send(data: &Path, k: &Keys, now: u64) -> Result<usize, String> {
+    if crate::control::host_disabled(data) != Ok(false) { return Err("integration_disabled: export suspended".into()); }
     let q = queue(data);
     let body = q.join(format!("body-{}.tmp", std::process::id()));
     let mut sent = 0;
     let start = std::time::Instant::now();
     let res = loop {
+        if crate::control::host_disabled(data) != Ok(false) { break Err("integration_disabled: export suspended".into()); }
         let batch: Vec<_> = prune(&q, now).into_iter().filter(|e| !e.1.to_string_lossy().ends_with(RECORD)).take(BATCH).collect();
         if batch.is_empty() {
             break Ok(sent);
@@ -372,6 +374,10 @@ pub fn sender(install: &Path, every: u64) -> ! {
     let mut sampler = crate::resource::Sampler::new(&data);
     let mut dashq = crate::connect::Sender::default();
     loop {
+        if crate::control::host_disabled(&data) != Ok(false) {
+            std::thread::sleep(Duration::from_secs(every));
+            continue;
+        }
         sampler.tick(&data);
         let now = crate::now();
         crate::connect::pass(&data, now, &mut dashq);
@@ -587,6 +593,10 @@ mod tests {
             emit(&d, "agentq.run", "end", json!({"agentq.command": "cargo test"})).unwrap();
         }
         let down = Keys::parse("http://127.0.0.1:1 pk-lf-test sk-lf-test").unwrap();
+        crate::control::save(&d, "integration.json", &json!({"schema": 1, "generation": 1, "host_disabled": true, "profiles": {}})).unwrap();
+        assert!(send(&d, &down, crate::now()).unwrap_err().contains("integration_disabled"));
+        assert_eq!(status(&d, crate::now())["pending"], 150, "host disable retains every queued event");
+        std::fs::remove_file(d.join("integration.json")).unwrap();
         assert!(send(&d, &down, crate::now()).is_err());
         let s = status(&d, crate::now());
         assert_eq!(s["pending"], 150, "an outage keeps every event");

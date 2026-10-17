@@ -197,10 +197,11 @@ fn execution_recovery_stats_chain() {
     )
     .unwrap();
     assert_eq!(
-        cli(&root, &["run", "--", "cargo", "test"], None, &[]).stdout,
+        cli(&root, &["run", "--", "cargo", "test"], None, &[("AGENTQ_AGENT", "unknown")]).stdout,
         raw.as_bytes()
     );
     assert_eq!(records(&root).last().unwrap()["reason"], "disabled");
+    assert_eq!(records(&root).last().unwrap()["agent"], "unknown", "anonymous runs obey the host pause");
     assert!(
         records(&root).last().unwrap()["bytes_in"].is_null(),
         "disabled runs stay native; never invent byte measurements"
@@ -312,6 +313,32 @@ fn execution_recovery_stats_chain() {
     let cut: Value = serde_json::from_slice(&cli(&root, &["stats", "--accounting"], None, &[]).stdout).unwrap();
     assert_eq!((&cut["state"], &cut["calls"], &cut["lower_bound"]), (&json!("partial"), &json!(1), &json!(true)), "{cut}");
     assert_eq!(cut["coverage"]["sources"][0]["reasons"][0]["detail"], "stats records lost", "{cut}");
+    // Auto-mode result replacement must preserve the native envelope and never execute the command again.
+    std::fs::write(data.join("config.json"), r#"{"compression":{"stats":"queue"}}"#).unwrap();
+    let calls = std::fs::read(root.join("calls")).unwrap();
+    let post = json!({"permission_mode":"auto", "tool_name":"Bash", "tool_input":{"command":"cargo test"},
+        "session_id":"post-session", "tool_use_id":"post-call", "tool_response":{
+            "stdout":raw, "stderr":"preserved stderr", "interrupted":false, "isImage":false, "noOutputExpected":false
+        }});
+    let reply = cli(&root, &["hook", "claude", "PostToolUse"], Some(&post.to_string()), &[("FILTER","ok"),("EXIT","0")]);
+    assert!(reply.status.success(), "{reply:?}");
+    let reply:Value = serde_json::from_slice(&reply.stdout).unwrap();
+    let updated = &reply["hookSpecificOutput"]["updatedToolOutput"];
+    assert!(updated["stdout"].as_str().is_some_and(|s| s.len() < raw.len() && s.contains("get_original")), "{reply}");
+    for key in ["stderr", "interrupted", "isImage", "noOutputExpected"] { assert_eq!(updated[key], post["tool_response"][key]); }
+    let r = records(&root).pop().unwrap();
+    assert_eq!((&r["adapter"], &r["tool"], &r["session"], &r["tool_call"]), (&json!("hook"), &json!("Bash"), &json!("post-session"), &json!("post-call")));
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_original","arguments":{"ref":r["ref"]}}}).to_string()+"\n";
+    let recovered = cli(&root, &["mcp","claude"], Some(&request), &[]);
+    let recovered:Value = serde_json::from_slice(&recovered.stdout).unwrap();
+    let recovered:Value = serde_json::from_str(recovered["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(recovered["content"], raw);
+    assert_eq!(std::fs::read(root.join("calls")).unwrap(), calls, "PostToolUse replays a capture, never native work");
+    let failure = cli(&root, &["hook","claude","PostToolUseFailure"], Some(&post.to_string()), &[]);
+    assert_eq!(serde_json::from_slice::<Value>(&failure.stdout).unwrap(), json!({}), "native failures cannot be replaced by this API");
+    std::fs::write(data.join("config.json"), r#"{"compression":{"enabled":false}}"#).unwrap();
+    let paused = cli(&root, &["hook","claude","PostToolUse"], Some(&post.to_string()), &[]);
+    assert_eq!(serde_json::from_slice::<Value>(&paused.stdout).unwrap(), json!({}));
     std::fs::remove_dir_all(root).unwrap();
 }
 fn records_or_empty(root: &Path) -> Vec<Value> {

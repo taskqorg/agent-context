@@ -176,7 +176,7 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
     let agent = std::env::var("AGENTQ_AGENT").unwrap_or_else(|_| "unknown".into());
     let ids = json!({"session":std::env::var("AGENTQ_SESSION").ok(),"turn":std::env::var("AGENTQ_TURN").ok(),"tool_call":std::env::var("AGENTQ_TOOL_CALL").ok()});
     let qualified = crate::engines::qualified(cmd);
-    let c = config(&data);
+    let c = policy(&data, &agent);
     let id = crate::mcp::new_id();
     let run_dir = install.join("data/runs").join(&id);
     let mut bypass = match &c {
@@ -388,6 +388,15 @@ fn config(data: &Path) -> Result<Value, String> {
     }
 }
 
+pub(crate) fn policy(data: &Path, agent: &str) -> Result<Value, String> {
+    let mut c = config(data)?;
+    if crate::control::disabled(data, agent)? {
+        if c.is_null() { c = json!({}); }
+        c["enabled"] = false.into();
+    }
+    Ok(c)
+}
+
 fn guard(c: &Value, agent: &str, text: &[u8]) -> Option<&'static str> {
     if c["enabled"] == false || c["agents"][agent] == false {
         return Some("disabled");
@@ -587,11 +596,11 @@ pub fn compress(data: &Path, agent: &str, input: &str) -> Result<Value, String> 
     }
     let mut r = record(agent, adapter, tool, &v, text.len(), crate::now());
     let words: Vec<String> = v["command"].as_str().unwrap_or("").split_ascii_whitespace().map(String::from).collect();
-    let qualified = ["terminal", "shell", "exec_command"].contains(&tool) && crate::engines::qualified(&words);
+    let qualified = (["terminal", "shell", "exec_command"].contains(&tool) || (agent == "claude" && adapter == "hook" && tool == "Bash")) && crate::engines::qualified(&words);
     if qualified {
         r["runner"] = json!(if words[0] == "pytest" { "pytest".into() } else { words[..2].join(" ") });
     }
-    let c = config(data);
+    let c = policy(data, agent);
     let mut output = text.to_owned();
     let mut reference = Value::Null;
     let mut reason = match &c {

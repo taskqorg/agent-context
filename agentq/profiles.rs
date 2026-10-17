@@ -40,12 +40,16 @@ pub fn clients() -> Vec<Client> {
     let c = |kind, agent, root: PathBuf, files: &[&str]| Client { kind, agent, files: files.iter().map(|f| root.join(f)).collect(), root };
     let mut code = c("claude-code", "claude", onboard::root("claude"), &["settings.json"]);
     code.files.push(onboard::claude_json());
-    vec![
+    let mut clients = vec![
         c("codex", "codex", onboard::root("codex"), &["config.toml", "hooks.json"]),
         code,
         c("claude-desktop-chat", "claude-desktop", desktop_root(), &["claude_desktop_config.json"]),
         c("hermes", "hermes", onboard::root("hermes"), &["config.yaml"]),
-    ]
+    ];
+    for c in &mut clients {
+        if c.agent != "claude-desktop" { c.files.push(c.root.join(if c.agent == "claude" { "CLAUDE.md" } else { "AGENTS.md" })); }
+    }
+    clients
 }
 
 fn sign(key: &hmac::Key, parts: &[&[u8]]) -> String {
@@ -69,12 +73,23 @@ pub fn status(data: &Path, now: u64) -> Value {
 
 pub fn status_with(clients: &[Client], data: &Path, now: u64) -> Value {
     let key = resource::key(data);
+    status_using(clients, data, now, &key)
+}
+
+pub fn readonly(clients: &[Client], data: &Path, now: u64) -> Value {
+    match std::fs::read_to_string(data.join("resource-key")) {
+        Ok(k) if k.trim().len() == 64 => status_using(clients, data, now, &hmac::Key::new(hmac::HMAC_SHA256, k.trim().as_bytes())),
+        _ => json!({"schema": SCHEMA, "at": now, "state": "unknown", "reason": "profile_identity_unavailable", "profiles": []}),
+    }
+}
+
+fn status_using(clients: &[Client], data: &Path, now: u64, key: &hmac::Key) -> Value {
     let journal = data.join("owned.json");
     let profiles: Vec<Value> = clients
         .iter()
-        .filter(|c| c.root.is_dir())
+        .filter(|c| c.root.is_dir() || crate::control::state(data).is_ok_and(|s| s["profiles"].get(c.agent).is_some()))
         .map(|c| {
-            let mut p = profile(c, data, &journal, &key);
+            let mut p = profile(c, data, &journal, key);
             p["verification"] = crate::executor::verification(data, c.agent, &p);
             p
         })
@@ -82,7 +97,7 @@ pub fn status_with(clients: &[Client], data: &Path, now: u64) -> Value {
     let c = compression(data);
     let defaults = json!({"enabled": c["enabled"].as_bool().unwrap_or(true), "min_bytes": c["min_bytes"].as_u64().unwrap_or(2048), "stats": c["stats"].as_str().unwrap_or("queue")});
     let revs: Vec<&[u8]> = profiles.iter().filter_map(|p| p["revision"].as_str()).map(str::as_bytes).collect();
-    json!({"schema": SCHEMA, "at": now, "revision": sign(&key, &revs), "defaults": defaults, "profiles": profiles})
+    json!({"schema": SCHEMA, "at": now, "revision": sign(key, &revs), "defaults": defaults, "profiles": profiles})
 }
 
 /// The registered events of `hooks.<event>` entries whose command runs `agentq hook <agent> <event>`.
@@ -107,7 +122,14 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
     let (mut conflicts, mut incomplete) = (vec![], vec![]);
     // ponytail: the revision signs whole files, so an unrelated edit also stales a plan; narrow to owned keys if
     // needless revision changes start rejecting confirmed plans
-    let mut parts: Vec<Vec<u8>> = vec![c.kind.into(), compression(data)["agents"][c.agent].to_string().into(), routing::port(data, c.agent).unwrap_or(0).to_le_bytes().into()];
+    let integration = crate::control::observation(data, c, &data.parent().unwrap_or(data).join(format!("agentq{}", std::env::consts::EXE_SUFFIX)));
+    let settings = crate::control::config(data);
+    if settings.is_err() || integration["desired"] == "unknown" { incomplete.push("unreadable_control"); }
+    let direct = settings.as_ref().ok().is_some_and(|v| v["direct"].as_array().is_some_and(|a| a.iter().any(|a| a == c.agent)));
+    let mut parts: Vec<Vec<u8>> = vec![c.kind.into(), compression(data)["agents"][c.agent].to_string().into(),
+        compression(data)["enabled"].to_string().into(), direct.to_string().into(),
+        json!({"desired": integration["desired"], "phase": integration["phase"], "generation": integration["generation"]}).to_string().into(),
+        routing::port(data, c.agent).unwrap_or(0).to_le_bytes().into()];
     let mut unreadable = vec![];
     let texts: Vec<Option<String>> = c
         .files
@@ -150,8 +172,9 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
     }
     let present = |b: bool| if b { "registered" } else { "absent" };
     let compress = compression(data);
-    let optimization = if compress["enabled"] == false || compress["agents"][c.agent] == false { "disabled" } else { "enabled" };
+    let optimization = if settings.is_err() { "unknown" } else if compress["enabled"] == false || compress["agents"][c.agent] == false { "disabled" } else { "enabled" };
     let route = || routing::state(c.agent, &c.root, routing::port(data, c.agent)).0;
+    let auto = c.kind == "claude-code" && json_doc(0).is_some_and(|d| d["permissions"]["defaultMode"] == "auto");
     // A1: project overrides are reported read-only, as a count only; None where unknown or the client has none
     let mut overrides = None;
     let (routing, mcp, hooks, plugin, adapter, effective) = match c.kind {
@@ -175,12 +198,12 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
         }
         "claude-code" => {
             let r = route();
-            let h = json_doc(0).map(|d| hooked(&d, "claude", &["SessionStart", "PreToolUse"]));
+            let h = json_doc(0).map(|d| hooked(&d, "claude", if auto { &["SessionStart", "PreToolUse", "PostToolUse"] } else { &["SessionStart", "PreToolUse"] }));
             let mcp = json_doc(1).map_or("unknown", |d| present(d["mcpServers"]["agent_context"].is_object()));
             let set = |v: &Value| v.as_object().is_some_and(|o| !o.is_empty()) || v.as_array().is_some_and(|a| !a.is_empty());
             overrides = json_doc(1).map(|d| d["projects"].as_object().into_iter().flatten().filter(|(_, p)| ["mcpServers", "env", "enabledMcpjsonServers"].iter().any(|k| set(&p[*k]))).count());
             let eff = match &h {
-                Some(h) if h[1] => "configured",
+                Some(h) if h[if auto { 2 } else { 1 }] => "configured",
                 Some(_) => "missing",
                 None => "unknown",
             };
@@ -208,9 +231,15 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
     if routing == "bypassed" && !conflicts.contains(&"foreign_provider") {
         conflicts.push("foreign_provider");
     }
-    let effective = if optimization == "disabled" && effective != "unsupported" { "disabled" } else { effective };
+    let effective = if effective == "unsupported" { effective } else if optimization == "unknown" || integration["desired"] == "unknown" { "unknown" }
+        else if optimization == "disabled" || integration["desired"] == "disabled" { "disabled" } else { effective };
+    let preference = if settings.is_err() { "unknown" } else if compress["agents"][c.agent] == false { "disabled" } else { "enabled" };
+    let reason = if settings.is_err() || integration["desired"] == "unknown" { "unreadable_control" }
+        else if integration["desired"] == "disabled" { "integration_disabled" }
+        else if compress["enabled"] == false { "host_pause" } else if preference == "disabled" { "agent_pause" }
+        else if effective == "bypassed" { "direct" } else if effective == "missing" { "adapter_missing" } else { effective };
     let refs: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
-    json!({
+    let mut projection = json!({
         "kind": c.kind,
         "id": sign(key, &[b"profile", c.kind.as_bytes(), c.root.display().to_string().as_bytes()]),
         "revision": sign(key, &refs),
@@ -219,12 +248,17 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
         "hooks": hooks,
         "plugin": plugin,
         "optimization": optimization,
+        "optimization_preference": preference,
+        "optimization_reason": reason,
+        "integration": integration,
         "effective": {"adapter": (!adapter.is_empty()).then_some(adapter), "state": effective},
         "owned": !owned.is_empty(),
         "overrides": overrides,
         "conflicts": conflicts,
         "incomplete": incomplete,
-    })
+    });
+    if c.kind == "claude-code" && json_doc(0).is_some() { projection["effective"]["event"] = (if auto { "PostToolUse" } else { "PreToolUse" }).into(); }
+    projection
 }
 
 #[cfg(test)]
