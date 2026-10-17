@@ -517,7 +517,7 @@ mod tests {
         assert_eq!(r["profiles"], json!([{"id": codex, "state": "applied"}, {"id": desktop, "state": "applied"}]));
         assert!(configure::valid_result(&r));
         let toml = std::fs::read_to_string(&h.clients[0].files[0]).unwrap();
-        assert!(!toml.contains("model_provider") && toml.contains("[mcp_servers.agent_context]"), "Direct keeps MCP: {toml}");
+        assert!(!toml.lines().any(|l| l.starts_with("model_provider =")) && toml.contains("[mcp_servers.agent_context]") && toml.contains(onboard::CODEX_DIRECT_PROVIDER), "Direct keeps MCP and old-chat compatibility: {toml}");
         let cfg = config(&h.data)["compression"].clone();
         assert_eq!(cfg, json!({"enabled": true, "min_bytes": 4096, "agents": {"hermes": false, "codex": false}}), "host-wide keys and siblings stay");
         assert_eq!(std::fs::read_to_string(&h.clients[1].files[0]).unwrap(), claude_before, "sibling profile untouched");

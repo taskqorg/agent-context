@@ -512,7 +512,7 @@ mod tests {
             let r = integrations(&h, None, true, false, json!({}), &mut |ports, _| {
                 prepared = true;
                 assert_eq!(ports.is_empty(), !routed);
-                assert!(!std::fs::read_to_string(&h.clients[0].files[0]).unwrap().contains("model_provider"));
+                assert!(!std::fs::read_to_string(&h.clients[0].files[0]).unwrap().lines().any(|l| l.starts_with("model_provider =")));
                 Ok(())
             }).unwrap();
             assert!(prepared);
@@ -520,13 +520,31 @@ mod tests {
             assert!(!disabled(&h.data, "unknown").unwrap());
             assert_eq!(config(&h.data).unwrap()["compression"]["agents"]["claude"], false);
             let text = std::fs::read_to_string(&h.clients[0].files[0]).unwrap();
-            assert_eq!(text.contains("model_provider"), routed);
+            assert_eq!(text.lines().any(|l| l.starts_with("model_provider =")), routed);
             assert!(text.contains("native-model"));
             let settings: Value = serde_json::from_str(&std::fs::read_to_string(&h.clients[1].files[0]).unwrap()).unwrap();
             assert_eq!(settings["permissions"]["defaultMode"], "default");
             assert_eq!(change(&h, None, true)["outcome"], "unchanged");
             std::fs::remove_dir_all(h.data.parent().unwrap().parent().unwrap()).unwrap();
         }
+    }
+
+    #[test]
+    fn repeated_disable_repairs_codex_provider_removed_by_older_releases() {
+        let h = host("provider-repair", true);
+        assert_eq!(change(&h, Some("codex"), false)["outcome"], "applied");
+        let path = &h.clients[0].files[0];
+        let snapshot = state(&h.data).unwrap()["profiles"]["codex"]["entries"].clone();
+        for text in [Some("model = \"native-model\"\n"), None] {
+            if let Some(text) = text { std::fs::write(path, text).unwrap(); }
+            else { std::fs::remove_file(path).unwrap(); }
+            assert_eq!(change(&h, Some("codex"), false)["outcome"], "applied");
+            let repaired = std::fs::read_to_string(path).unwrap();
+            assert!(repaired.contains(onboard::CODEX_DIRECT_PROVIDER));
+            assert!(!repaired.contains("base_url"));
+            assert_eq!(state(&h.data).unwrap()["profiles"]["codex"]["entries"], snapshot);
+        }
+        std::fs::remove_dir_all(h.data.parent().unwrap().parent().unwrap()).unwrap();
     }
 
     #[test]
