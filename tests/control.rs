@@ -30,7 +30,9 @@ fn profile<'a>(v: &'a Value, kind: &str) -> &'a Value {
 }
 
 fn setup() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("agentq-control-cli-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    // macOS clock ticks can be shared by parallel tests in the same process.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!("agentq-control-cli-{}-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     for dir in ["install", "bin", "codex", "claude", "hermes"] { std::fs::create_dir_all(root.join(dir)).unwrap(); }
     let desktop = if cfg!(target_os = "macos") { root.join("Library/Application Support/Claude") }
         else if cfg!(windows) { root.join("Claude") } else { root.join("config/Claude") };
