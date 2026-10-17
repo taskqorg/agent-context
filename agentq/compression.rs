@@ -307,7 +307,7 @@ pub fn run(install: &Path, cmd: &[String]) -> i32 {
             Ok(mut candidate) => {
                 let reference = format!("rtk:{id}");
                 candidate.extend_from_slice(
-                    format!("\n[Agent Context original ref: {reference}; use get_original.]\n")
+                    format!("\n[AgentQ original ref: {reference}; use get_original.]\n")
                         .as_bytes(),
                 );
                 if candidate.len() < native.stdout.len()
@@ -617,7 +617,7 @@ pub fn compress(data: &Path, agent: &str, input: &str) -> Result<Value, String> 
                     let original = format!("rtk:{id}");
                     match String::from_utf8(bytes) {
                         Ok(candidate) => {
-                            let candidate = format!("{candidate}\n[Agent Context original ref: {original}; use get_original.]\n");
+                            let candidate = format!("{candidate}\n[AgentQ original ref: {original}; use get_original.]\n");
                             if candidate.len() < text.len() {
                                 output = candidate; reference = json!(original); reason = "compressed";
                             } else { reason = "not_smaller"; }

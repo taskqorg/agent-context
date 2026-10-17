@@ -82,7 +82,7 @@ def main():
                 wrapped = json.loads(transformed_result) if transformed_result else {}
                 transformed = wrapped.get('output', '')
                 envelope_ok = wrapped == dict(native, output=transformed)
-                ref = re.search(r'\[Agent Context original ref: (rtk:[^;]+);', transformed)
+                ref = re.search(r'\[AgentQ original ref: (rtk:[^;]+);', transformed)
                 value = dict(text=transformed, ref=ref.group(1) if ref else None)
                 returncode = 0 if transformed_result else 1
             else:

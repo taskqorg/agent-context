@@ -180,7 +180,7 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
     let (routing, mcp, hooks, plugin, adapter, effective) = match c.kind {
         "codex" => {
             let toml = texts[0].clone().unwrap_or_default();
-            if toml.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| l.split('=').next().is_some_and(|k| k.trim() == "model_provider") && !l.contains("\"agent_context\"")) {
+            if toml.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| l.split('=').next().is_some_and(|k| k.trim() == "model_provider") && !l.contains("\"agentq\"")) {
                 conflicts.push("foreign_provider");
             }
             let r = route();
@@ -188,7 +188,7 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
                 overrides = Some(toml.lines().filter(|l| l.trim_start().starts_with("[profiles.")).count());
             }
             let h = json_doc(1).map(|d| hooked(&d, "codex", &["SessionStart", "Stop"]));
-            let mcp = if unread(0) { "unknown" } else { present(toml.lines().any(|l| l.trim() == "[mcp_servers.agent_context]")) };
+            let mcp = if unread(0) { "unknown" } else { present(toml.lines().any(|l| l.trim() == "[mcp_servers.agentq]")) };
             let eff = match r {
                 "routed" => "configured",
                 "direct" | "bypassed" => "bypassed",
@@ -199,7 +199,7 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
         "claude-code" => {
             let r = route();
             let h = json_doc(0).map(|d| hooked(&d, "claude", if auto { &["SessionStart", "PreToolUse", "PostToolUse"] } else { &["SessionStart", "PreToolUse"] }));
-            let mcp = json_doc(1).map_or("unknown", |d| present(d["mcpServers"]["agent_context"].is_object()));
+            let mcp = json_doc(1).map_or("unknown", |d| present(d["mcpServers"]["agentq"].is_object()));
             let set = |v: &Value| v.as_object().is_some_and(|o| !o.is_empty()) || v.as_array().is_some_and(|a| !a.is_empty());
             overrides = json_doc(1).map(|d| d["projects"].as_object().into_iter().flatten().filter(|(_, p)| ["mcpServers", "env", "enabledMcpjsonServers"].iter().any(|k| set(&p[*k]))).count());
             let eff = match &h {
@@ -210,7 +210,7 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
             (r, mcp, h.as_deref().map_or("unknown", hooks_state), "unsupported", "hook", eff)
         }
         "claude-desktop-chat" => {
-            let mcp = json_doc(0).map_or("unknown", |d| present(d["mcpServers"]["agent_context"].is_object()));
+            let mcp = json_doc(0).map_or("unknown", |d| present(d["mcpServers"]["agentq"].is_object()));
             ("unsupported", mcp, "unsupported", "unsupported", "", "unsupported")
         }
         _ => {
@@ -218,7 +218,7 @@ pub fn profile(c: &Client, data: &Path, journal: &Path, key: &hmac::Key) -> Valu
             let (mcp, plugin) = if unread(0) {
                 ("unknown", "unknown")
             } else {
-                (present(yaml_block(&yaml, "mcp_servers").iter().any(|l| l.trim_start().starts_with("agent_context:"))), if yaml_block(&yaml, "plugins").iter().any(|l| l.contains("agent-context")) { "enabled" } else { "absent" })
+                (present(yaml_block(&yaml, "mcp_servers").iter().any(|l| l.trim_start().starts_with("agentq:"))), if yaml_block(&yaml, "plugins").iter().any(|l| l.contains("agentq")) { "enabled" } else { "absent" })
             };
             let eff = match plugin {
                 "enabled" => "configured",
@@ -333,7 +333,7 @@ mod tests {
         assert!(!o.to_string().contains("alice") && !o.to_string().contains("sk-secret"));
 
         let hermes = client(&d, "hermes");
-        std::fs::write(&hermes.files[0], "mcp_servers:\n  agent_context:\n    command: x\nplugins:\n  enabled:\n    - agent-context\n").unwrap();
+        std::fs::write(&hermes.files[0], "mcp_servers:\n  agentq:\n    command: x\nplugins:\n  enabled:\n    - agentq\n").unwrap();
         let h = profile(&hermes, &data, &journal, &key);
         assert_eq!((h["mcp"].as_str(), h["plugin"].as_str(), h["routing"].as_str(), h["effective"]["state"].as_str()), (Some("registered"), Some("enabled"), Some("unsupported"), Some("configured")));
 

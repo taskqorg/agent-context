@@ -494,7 +494,7 @@ mod tests {
         assert_eq!(plan["writable"], true, "{plan}");
         let result = execute(&h, &req.to_string(), 1001);
         assert_eq!(result["outcome"], "applied", "{result}");
-        assert!(root.join("plugins/agent-context/__init__.py").is_file());
+        assert!(root.join("plugins/agentq/__init__.py").is_file());
         assert!(std::fs::read_to_string(root.join("config.yaml")).unwrap().contains("    - other\n"));
         assert!(onboard::restore(&h.journal(), false, None).unwrap().iter().all(|s| s.starts_with("restored:")));
         assert_eq!(std::fs::read_to_string(root.join("config.yaml")).unwrap(), "plugins:\n  enabled:\n    - other\n");
@@ -517,12 +517,12 @@ mod tests {
         assert_eq!(r["profiles"], json!([{"id": codex, "state": "applied"}, {"id": desktop, "state": "applied"}]));
         assert!(configure::valid_result(&r));
         let toml = std::fs::read_to_string(&h.clients[0].files[0]).unwrap();
-        assert!(!toml.lines().any(|l| l.starts_with("model_provider =")) && toml.contains("[mcp_servers.agent_context]") && toml.contains(onboard::CODEX_DIRECT_PROVIDER), "Direct keeps MCP and old-chat compatibility: {toml}");
+        assert!(!toml.lines().any(|l| l.starts_with("model_provider =")) && toml.contains("[mcp_servers.agentq]") && toml.contains(onboard::CODEX_DIRECT_PROVIDER), "Direct keeps MCP and saved conversation access: {toml}");
         let cfg = config(&h.data)["compression"].clone();
         assert_eq!(cfg, json!({"enabled": true, "min_bytes": 4096, "agents": {"hermes": false, "codex": false}}), "host-wide keys and siblings stay");
         assert_eq!(std::fs::read_to_string(&h.clients[1].files[0]).unwrap(), claude_before, "sibling profile untouched");
         let desk: Value = serde_json::from_str(&std::fs::read_to_string(&h.clients[2].files[0]).unwrap()).unwrap();
-        assert_eq!(desk["mcpServers"]["agent_context"]["args"], json!(["mcp", "claude-desktop"]));
+        assert_eq!(desk["mcpServers"]["agentq"]["args"], json!(["mcp", "claude-desktop"]));
 
         let st = profiles::status_with(&h.clients, &h.data, 1002);
         let p = st["profiles"].as_array().unwrap().iter().find(|p| p["id"] == codex).unwrap().clone();

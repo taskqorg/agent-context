@@ -189,13 +189,13 @@ pub fn state(agent: &str, root: &Path, port: Option<u16>) -> (&'static str, Stri
     match agent {
         "codex" => {
             let toml = std::fs::read_to_string(root.join("config.toml")).unwrap_or_default();
-            if !toml.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| l.trim() == "model_provider = \"agent_context\"") {
-                return ("direct", "config.toml selects no agent_context provider".into());
+            if !toml.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| l.trim() == "model_provider = \"agentq\"") {
+                return ("direct", "config.toml selects no agentq provider".into());
             }
             match port {
                 Some(p) if toml.contains(&format!("base_url = \"{}\"", base_url(p))) && answers(p) => ("routed", format!("127.0.0.1:{p}")),
                 Some(p) if toml.contains(&format!("base_url = \"{}\"", base_url(p))) => ("unknown", format!("proxy on 127.0.0.1:{p} not answering")),
-                _ => ("bypassed", "agent_context provider is not the fixed loopback port".into()),
+                _ => ("bypassed", "agentq provider is not the fixed loopback port".into()),
             }
         }
         "claude" => match std::fs::read_to_string(root.join("settings.json")).ok().and_then(|s| serde_json::from_str::<Value>(s.trim_start_matches('\u{feff}')).ok()) {
@@ -415,7 +415,7 @@ mod tests {
         assert_eq!(state("codex", &d, None).0, "direct");
         let l = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
         let p = l.local_addr().unwrap().port();
-        let cfg = format!("model_provider = \"agent_context\"\n\n[model_providers.agent_context]\nbase_url = \"{}\"\n", base_url(p));
+        let cfg = format!("model_provider = \"agentq\"\n\n[model_providers.agentq]\nbase_url = \"{}\"\n", base_url(p));
         std::fs::write(d.join("config.toml"), &cfg).unwrap();
         assert_eq!(state("codex", &d, Some(p)).0, "routed");
         assert_eq!(state("codex", &d, Some(p.wrapping_add(1))).0, "bypassed");
@@ -437,11 +437,11 @@ mod tests {
         let (data, root) = (d.join("data"), d.join(".codex"));
         std::fs::create_dir_all(&data).unwrap();
         assert_eq!(intended(&data, "codex", &root), ("direct", "not onboarded"));
-        std::fs::write(data.join("owned.json"), json!([{"file": root.join("config.toml"), "key": ["mcp_servers", "agent_context"]}]).to_string()).unwrap();
+        std::fs::write(data.join("owned.json"), json!([{"file": root.join("config.toml"), "key": ["mcp_servers", "agentq"]}]).to_string()).unwrap();
         assert_eq!(intended(&data, "codex", &root), ("routed", "onboarded"));
         assert_eq!(intended(&data, "claude", &d.join(".claude")).0, "direct");
-        let row = |i: &str| json!({"codex": {"routing": "direct", "reason": "config.toml selects no agent_context provider", "intended": i}, "claude": {"routing": "direct", "intended": "direct"}});
-        assert_eq!(problems(&row("routed")), ["codex direct (config.toml selects no agent_context provider)"]);
+        let row = |i: &str| json!({"codex": {"routing": "direct", "reason": "config.toml selects no agentq provider", "intended": i}, "claude": {"routing": "direct", "intended": "direct"}});
+        assert_eq!(problems(&row("routed")), ["codex direct (config.toml selects no agentq provider)"]);
         set_direct(&data, &["codex"], true).unwrap();
         assert_eq!(intended(&data, "codex", &root), ("direct", "`agentq direct`"));
         assert!(problems(&row("direct")).is_empty());

@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 
 pub const AGENTS: [&str; 3] = ["codex", "claude", "hermes"];
 
-// Old conversations retain this provider ID; no base_url lets Codex use its native authenticated endpoint.
-pub const CODEX_DIRECT_PROVIDER: &str = "# agentq: direct Codex provider compatibility\n[model_providers.agent_context]\nname = \"OpenAI\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = true\n";
+// Conversations retain this provider ID; no base_url lets Codex use its native authenticated endpoint.
+pub const CODEX_DIRECT_PROVIDER: &str = "# agentq: direct OpenAI for saved conversations\n[model_providers.agentq]\nname = \"OpenAI\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = true\n";
 
 fn direct_codex_provider(text: &str) -> bool {
-    text.matches("[model_providers.agent_context]").count() == 1
-        && !text.contains("[model_providers.agent_context.")
+    text.matches("[model_providers.agentq]").count() == 1
+        && !text.contains("[model_providers.agentq.")
         && text.split_once(CODEX_DIRECT_PROVIDER).is_some_and(|(_, tail)| {
             tail.lines().take_while(|l| !l.trim_start().starts_with('[')).all(|l| l.trim().is_empty())
         })
@@ -71,7 +71,7 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
     let w = |file: PathBuf, key: &[&str], value: Value, append: bool| Want { file, key: key.iter().map(|k| k.to_string()).collect(), value, append, routing: None, agent: agent.into(), instruction: false };
     match agent {
         "codex" => vec![
-            w(root.join("config.toml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "codex"], "enabled_tools": tools}), false),
+            w(root.join("config.toml"), &["mcp_servers", "agentq"], json!({"command": exe, "args": ["mcp", "codex"], "enabled_tools": tools}), false),
             w(root.join("hooks.json"), &["hooks", "SessionStart"], json!({"hooks": [hook("SessionStart")]}), true),
             w(root.join("hooks.json"), &["hooks", "Stop"], json!({"hooks": [hook("Stop")]}), true),
         ],
@@ -79,15 +79,15 @@ pub fn wants(agent: &str, root: &Path, claude_json: &Path, exe: &Path) -> Vec<Wa
             w(root.join("settings.json"), &["hooks", "SessionStart"], json!({"hooks": [hook("SessionStart")]}), true),
             w(root.join("settings.json"), &["hooks", "PreToolUse"], json!({"matcher": "Bash", "hooks": [hook("PreToolUse")]}), true),
             w(root.join("settings.json"), &["hooks", "PostToolUse"], json!({"matcher": "Bash", "hooks": [hook("PostToolUse")]}), true),
-            w(claude_json.into(), &["mcpServers", "agent_context"], json!({"type": "stdio", "command": exe, "args": ["mcp", "claude"]}), false),
+            w(claude_json.into(), &["mcpServers", "agentq"], json!({"type": "stdio", "command": exe, "args": ["mcp", "claude"]}), false),
         ],
         // Desktop Chat is MCP-only (CONFIGURATION A1), with its own control identity.
-        "claude-desktop" => vec![w(root.join("claude_desktop_config.json"), &["mcpServers", "agent_context"], json!({"command": exe, "args": ["mcp", "claude-desktop"]}), false)],
+        "claude-desktop" => vec![w(root.join("claude_desktop_config.json"), &["mcpServers", "agentq"], json!({"command": exe, "args": ["mcp", "claude-desktop"]}), false)],
         _ => vec![
-            w(root.join("plugins/agent-context/__init__.py"), &["$file"], json!(include_str!("../integrations/hermes/__init__.py").replace("@AGENTQ_EXE@", &json!(exe).to_string())), false),
-            w(root.join("plugins/agent-context/plugin.yaml"), &["$file"], json!(include_str!("../integrations/hermes/plugin.yaml")), false),
-            w(root.join("config.yaml"), &["plugins", "enabled"], json!("agent-context"), true),
-            w(root.join("config.yaml"), &["mcp_servers", "agent_context"], json!({"command": exe, "args": ["mcp", "hermes"]}), false),
+            w(root.join("plugins/agentq/__init__.py"), &["$file"], json!(include_str!("../integrations/hermes/__init__.py").replace("@AGENTQ_EXE@", &json!(exe).to_string())), false),
+            w(root.join("plugins/agentq/plugin.yaml"), &["$file"], json!(include_str!("../integrations/hermes/plugin.yaml")), false),
+            w(root.join("config.yaml"), &["plugins", "enabled"], json!("agentq"), true),
+            w(root.join("config.yaml"), &["mcp_servers", "agentq"], json!({"command": exe, "args": ["mcp", "hermes"]}), false),
         ],
     }
 }
@@ -97,8 +97,8 @@ pub fn routing_wants(agent: &str, root: &Path, port: u16) -> Vec<Want> {
     let w = |key: &[&str], value: Value| Want { file: root.join("config.toml"), key: key.iter().map(|k| k.to_string()).collect(), value, append: false, routing: Some(agent.into()), agent: agent.into(), instruction: false };
     match agent {
         "codex" => vec![
-            w(&["model_provider"], "agent_context".into()),
-            w(&["model_providers", "agent_context"], json!({"name": "Agent Context", "base_url": crate::routing::base_url(port), "wire_api": "responses", "requires_openai_auth": true, "supports_websockets": true})),
+            w(&["model_provider"], "agentq".into()),
+            w(&["model_providers", "agentq"], json!({"name": "AgentQ", "base_url": crate::routing::base_url(port), "wire_api": "responses", "requires_openai_auth": true, "supports_websockets": true})),
         ],
         _ => vec![],
     }
@@ -207,8 +207,8 @@ pub fn capture(wants: &[Want], journal: &Path) -> Result<Vec<Value>, String> {
             if e["agent"].as_str().is_some_and(|a| a != w.agent) { continue; }
             let mut n = e.clone();
             n.as_object_mut().ok_or("invalid owned entry")?.shift_remove("orig");
-            if w.instruction && !e["after"].as_str().is_some_and(|s| s.trim().starts_with("<!-- agent-context:start -->") && s.trim().ends_with("<!-- agent-context:end -->")
-                && s.matches("<!-- agent-context:start -->").count() == 1 && s.matches("<!-- agent-context:end -->").count() == 1) {
+            if w.instruction && !e["after"].as_str().is_some_and(|s| s.trim().starts_with("<!-- agentq:start -->") && s.trim().ends_with("<!-- agentq:end -->")
+                && s.matches("<!-- agentq:start -->").count() == 1 && s.matches("<!-- agentq:end -->").count() == 1) {
                 return Err("instruction receipt contains foreign text".into());
             }
             if e["kind"] == "set" && Path::new(file).extension().is_some_and(|x| x == "json") {
@@ -235,10 +235,10 @@ pub fn capture(wants: &[Want], journal: &Path) -> Result<Vec<Value>, String> {
             if w.key != ["$file"] && matches!(w.file.extension().and_then(|s| s.to_str()), Some("yaml" | "yml")) {
                 let after = e["after"].as_str().ok_or("invalid owned YAML")?;
                 if w.key == ["plugins", "enabled"] {
-                    let line = after.split_inclusive('\n').find(|l| l.trim() == "- agent-context").ok_or("unresolved plugin receipt")?;
+                    let line = after.split_inclusive('\n').find(|l| l.trim() == "- agentq").ok_or("unresolved plugin receipt")?;
                     n["after"] = line.into();
-                } else if w.key == ["mcp_servers", "agent_context"] {
-                    let at = after.find("agent_context:").ok_or("unresolved MCP receipt")?;
+                } else if w.key == ["mcp_servers", "agentq"] {
+                    let at = after.find("agentq:").ok_or("unresolved MCP receipt")?;
                     let start = after[..at].rfind('\n').map_or(0, |n| n + 1);
                     n["after"] = after[start..].into();
                 } else { return Err("unresolved YAML scope".into()); }
@@ -291,11 +291,11 @@ pub fn unowned_present(wants: &[Want], entries: &[Value]) -> Result<bool, String
         if w.key == ["$file"] || entries.iter().any(|e| e["file"] == w.file.display().to_string() && e["key"] == json!(w.key)) { continue; }
         let Some(text) = read_config(&w.file)? else { continue };
         if w.field() == "routing" && !text.lines().take_while(|l| !l.trim_start().starts_with('[')).any(|l| {
-            l.split_once('=').is_some_and(|(key, v)| key.trim() == "model_provider" && ["\"agent_context\"", "'agent_context'"].iter().any(|id| v.trim_start().starts_with(id)))
+            l.split_once('=').is_some_and(|(key, v)| key.trim() == "model_provider" && ["\"agentq\"", "'agentq'"].iter().any(|id| v.trim_start().starts_with(id)))
         }) { continue; }
         match place(&text, w) {
             Ok((_, None)) => return Ok(true),
-            Err(_) if w.field() != "routing" || text.contains("agent_context") => return Err("foreign or unreadable integration registration".into()),
+            Err(_) if w.field() != "routing" || text.contains("agentq") => return Err("foreign or unreadable integration registration".into()),
             _ => {},
         }
     }
@@ -339,15 +339,15 @@ fn detached_in(e: &Value, text: &str) -> Result<bool, String> {
     if e["kind"] == "file" { return Ok(false); }
     if e["kind"] == "text" || e["kind"] == "replace" {
         if text.contains(e["after"].as_str().ok_or("invalid saved block")?) { return Ok(false); }
-        if e["key"] == json!(["model_providers", "agent_context"]) && direct_codex_provider(text) { return Ok(true); }
+        if e["key"] == json!(["model_providers", "agentq"]) && direct_codex_provider(text) { return Ok(true); }
         let keys: Vec<_> = e["key"].as_array().ok_or("invalid saved key")?.iter().filter_map(Value::as_str).collect();
         let still_registered = match keys.as_slice() {
             ["model_provider"] => text.lines().take_while(|l| !l.trim_start().starts_with('['))
-                .any(|l| l.split('=').next().is_some_and(|k| k.trim() == "model_provider") && l.contains("agent_context")),
-            ["mcp_servers", "agent_context"] | ["model_providers", "agent_context"] => text.contains(&format!("[{}]", keys.join(".")))
-                || text.lines().any(|l| l.trim_start().starts_with("agent_context:")),
-            ["plugins", "enabled"] => text.contains("agent-context"),
-            _ if e["field"] == "instructions" => text.contains("<!-- agent-context:start -->") || text.contains("<!-- agent-context:end -->"),
+                .any(|l| l.split('=').next().is_some_and(|k| k.trim() == "model_provider") && l.contains("agentq")),
+            ["mcp_servers", "agentq"] | ["model_providers", "agentq"] => text.contains(&format!("[{}]", keys.join(".")))
+                || text.lines().any(|l| l.trim_start().starts_with("agentq:")),
+            ["plugins", "enabled"] => text.contains("agentq"),
+            _ if e["field"] == "instructions" => text.contains("<!-- agentq:start -->") || text.contains("<!-- agentq:end -->"),
             _ => true,
         };
         return if still_registered { Err("owned block changed".into()) } else { Ok(true) };
@@ -383,7 +383,7 @@ pub fn detach(journal: &Path, entries: &[Value], dry: bool) -> Result<Vec<String
     let mut files: std::collections::BTreeMap<PathBuf, (String, String)> = Default::default();
     for e in entries.iter().rev() {
         let path = PathBuf::from(e["file"].as_str().ok_or("invalid saved file")?);
-        let provider = e["key"] == json!(["model_providers", "agent_context"]);
+        let provider = e["key"] == json!(["model_providers", "agentq"]);
         let (before, text) = if let Some(t) = files.get(&path) { t.clone() } else {
             let Some(t) = read_config(&path)? else {
                 if provider { files.insert(path, (String::new(), CODEX_DIRECT_PROVIDER.into())); }
@@ -395,7 +395,7 @@ pub fn detach(journal: &Path, entries: &[Value], dry: bool) -> Result<Vec<String
         if files.contains_key(&path) && text.is_empty() && !provider { continue; }
         if detached_in(e, &text)? {
             if provider && !direct_codex_provider(&text) {
-                if text.contains("[model_providers]") || text.contains("model_providers.agent_context") {
+                if text.contains("[model_providers]") || text.contains("model_providers.agentq") {
                     return Err("foreign or unreadable provider definition; kept".into());
                 }
                 files.insert(path, (before, format!("{text}{}{CODEX_DIRECT_PROVIDER}", sep(&text))));
@@ -475,7 +475,7 @@ fn place(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     if w.instruction {
         let wanted = w.value.as_str().ok_or("invalid instruction block")?;
         if text.contains(wanted) { return Ok((text.into(), None)); }
-        if text.contains("<!-- agent-context:start -->") || text.contains("<!-- agent-context:end -->") { return Err("instruction block has foreign content".into()); }
+        if text.contains("<!-- agentq:start -->") || text.contains("<!-- agentq:end -->") { return Err("instruction block has foreign content".into()); }
         let after = format!("{}{wanted}\n", sep(text));
         return Ok((format!("{text}{after}"), Some(entry(&w.key, "text", after.into()))));
     }
@@ -526,7 +526,7 @@ fn unplace(text: &str, e: &Value) -> Option<String> {
     if e["kind"] == "text" {
         let a = after.as_str()?;
         return text.contains(a).then(|| {
-            if e["key"] == json!(["model_providers", "agent_context"]) {
+            if e["key"] == json!(["model_providers", "agentq"]) {
                 let direct = format!("{}{CODEX_DIRECT_PROVIDER}", &a[..a.len() - a.trim_start().len()]);
                 text.replacen(a, &direct, 1)
             } else { text.replacen(a, "", 1) }
@@ -609,7 +609,7 @@ fn sep(text: &str) -> &'static str {
     }
 }
 
-/// Appends `[mcp_servers.agent_context]`; JSON strings and arrays are valid TOML values. A top-level key goes first in
+/// Appends `[mcp_servers.agentq]`; JSON strings and arrays are valid TOML values. A top-level key goes first in
 /// the file, where it cannot fall into a table.
 fn place_toml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     let name = w.key.join(".");
@@ -628,12 +628,12 @@ fn place_toml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     if text.contains(&block) {
         return Ok((text.into(), None));
     }
-    if w.key == ["model_providers", "agent_context"] && direct_codex_provider(text) {
+    if w.key == ["model_providers", "agentq"] && direct_codex_provider(text) {
         let mut e = entry(&w.key, "replace", block.clone().into());
         e["before"] = CODEX_DIRECT_PROVIDER.into();
         return Ok((text.replacen(CODEX_DIRECT_PROVIDER, &block, 1), Some(e)));
     }
-    // ponytail: substring check; an inline `agent_context = {..}` under `[mcp_servers]` slips through
+    // ponytail: substring check; an inline `agentq = {..}` under `[mcp_servers]` slips through
     if text.contains(&name) {
         return Err(format!("{name} exists"));
     }
@@ -641,7 +641,7 @@ fn place_toml(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     Ok((format!("{text}{after}"), Some(entry(&w.key, "text", after.into()))))
 }
 
-/// Inserts `agent_context` under a block `mcp_servers:` with its indent, else appends both; JSON scalars are YAML.
+/// Inserts `agentq` under a block `mcp_servers:` with its indent, else appends both; JSON scalars are YAML.
 /// Preserve the user's plugin list; journal only our inserted item or empty mapping expansion.
 fn enable_plugin(text: &str, w: &Want) -> Result<(String, Option<Value>), String> {
     let name = w.value.as_str().ok_or("plugin name requires text")?;
@@ -761,9 +761,9 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         let toml = std::fs::read_to_string(codex.join("config.toml")).unwrap();
-        assert!(toml.starts_with("model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n\n[mcp_servers.agent_context]\n"), "{toml}");
+        assert!(toml.starts_with("model = \"gpt-5\"\n\n[mcp_servers.other]\ncommand = \"x\"\n\n[mcp_servers.agentq]\n"), "{toml}");
         let yaml = std::fs::read_to_string(hermes.join("config.yaml")).unwrap();
-        assert!(yaml.starts_with("model: x\nmcp_servers:\n    agent_context:\n        command: "), "{yaml}");
+        assert!(yaml.starts_with("model: x\nmcp_servers:\n    agentq:\n        command: "), "{yaml}");
         let settings = std::fs::read_to_string(claude.join("settings.json")).unwrap();
         assert!(settings.starts_with("{\n    \"model\": \"opus\",\n    \"allow\": [\n        \"a\","), "{settings}");
         let settings: Value = serde_json::from_str(&settings).unwrap();
@@ -795,12 +795,12 @@ mod tests {
         let wants = wants("hermes", &d, &d.join("unused"), Path::new("/agentq"));
         apply(&wants, &journal).unwrap();
         let after = std::fs::read_to_string(d.join("config.yaml")).unwrap();
-        assert!(after.contains("    - agent-context\n"));
+        assert!(after.contains("    - agentq\n"));
         assert!(after.contains("    - tight-langfuse\n    - web/tavily\n  disabled:\n    - observability/langfuse\n"));
         assert!(apply(&wants, &journal).unwrap().iter().all(|l| l.starts_with("kept:")));
         restore(&journal, false, None).unwrap();
         assert_eq!(std::fs::read_to_string(d.join("config.yaml")).unwrap(), before);
-        assert!(!d.join("plugins/agent-context/__init__.py").exists());
+        assert!(!d.join("plugins/agentq/__init__.py").exists());
         std::fs::remove_dir_all(d).unwrap();
     }
 
@@ -808,7 +808,7 @@ mod tests {
     fn foreign_plugin_prevents_activation_before_any_write() {
         let d = std::env::temp_dir().join(format!("agentq-plugin-conflict-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
-        let source = d.join("plugins/agent-context/__init__.py");
+        let source = d.join("plugins/agentq/__init__.py");
         std::fs::create_dir_all(source.parent().unwrap()).unwrap();
         std::fs::write(&source, "foreign plugin").unwrap();
         let config = "model: native\nplugins:\n  enabled:\n    - other\n";
@@ -847,15 +847,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let cj = d.join(".claude.json");
-        let foreign = "{\n  \"mcpServers\": {\n    \"agent_context\": {\n      \"command\": \"node\"\n    }\n  }\n}\n";
+        let foreign = "{\n  \"mcpServers\": {\n    \"agentq\": {\n      \"command\": \"node\"\n    }\n  }\n}\n";
         std::fs::write(&cj, foreign).unwrap();
-        let foreign_yaml = "mcp_servers: {agent_context: {command: foreign-tool}}\n";
+        let foreign_yaml = "mcp_servers: {agentq: {command: foreign-tool}}\n";
         std::fs::write(d.join("config.yaml"), foreign_yaml).unwrap();
         let journal = d.join("owned.json");
         let mut w = wants("claude", &d, &cj, Path::new("/x/agentq"));
         w.extend(wants("hermes", &d, &cj, Path::new("/x/agentq")));
         let out = apply(&w, &journal).unwrap();
-        assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("mcpServers.agent_context has a foreign value")), "{out:?}");
+        assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("mcpServers.agentq has a foreign value")), "{out:?}");
         assert!(out.iter().any(|l| l.starts_with("conflict:") && l.contains("not a block mapping")), "{out:?}");
         assert_eq!(std::fs::read_to_string(&cj).unwrap(), foreign);
         assert_eq!(std::fs::read_to_string(d.join("config.yaml")).unwrap(), foreign_yaml);
@@ -888,15 +888,15 @@ mod tests {
         };
         apply(&all(), &journal).unwrap();
         let routed = std::fs::read_to_string(&cfg).unwrap();
-        assert!(routed.starts_with("model_provider = \"agent_context\"\nmodel = \"gpt-5\"\n"), "{routed}");
-        assert!(routed.contains("[model_providers.agent_context]\nname = \"Agent Context\"\nbase_url = \"http://127.0.0.1:41234/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = true\n"), "{routed}");
+        assert!(routed.starts_with("model_provider = \"agentq\"\nmodel = \"gpt-5\"\n"), "{routed}");
+        assert!(routed.contains("[model_providers.agentq]\nname = \"AgentQ\"\nbase_url = \"http://127.0.0.1:41234/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\nsupports_websockets = true\n"), "{routed}");
         assert_eq!(crate::routing::state("codex", &d, Some(41234)).0, "unknown", "routed config, no worker yet");
         assert!(crate::routing::drift(&journal).is_empty());
 
         let out = restore(&journal, false, Some(&["codex"])).unwrap();
         assert_eq!(out.len(), 2, "{out:?}");
         let direct = std::fs::read_to_string(&cfg).unwrap();
-        assert!(direct.starts_with(orig) && direct.contains("[mcp_servers.agent_context]") && direct_codex_provider(&direct), "{direct}");
+        assert!(direct.starts_with(orig) && direct.contains("[mcp_servers.agentq]") && direct_codex_provider(&direct), "{direct}");
         assert!(!direct.lines().any(|l| l.starts_with("model_provider =")));
         assert_eq!(crate::routing::state("codex", &d, Some(41234)).0, "direct");
         assert_eq!(load(&journal).len(), 3, "MCP and hook entries stay");
@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&journal).unwrap().permissions()) & 0o777, 0o600);
         assert!(restore(&journal, false, Some(&["codex"])).unwrap().is_empty(), "repeat is safe");
 
-        for edit in ["base_url = \"https://foreign.invalid/v1\"\n", "[model_providers.agent_context.http_headers]\nx-foreign = \"kept\"\n"] {
+        for edit in ["base_url = \"https://foreign.invalid/v1\"\n", "[model_providers.agentq.http_headers]\nx-foreign = \"kept\"\n"] {
             let foreign = direct.replacen(CODEX_DIRECT_PROVIDER, &format!("{CODEX_DIRECT_PROVIDER}{edit}"), 1);
             std::fs::write(&cfg, &foreign).unwrap();
             let out = apply(&all(), &journal).unwrap();
@@ -920,7 +920,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&cfg).unwrap(), routed, "onboard routes again");
         assert_eq!(crate::routing::intended(&d, "codex", &d), ("routed", "onboarded"), "#132 A1: re-onboarded Codex is intended routed");
         // a user who drops the provider line is reported as drift
-        std::fs::write(&cfg, routed.replacen("model_provider = \"agent_context\"\n", "", 1)).unwrap();
+        std::fs::write(&cfg, routed.replacen("model_provider = \"agentq\"\n", "", 1)).unwrap();
         assert_eq!(crate::routing::drift(&journal).len(), 1);
         std::fs::write(&cfg, &routed).unwrap();
         restore(&journal, false, None).unwrap();

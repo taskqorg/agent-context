@@ -465,13 +465,13 @@ mod tests {
     fn heartbeat_carries_routing_and_hooks() {
         let d = dir("beat");
         crate::executor::hook_failed(&d, "codex", "Stop", 100, "stdin: stream did not contain valid UTF-8");
-        let agents = json!({"codex": {"routing": "direct", "reason": "config.toml selects no agent_context provider", "intended": "routed", "intended_reason": "onboarded"},
+        let agents = json!({"codex": {"routing": "direct", "reason": "config.toml selects no agentq provider", "intended": "routed", "intended_reason": "onboarded"},
             "claude": {"routing": "direct", "reason": "no ANTHROPIC_BASE_URL", "intended": "direct", "intended_reason": "routing not shipped"}});
         let beat = |agents: &Value| span("agentq.installation", "heartbeat", heartbeat(&d, &d, 0, agents.clone()), 0, "inst", "h");
         let s = beat(&agents);
         let routing: Value = serde_json::from_str(attr(&s, "agentq.routing")["stringValue"].as_str().unwrap()).unwrap();
         assert_eq!(routing, agents);
-        assert_eq!(attr(&s, "agentq.routing_problems")["stringValue"], "codex direct (config.toml selects no agent_context provider)");
+        assert_eq!(attr(&s, "agentq.routing_problems")["stringValue"], "codex direct (config.toml selects no agentq provider)");
         let hooks = |s: &Value| serde_json::from_str::<Value>(attr(s, "agentq.hooks")["stringValue"].as_str().unwrap()).unwrap();
         let failure = json!({"at": 100, "error": "stdin: stream did not contain valid UTF-8"});
         assert_eq!(hooks(&s), json!([{"agent": "codex", "event": "Stop", "state": "failed", "last_ok_at": null, "last_failure": failure}]));

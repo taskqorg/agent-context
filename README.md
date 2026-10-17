@@ -32,6 +32,22 @@ For an existing installation, update AgentQ and repair its command registration:
 
 A foreign Unix file or link at `~/.local/bin/agentq` is preserved and reported as a conflict. Uninstall removes this installation's command registration; the shared Unix PATH block stays for other tools. Registration applies to one user account; each account and each native Windows/WSL environment has its own installation.
 
+## Upgrade to the current names
+
+Version 0.9.0 uses `agentq` for the MCP server, Codex provider, instruction markers and Hermes plugin. There is one current namespace; no retired-name aliases are registered.
+
+Existing Codex conversations bound to the retired provider are intentionally not migrated. Their history remains on disk, but start new Codex chats after the cutover. Reload the other clients normally so they load the new MCP registration; active workers are not killed. New conversations use the current namespace and continue to work after temporary disable/enable.
+
+Onboarding and service startup apply the owned registration change automatically. To apply or preview it after a binary update:
+
+```sh
+agentq migrate-names --dry-run
+agentq migrate-names
+agentq status
+```
+
+The transition preserves native login, model, permissions, sandbox, compression preferences, local originals and queued observations. A target-name collision or changed owned value is reported and kept. Repeating the command finishes an interrupted transition. `agentq migrate-names --rollback` restores the recorded owned names only while the ownership/control metadata still matches the cutover; select an older binary only after that rollback. Private rollback metadata stays in the installation data folder. Historical transcripts, evidence and retired-package removal rules keep their original names.
+
 ## Commands
 
 - `agentq compress <agent>` reads one tool-result JSON object (`adapter`, `tool`, `text`) and returns `text` and a recovery `ref`. Unqualified hook/provider recipes pass unchanged. `agentq stats [--json]` shows local call outcomes and bytes; missing or corrupt records are unknown.
@@ -47,7 +63,7 @@ Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases
 
 ## Temporarily disable optimization or integrations
 
-Use AgentQ 0.8.3 or later: 0.8.1 fixes duplicate legacy ownership receipts, and 0.8.3 preserves resume of Codex conversations created through AgentQ. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
+Use AgentQ 0.9.0 or later for the current namespace. The supported commands preserve resume of Codex conversations created through the current AgentQ provider. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
 
 Start with status:
 
@@ -93,9 +109,7 @@ Read status as separate observations:
 
 Full detach keeps the installation, engines, local data, originals, credentials, grants and queued observations under their existing retention limits. Enable restores the saved supported registrations, prior Direct state and independent compression preferences. Later foreign edits remain conflicts. Repeating a command preserves the first recovery baseline. Only `enable` clears disable intent; onboarding, configure and service activation cannot reconnect a disabled integration. Local status and enable work with the service stopped.
 
-Codex stores its provider ID in each conversation. `agent_context` is AgentQ's compatibility ID, shared with the retired package; the name alone does not mean the old package is running. Disable, Direct and uninstall retain a marked `[model_providers.agent_context]` definition that connects directly to OpenAI using the existing login. It has no AgentQ URL, hook, MCP or service dependency. New chats use the restored native provider selection; existing chats can keep their saved ID. Enable replaces only the exact unedited compatibility definition with AgentQ routing.
-
-If 0.8.2 or earlier left an old Codex chat unable to resume with `Model provider agent_context not found`, update AgentQ and repeat `agentq disable codex` while it is disabled, then reopen the chat. This repairs the missing definition without changing history, login or the saved enable baseline. If you already ran `agentq enable`, leave it enabled and reopen the chat. Do not rename providers in stored conversations or remove the compatibility definition. Use 0.8.3+ to manage disable/enable after this repair; older binaries do not recognize the definition and report a conflict.
+Codex stores its provider ID in each conversation. The current provider ID is `agentq`. Disable, Direct and uninstall retain a marked direct OpenAI definition under that same ID, without an AgentQ URL, hook, MCP or service dependency. Existing conversations created with this namespace can therefore resume; enable restores the owned loopback definition only when its direct definition is unchanged.
 
 If `agentq` is not on PATH, use the installed launcher. On macOS/Linux: `"$HOME/.local/share/agentq/agentq" status`. In Windows PowerShell: `& "$env:LOCALAPPDATA\agentq\agentq.exe" status`. Replace `status` with the desired command and arguments.
 
