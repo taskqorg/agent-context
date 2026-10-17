@@ -24,7 +24,7 @@ Releases: [taskqorg/agentq releases](https://github.com/taskqorg/agentq/releases
 
 ## Temporarily disable optimization or integrations
 
-Requires AgentQ 0.8.0 or later. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
+Requires AgentQ 0.8.1 or later for existing installations. Version 0.8.1 fixes detach with duplicate ownership receipts from older setups. Run commands on the host whose installation you want to control; Mac, Windows, FRA and WSL have separate state.
 
 Start with status:
 

@@ -24,7 +24,7 @@ A user request to remove agentq allows this step.
 
 ## Temporarily disable and restore
 
-Use the commands from [README](README.md#temporarily-disable-optimization-or-integrations) with 0.8.0 or later. The owner authorized rollout to the existing Mac, Windows and FRA installations on 2026-10-17. Check the [qualification record](docs/spec/INTEGRATION-CONTROL-PLAN.md#implementation-candidate-and-remaining-qualification): Desktop, macOS/Windows service lifecycle and Codex routed service-baseline restoration remain open gates. Claude auto mode now uses successful-result PostToolUse replacement; older PreToolUse-only profiles need explicit hook configuration. Enable preserves the saved baseline.
+Use the commands from [README](README.md#temporarily-disable-optimization-or-integrations) with 0.8.1 or later (duplicate legacy receipts can block detach in 0.8.0). The owner authorized rollout to the existing Mac, Windows and FRA installations on 2026-10-17. Check the [qualification record](docs/spec/INTEGRATION-CONTROL-PLAN.md#implementation-candidate-and-remaining-qualification): Desktop, macOS/Windows service lifecycle and Codex routed service-baseline restoration remain open gates. Claude auto mode now uses successful-result PostToolUse replacement; older PreToolUse-only profiles need explicit hook configuration. Enable preserves the saved baseline.
 
 1. Read `agentq status --json`. Distinguish a compression preference, configured integration, runtime evidence and service health; none implies the others.
 2. For compression only, run `agentq optimization off [codex|claude|hermes]`; omit the agent for the host. Resume with `on`. The host switch preserves individually disabled preferences. No native config edits or client restart.
